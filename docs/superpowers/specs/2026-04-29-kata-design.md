@@ -8,7 +8,7 @@
 
 kata replaces ad-hoc use of GitHub Issues for agent task-tracking. It is a single-binary local tool with a long-lived daemon, a SQLite database, a CLI, and a Bubble Tea TUI. Agents are the primary writers; humans observe and steer through the TUI.
 
-The shape is borrowed deliberately from roborev: pure-Go SQLite via `modernc.org/sqlite`, a Huma-based HTTP API on a Unix socket (TCP loopback fallback on Windows), per-PID runtime files, durable SSE event stream, and directory-style installable agent skills. Where roborev runs review/fix workloads, kata runs only issue CRUD plus an event broadcaster and a hook runner — there is no worker pool and no agentic execution.
+The shape is borrowed deliberately from roborev: pure-Go SQLite via `modernc.org/sqlite`, a Huma-based HTTP API on a Unix socket (TCP loopback fallback on Windows), per-PID runtime files, durable SSE event stream, and directory-style installable agent skills. Where roborev runs review/fix workloads, kata runs only issue CRUD plus an event broadcaster and a small bounded hook runner — there is no agentic review worker pool and no daemon-driven code execution beyond the user's own configured hook scripts.
 
 The design optimizes for three things:
 
@@ -22,7 +22,7 @@ The design optimizes for three things:
 CLI (kata) ──HTTP/JSON──> Daemon ──> SQLite (~/.kata/kata.db, WAL, FK ON)
                             │
                             ├─> SSE event broadcaster (durable, resumable)
-                            └─> Async hook runner (post-commit, sandboxed)
+                            └─> Bounded hook runner (post-commit, no shell)
 
 TUI (kata tui) ──HTTP + SSE──> Daemon
 ```
@@ -89,7 +89,9 @@ A future `OpenReadOnly` (no migrations, no PRAGMA mutation, schema-version check
 - Events have monotonic `event_id` (= `events.id`), `actor`, `repo_id`, `repo_identity` (snapshot), `issue_id`, `issue_number`, `related_issue_id` (nullable), `type`, `payload`, `created_at`.
 - Persisted in the `events` table (which is also the audit trail).
 - Daemon broadcasts only **after DB commit**, with the row's `event_id` as the SSE `id:` field.
-- On reconnect with `Last-Event-ID` (or `?after_id=N`; both → 400), daemon checks `purge_log` for invalidating purges (any row where `purge_reset_after_event_id > Last-Event-ID`). If invalidated, sends a single `sync.reset_required` synthetic event with `id:` = current max `events.id` and closes the stream. The client refetches state and reopens.
+- **Purge reserves a synthetic SSE cursor** strictly greater than the current max `events.id`. Concretely: in the same transaction that purges an issue, if any events were deleted, the daemon advances `sqlite_sequence.seq` for `events` by one (without inserting a row) and stores that reserved value as `purge_log.purge_reset_after_event_id`. Future real `events.id` values continue from `reserved + 1`, so the synthetic cursor is unique and unattainable by any real event.
+- On reconnect with `Last-Event-ID` (or `?after_id=N`; both → 400), daemon checks `purge_log` for any row with `purge_reset_after_event_id > Last-Event-ID`. Because the reserved cursor exceeds every event id that existed at purge time, even a client whose cursor was at the max-at-purge will be reset (no off-by-one miss, no need for `>=` — strict `>` is correct against a strictly-greater reserved value).
+- If invalidated, daemon sends a single `sync.reset_required` synthetic event with `id:` = the matching `purge_reset_after_event_id` and closes the stream. The client adopts that id as its new cursor and refetches state.
 
 ### 2.7 Hooks (preview, full design §7)
 
@@ -245,6 +247,7 @@ CREATE INDEX idx_events_idempotency
 
 CREATE TABLE purge_log (
   id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+  purged_issue_id             INTEGER NOT NULL,   -- the deleted issues.id; no FK (the row is gone)
   repo_identity               TEXT NOT NULL,
   issue_number                INTEGER NOT NULL,
   issue_title                 TEXT NOT NULL,
@@ -263,6 +266,7 @@ CREATE TABLE purge_log (
 );
 CREATE INDEX idx_purge_log_reset
   ON purge_log(purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
+CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
 CREATE INDEX idx_purge_log_lookup ON purge_log(repo_identity, issue_number);
 
 CREATE TABLE meta (
@@ -311,7 +315,15 @@ The `issue.created` event payload includes initial `labels`, `links`, `owner`, `
 2. `kata delete <id>` — fails with hint *"deletion requires --force; use `kata restore` to undo."*
 3. `kata delete <id> --force` — interactive prompt requires typing the issue number; sets `deleted_at`. Event `issue.soft_deleted`.
 4. `kata restore <id>` — clears `deleted_at`. Event `issue.restored`.
-5. `kata purge <id> --force` — interactive prompt requires typing exactly `PURGE #N`. In one TX: insert `purge_log` row with `events_deleted_min_id`, `events_deleted_max_id`, and `purge_reset_after_event_id` populated, then cascade-delete `events WHERE issue_id = N OR related_issue_id = N`, `comments`, `links`, `issue_labels`, finally the `issues` row. The `purge_log` row is the only persisted record. **No `issue.purged` event is persisted.**
+5. `kata purge <id> --force` — interactive prompt requires typing exactly `PURGE #N`. In one TX:
+   1. Capture `purged_issue_id` (the `issues.id` rowid) and counts of dependent rows.
+   2. Cascade-delete `events WHERE issue_id = N OR related_issue_id = N`, `comments`, `links`, `issue_labels`.
+   3. If any events were deleted in step 2: bump `sqlite_sequence.seq` for `events` by one (`UPDATE sqlite_sequence SET seq = seq + 1 WHERE name = 'events'`) and capture the new value as `purge_reset_after_event_id`.
+   4. Insert `purge_log` row with `purged_issue_id`, the captured counts, `events_deleted_min_id`/`events_deleted_max_id` (NULL if none), and `purge_reset_after_event_id` (NULL if no events deleted).
+   5. Delete the `issues` row.
+   6. After commit, the daemon broadcasts a `sync.reset_required` event over SSE with `id:` = `purge_reset_after_event_id` if that value is non-null. Live subscribers (with cursors below the reserved value) drop cache, refetch, and adopt the reserved id as their new cursor.
+
+   The `purge_log` row is the only persisted record. **No `issue.purged` event is persisted.**
 
 Both destructive verbs accept `--confirm "<exact-string>"` for noninteractive use, and require a TTY otherwise (else exit 6 `confirm_required`).
 
@@ -319,9 +331,23 @@ Both destructive verbs accept `--confirm "<exact-string>"` for noninteractive us
 
 `POST /issues` with `Idempotency-Key: K`:
 
-- Same key + same fingerprint (`sha256(canonical(title) || canonical(body) || sorted(labels))`) → returns existing issue, `event=null`, `reused=true`. Exit 0.
+- Same key + same fingerprint → returns existing issue, `event=null`, `original_event=…`, `reused=true`. Exit 0.
 - Same key + different fingerprint → exit 5 `idempotency_mismatch`.
 - Same key + matched issue is soft-deleted → exit 5 `idempotency_deleted` with the deleted issue number; hint: `kata restore <id>` or use a fresh key.
+
+**Fingerprint** covers every creation-affecting field so two requests with the same key but materially different inputs cannot silently reuse:
+
+```
+fingerprint = sha256(
+    "title="   || canonical(title)        || "\n" ||
+    "body="    || canonical(body)         || "\n" ||
+    "owner="   || canonical(owner ?? "")  || "\n" ||
+    "labels="  || join(",", sort(labels)) || "\n" ||
+    "links="   || canonical(sort([{type, other_number} for each initial link]))
+)
+```
+
+`canonical()` is NFC-normalized, trimmed of leading/trailing whitespace, with internal runs of whitespace collapsed to a single space (applied before hashing; the stored title/body remain verbatim). Initial links are sorted lexicographically by `(type, other_number)`. The two-element record uses a fixed JSON form for stability across language clients.
 
 Idempotency key + fingerprint stored in the `issue.created` event's `payload`, indexed by `idx_events_idempotency`. Default lookback window 7 days (configurable).
 
@@ -450,7 +476,7 @@ data: {"event_id":81235,"type":"issue.commented","repo_id":3,"repo_identity":"gi
 - `event:` field = `events.type` (e.g. `issue.commented`) or `sync.reset_required`. Same fully qualified strings used in `events.type` and hook matchers.
 - `data:` is single-line JSON.
 - Daemon broadcasts after DB commit; in-memory broadcaster fans out.
-- On reconnect: check `purge_log` for any row with `purge_reset_after_event_id > Last-Event-ID`. Invalidated → send single `sync.reset_required` (with `id:` = current max `events.id`, `data.new_baseline` = same), close stream. Otherwise: replay `events WHERE id > ?` ordered by id (bounded ~10k rows; continue streaming live afterward).
+- On reconnect: check `purge_log` for any row with `purge_reset_after_event_id > Last-Event-ID`. Invalidated → send single `sync.reset_required` (with `id:` = the matching `purge_reset_after_event_id`, `data.new_baseline` = same), close stream. Otherwise: replay `events WHERE id > ?` ordered by id (bounded ~10k rows; continue streaming live afterward).
 - Heartbeats: `: keepalive\n\n` every 25s.
 
 `sync.reset_required` event IDs are cursors — they happen to equal a real persisted `events.id`, but no new row is written.
@@ -638,7 +664,7 @@ Read-only. JSON output is an array of findings; text output groups by severity.
 | `schema_drift` | warn | DB `meta.schema_version` vs. binary's expected version. |
 | `runtime_files_stale` | warn | `daemon.<pid>.json` for non-existent PIDs. |
 | `config_parse_error` | warn | Global or per-repo config TOML failed to load. |
-| `purge_log_inconsistency` | warn | For each `purge_log` row, no `events` row should exist with `repo_identity` = the row's identity AND `issue_number` = the row's number (cascade missed rows). Reports per offending event. |
+| `purge_log_inconsistency` | warn | For each `purge_log` row, no `events` row should have `issue_id = purged_issue_id` or `related_issue_id = purged_issue_id` (cascade missed rows). Uses the captured rowid rather than `repo_identity + issue_number` so identity changes can't mask stale events. Reports per offending event. |
 | `skill_install_drift` | warn | Per agent: missing/outdated skills (byte-compare). |
 
 Doctor never recommends workflow mutations. It may recommend system-repair commands like `kata daemon reload`, `kata skills install`, or "remove stale runtime files at <paths>".
@@ -801,8 +827,8 @@ User-defined `env` entries layer first; reserved `KATA_*` set last. Config rejec
 ### 8.6 Execution
 
 - **After DB commit.** Hooks never block or roll back state changes.
-- `exec.Command(cmd, args...)`. **No shell.** **No env-var expansion in `args`.**
-- Worker pool default 4 (configurable, capped at 16). Bounded queue default 1000.
+- `exec.Command(cmd, args...)`. **No shell.** **No env-var expansion in `args`.** Hook commands run with the daemon's UID/GID and inherit no kata internals beyond the documented `KATA_*` env vars; this avoids the obvious shell-injection surface but is **not** a sandbox. Operators who need OS-level isolation should write hooks that re-exec under their own sandboxing (containers, `firejail`, `bwrap`, etc.).
+- Bounded hook-runner pool: default 4 goroutines (configurable, capped at 16). Bounded queue default 1000.
 - Per-hook timeout. SIGTERM → 5s grace → SIGKILL.
 - Capture stdout/stderr to `$KATA_DATA_DIR/hooks/<dbhash>/output/<event_id>.<hook_index>.{out,err}`. Total disk usage capped (default 100MB per `<dbhash>`; oldest files pruned first; configurable via `[hooks].output_disk_cap`).
 - Hook-run index: `$KATA_DATA_DIR/hooks/<dbhash>/runs.jsonl` (rotated 50MB × 5). One JSON object per run with start/end times, exit code, timeout flag, stdout/stderr paths, truncation flag. Used by `kata daemon logs --hooks`.
