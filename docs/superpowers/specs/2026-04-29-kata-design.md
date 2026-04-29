@@ -89,7 +89,7 @@ A future `OpenReadOnly` (no migrations, no PRAGMA mutation, schema-version check
 - Events have monotonic `event_id` (= `events.id`), `actor`, `repo_id`, `repo_identity` (snapshot), `issue_id`, `issue_number`, `related_issue_id` (nullable), `type`, `payload`, `created_at`.
 - Persisted in the `events` table (which is also the audit trail).
 - Daemon broadcasts only **after DB commit**, with the row's `event_id` as the SSE `id:` field.
-- On reconnect with `Last-Event-ID` (or `?after_id=N`; both → 400), daemon checks `purge_log` for invalidating purges. If invalidated, sends a single `sync.reset_required` synthetic event with `id:` = current max `events.id` and closes the stream. The client refetches state and reopens.
+- On reconnect with `Last-Event-ID` (or `?after_id=N`; both → 400), daemon checks `purge_log` for invalidating purges (any row where `purge_reset_after_event_id > Last-Event-ID`). If invalidated, sends a single `sync.reset_required` synthetic event with `id:` = current max `events.id` and closes the stream. The client refetches state and reopens.
 
 ### 2.7 Hooks (preview, full design §7)
 
@@ -177,6 +177,7 @@ CREATE INDEX idx_comments_issue ON comments(issue_id, created_at);
 
 CREATE TABLE links (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id       INTEGER NOT NULL REFERENCES repos(id),
   from_issue_id INTEGER NOT NULL REFERENCES issues(id),
   to_issue_id   INTEGER NOT NULL REFERENCES issues(id),
   type          TEXT NOT NULL CHECK(type IN ('parent','blocks','related')),
@@ -189,8 +190,25 @@ CREATE TABLE links (
 );
 CREATE UNIQUE INDEX uniq_one_parent_per_child
   ON links(from_issue_id) WHERE type = 'parent';
-CREATE INDEX idx_links_from ON links(from_issue_id, type);
-CREATE INDEX idx_links_to   ON links(to_issue_id, type);
+CREATE INDEX idx_links_from    ON links(from_issue_id, type);
+CREATE INDEX idx_links_to      ON links(to_issue_id, type);
+CREATE INDEX idx_links_repo    ON links(repo_id);
+
+-- Enforce same-repo: both endpoints must belong to links.repo_id.
+CREATE TRIGGER trg_links_same_repo_insert
+BEFORE INSERT ON links
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'cross-repo links are not allowed')
+  WHERE (SELECT repo_id FROM issues WHERE id = NEW.from_issue_id) <> NEW.repo_id
+     OR (SELECT repo_id FROM issues WHERE id = NEW.to_issue_id)   <> NEW.repo_id;
+END;
+CREATE TRIGGER trg_links_same_repo_update
+BEFORE UPDATE ON links
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'cross-repo links are not allowed')
+  WHERE (SELECT repo_id FROM issues WHERE id = NEW.from_issue_id) <> NEW.repo_id
+     OR (SELECT repo_id FROM issues WHERE id = NEW.to_issue_id)   <> NEW.repo_id;
+END;
 
 CREATE TABLE issue_labels (
   issue_id   INTEGER NOT NULL REFERENCES issues(id),
@@ -198,7 +216,9 @@ CREATE TABLE issue_labels (
   author     TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   PRIMARY KEY(issue_id, label),
-  CHECK (label GLOB '[a-z0-9._:-]*' AND length(label) BETWEEN 1 AND 64)
+  CHECK (length(label) BETWEEN 1 AND 64),
+  CHECK (label NOT GLOB '*[^a-z0-9._:-]*'),
+  CHECK (length(trim(author)) > 0)
 );
 CREATE INDEX idx_issue_labels_label ON issue_labels(label);
 
@@ -221,25 +241,36 @@ CREATE INDEX idx_events_issue   ON events(issue_id, id) WHERE issue_id IS NOT NU
 CREATE INDEX idx_events_related ON events(related_issue_id, id) WHERE related_issue_id IS NOT NULL;
 CREATE INDEX idx_events_idempotency
   ON events(repo_id, json_extract(payload, '$.idempotency_key'), created_at)
-  WHERE type = 'created' AND json_extract(payload, '$.idempotency_key') IS NOT NULL;
+  WHERE type = 'issue.created' AND json_extract(payload, '$.idempotency_key') IS NOT NULL;
 
 CREATE TABLE purge_log (
-  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo_identity         TEXT NOT NULL,
-  issue_number          INTEGER NOT NULL,
-  issue_title           TEXT NOT NULL,
-  issue_author          TEXT NOT NULL,
-  comment_count         INTEGER NOT NULL,
-  link_count            INTEGER NOT NULL,
-  label_count           INTEGER NOT NULL,
-  event_count           INTEGER NOT NULL,
-  events_deleted_min_id INTEGER,
-  events_deleted_max_id INTEGER,
-  actor                 TEXT NOT NULL,
-  reason                TEXT,
-  purged_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_identity               TEXT NOT NULL,
+  issue_number                INTEGER NOT NULL,
+  issue_title                 TEXT NOT NULL,
+  issue_author                TEXT NOT NULL,
+  comment_count               INTEGER NOT NULL,
+  link_count                  INTEGER NOT NULL,
+  label_count                 INTEGER NOT NULL,
+  event_count                 INTEGER NOT NULL,
+  events_deleted_min_id       INTEGER,            -- audit (min events.id deleted; NULL if none)
+  events_deleted_max_id       INTEGER,            -- audit (max events.id deleted; NULL if none)
+  purge_reset_after_event_id  INTEGER,            -- SSE reset cursor; subscribers with Last-Event-ID < this must reset
+  actor                       TEXT NOT NULL,
+  reason                      TEXT,
+  purged_at                   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   CHECK (length(trim(actor)) > 0)
 );
+CREATE INDEX idx_purge_log_reset
+  ON purge_log(purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
+CREATE INDEX idx_purge_log_lookup ON purge_log(repo_identity, issue_number);
+
+CREATE TABLE meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+INSERT INTO meta(key, value) VALUES ('created_by_version', '0.1.0');
 
 -- FTS5 virtual table over issue title+body+comments, kept in sync via triggers.
 CREATE VIRTUAL TABLE issues_fts USING fts5(
@@ -253,20 +284,24 @@ CREATE VIRTUAL TABLE issues_fts USING fts5(
 
 ### 3.3 Event types
 
-`created`, `updated`, `closed`, `reopened`, `commented`, `linked`, `unlinked`, `labeled`, `unlabeled`, `assigned`, `unassigned`, `soft_deleted`, `restored`. Plus the synthetic control event `sync.reset_required` (not persisted; emitted to live subscribers on purge and to reconnecting subscribers when their cursor falls inside a deleted-events window).
+Persisted in `events.type` as fully qualified strings:
 
-The `created` event payload includes initial `labels`, `links`, `owner`, `idempotency_key`, `idempotency_fingerprint` if any of those were specified at create time. No separate `labeled`/`linked`/`assigned` events fire at creation. Subsequent changes do emit their own events.
+`issue.created`, `issue.updated`, `issue.closed`, `issue.reopened`, `issue.commented`, `issue.linked`, `issue.unlinked`, `issue.labeled`, `issue.unlabeled`, `issue.assigned`, `issue.unassigned`, `issue.soft_deleted`, `issue.restored`.
+
+Plus the synthetic control event `sync.reset_required` (not persisted; emitted to live subscribers on purge and to reconnecting subscribers when their cursor falls inside a deleted-events window). Hook matchers (§8.3) and SSE `event:` fields use the same fully qualified names — there is no namespace shift between persistence, broadcast, and hooks.
+
+The `issue.created` event payload includes initial `labels`, `links`, `owner`, `idempotency_key`, `idempotency_fingerprint` if any of those were specified at create time. No separate `issue.labeled`/`issue.linked`/`issue.assigned` events fire at creation. Subsequent changes do emit their own events.
 
 ### 3.4 Issue lifecycle
 
-- `kata create` → row in `issues`, event `created`. `repos.next_issue_number` bumped in same TX (`BEGIN IMMEDIATE`).
-- `kata close [--reason …]` → `status='closed'`, `closed_at` set, default `closed_reason='done'`. Event `closed`.
-- `kata reopen` → `status='open'`, `closed_at` and `closed_reason` cleared. Event `reopened`.
-- `kata edit` → mutates `title`/`body`/`owner`. Event `updated` with `payload.fields = { "title": {"old":"…","new":"…"} }` etc.
-- `kata comment` → row in `comments`, event `commented` with `{ "comment_id": N }`.
-- `kata link` / `unlink` (plus sugar verbs) → row in `links` or removal, event `linked`/`unlinked` with `related_issue_id` set on the event row.
-- `kata label add/rm` → row in `issue_labels`, event `labeled`/`unlabeled`.
-- `kata assign/unassign` → mutates `issues.owner`, event `assigned`/`unassigned`.
+- `kata create` → row in `issues`, event `issue.created`. `repos.next_issue_number` bumped in same TX (`BEGIN IMMEDIATE`).
+- `kata close [--reason …]` → `status='closed'`, `closed_at` set, default `closed_reason='done'`. Event `issue.closed`.
+- `kata reopen` → `status='open'`, `closed_at` and `closed_reason` cleared. Event `issue.reopened`.
+- `kata edit` → mutates `title`/`body`/`owner`. Event `issue.updated` with `payload.fields = { "title": {"old":"…","new":"…"} }` etc.
+- `kata comment` → row in `comments`, event `issue.commented` with `{ "comment_id": N }`.
+- `kata link` / `unlink` (plus sugar verbs) → row in `links` or removal, event `issue.linked`/`issue.unlinked` with `related_issue_id` set on the event row.
+- `kata label add/rm` → row in `issue_labels`, event `issue.labeled`/`issue.unlabeled`.
+- `kata assign/unassign` → mutates `issues.owner`, event `issue.assigned`/`issue.unassigned`.
 
 `updated_at` semantics: "last issue activity." Bumped by every event above.
 
@@ -274,9 +309,9 @@ The `created` event payload includes initial `labels`, `links`, `owner`, `idempo
 
 1. `kata close` — closed but visible.
 2. `kata delete <id>` — fails with hint *"deletion requires --force; use `kata restore` to undo."*
-3. `kata delete <id> --force` — interactive prompt requires typing the issue number; sets `deleted_at`. Event `soft_deleted`.
-4. `kata restore <id>` — clears `deleted_at`. Event `restored`.
-5. `kata purge <id> --force` — interactive prompt requires typing exactly `PURGE #N`. In one TX: insert `purge_log` row with `events_deleted_min_id`/`max_id`, then cascade-delete `events WHERE issue_id = N OR related_issue_id = N`, `comments`, `links`, `issue_labels`, finally the `issues` row. The `purge_log` row is the only persisted record. **`purged` is not persisted as an event.**
+3. `kata delete <id> --force` — interactive prompt requires typing the issue number; sets `deleted_at`. Event `issue.soft_deleted`.
+4. `kata restore <id>` — clears `deleted_at`. Event `issue.restored`.
+5. `kata purge <id> --force` — interactive prompt requires typing exactly `PURGE #N`. In one TX: insert `purge_log` row with `events_deleted_min_id`, `events_deleted_max_id`, and `purge_reset_after_event_id` populated, then cascade-delete `events WHERE issue_id = N OR related_issue_id = N`, `comments`, `links`, `issue_labels`, finally the `issues` row. The `purge_log` row is the only persisted record. **No `issue.purged` event is persisted.**
 
 Both destructive verbs accept `--confirm "<exact-string>"` for noninteractive use, and require a TTY otherwise (else exit 6 `confirm_required`).
 
@@ -288,7 +323,7 @@ Both destructive verbs accept `--confirm "<exact-string>"` for noninteractive us
 - Same key + different fingerprint → exit 5 `idempotency_mismatch`.
 - Same key + matched issue is soft-deleted → exit 5 `idempotency_deleted` with the deleted issue number; hint: `kata restore <id>` or use a fresh key.
 
-Idempotency key + fingerprint stored in the `created` event's `payload`, indexed by `idx_events_idempotency`. Default lookback window 7 days (configurable).
+Idempotency key + fingerprint stored in the `issue.created` event's `payload`, indexed by `idx_events_idempotency`. Default lookback window 7 days (configurable).
 
 ### 3.7 Look-alike soft-block
 
@@ -360,13 +395,16 @@ Every mutation request body includes `actor` (required, non-empty). Every succes
 ```json
 {
   "issue":   { "...": "full issue projection" },
-  "event":   { "id": 81234, "type": "created", "created_at": "..." },
+  "event":   { "id": 81234, "type": "issue.created", "created_at": "..." },
   "changed": true,
   "reused":  false
 }
 ```
 
-No-op mutations (`label add` already labeled, `link add` already linked, `close` already closed, `reopen` already open, idempotent reuse) return `event: null, changed: false`. Idempotent reuse additionally sets `reused: true` and includes the original `created` event row in `event`.
+No-op mutations always set `event: null, changed: false`:
+
+- "Already in target state" cases (`label add` already labeled, `link add` already linked, `close` already closed, `reopen` already open) return `{ "issue": {...}, "event": null, "changed": false }`.
+- **Idempotent reuse** is the named exception: returns `{ "issue": {...}, "event": null, "original_event": { "id": ..., "type": "issue.created", ... }, "changed": false, "reused": true }`. The `original_event` field is populated *only* in the idempotent-reuse case so clients can correlate to the prior creation.
 
 ### 4.5 Error envelope
 
@@ -406,13 +444,13 @@ Frame:
 ```
 id: 81235
 event: issue.commented
-data: {"event_id":81235,"repo_id":3,"repo_identity":"github.com/wesm/kata","issue_number":42,"actor":"claude-4.7","payload":{"comment_id":104},"created_at":"2026-04-29T14:22:11.482Z"}
+data: {"event_id":81235,"type":"issue.commented","repo_id":3,"repo_identity":"github.com/wesm/kata","issue_number":42,"actor":"claude-4.7","payload":{"comment_id":104},"created_at":"2026-04-29T14:22:11.482Z"}
 ```
 
-- `event:` field = `events.type` or `sync.reset_required`.
+- `event:` field = `events.type` (e.g. `issue.commented`) or `sync.reset_required`. Same fully qualified strings used in `events.type` and hook matchers.
 - `data:` is single-line JSON.
 - Daemon broadcasts after DB commit; in-memory broadcaster fans out.
-- On reconnect: check `purge_log`. Invalidated → send single `sync.reset_required` (with `id:` = current max `events.id`, `data.new_baseline` = same), close stream. Otherwise: replay `events WHERE id > ?` ordered by id (bounded ~10k rows; continue streaming live afterward).
+- On reconnect: check `purge_log` for any row with `purge_reset_after_event_id > Last-Event-ID`. Invalidated → send single `sync.reset_required` (with `id:` = current max `events.id`, `data.new_baseline` = same), close stream. Otherwise: replay `events WHERE id > ?` ordered by id (bounded ~10k rows; continue streaming live afterward).
 - Heartbeats: `: keepalive\n\n` every 25s.
 
 `sync.reset_required` event IDs are cursors — they happen to equal a real persisted `events.id`, but no new row is written.
@@ -502,7 +540,6 @@ Directory-style. Embedded with `//go:embed`. Two targets v1:
 ~/.claude/skills/kata-using/SKILL.md      # honors $CLAUDE_CONFIG_DIR
 ~/.claude/skills/kata-triage/SKILL.md
 ~/.claude/skills/kata-decompose/SKILL.md
-~/.claude/skills/kata-land/SKILL.md
 
 $CODEX_HOME/skills/kata-using/SKILL.md    # default ~/.codex
 …
@@ -510,14 +547,13 @@ $CODEX_HOME/skills/kata-using/SKILL.md    # default ~/.codex
 
 Each skill is a directory with at least `SKILL.md`; may include `references/`. Frontmatter is YAML with `name` and `description` — the description is the trigger phrase, written as roborev does it ("Use when …; do not use when …").
 
-### 5.7 Skill set (4 skills, v1)
+### 5.7 Skill set (3 skills, v1)
 
 | Skill | Trigger | Content |
 |---|---|---|
 | `kata-using` | Foundation skill; install and prefer invoking when working in a kata-tracked repo | Identity, JSON-first, search-before-create, link semantics, link/comment/close hygiene. Each skill has a "When NOT to invoke" section. |
 | `kata-triage` | When user says "triage", "go through open issues", or similar — not for asking about a single issue | Walk `kata list --status open --json`, decide each: keep / close / link / comment. |
 | `kata-decompose` | Large feature request — not for trivial requests | Parent issue + child issues with `parent` links, `blocks` chains for sequencing. |
-| `kata-land` | Closing out a branch's work — not as a generic git workflow | Verify all referenced issues are in the right state; surface follow-ups. |
 
 Skills are 100–200 lines. Numbered steps, `--json` everywhere, explicit error handling ("if X fails, report and continue").
 
@@ -539,7 +575,7 @@ Universal flags on every command: `--json`, `--quiet`/`-q`, `--as <name>`, `--re
 
 | Group | Command | Notes |
 |---|---|---|
-| Lifecycle | `kata create <title> [--body* / --idempotency-key K / --force-new / --label L / --owner O / --parent N / --blocks N]` | `--label` repeated only (no CSV). Initial labels/links/owner go into the `created` event payload. |
+| Lifecycle | `kata create <title> [--body* / --idempotency-key K / --force-new / --label L / --owner O / --parent N / --blocks N]` | `--label` repeated only (no CSV). Initial labels/links/owner go into the `issue.created` event payload. |
 | | `kata show <number> [--include-events] [--include-deleted]` | Default: issue + comments + links + labels. |
 | | `kata list [--status / --label / --owner / --author / --repo / --all-repos / --updated-since / --limit / --search]` | Default: this repo, `status=open`, `updated_at DESC`, limit 50. |
 | | `kata edit <number> [--title / --body* / --owner]` | At least one field; else exit 3. |
@@ -564,7 +600,7 @@ Universal flags on every command: `--json`, `--quiet`/`-q`, `--as <name>`, `--re
 | | `kata whoami` | `{actor, source}`. |
 | | `kata health` | `/api/v1/health`. |
 | Repos | `kata init [--name <NAME>]` | Explicit repo registration. Equivalent to the auto-registration that any kata command performs in cwd, but intentional. Optional `--name` overrides the auto-derived name. No-op if already registered. |
-| | `kata repos [list\|show\|forget <identity>]` | (`forget` deferred to v2; v1 prints unsupported.) |
+| | `kata repos [list\|show]` | List registered repos / show one. Forgetting a repo is out of scope (§10). |
 | Skills | `kata skills install [--target claude\|codex\|all]` | Idempotent; honors `$CLAUDE_CONFIG_DIR`/`$CODEX_HOME`. |
 | | `kata skills doctor` / `kata skills list` | |
 | | `kata agent-instructions` | Canonical agent doc. |
@@ -583,13 +619,13 @@ Most-hit command. JSON output is the full issue projection plus event metadata:
 ```json
 {
   "issue":   { "number": 42, "...": "..." },
-  "event":   { "id": 81237, "type": "created" },
+  "event":   { "id": 81237, "type": "issue.created" },
   "changed": true,
   "reused":  false
 }
 ```
 
-Daemon flow inside one TX: resolve repo → idempotency check → look-alike check → insert issue + initial labels/links → bump `repos.next_issue_number` → append `created` event with payload (idempotency, fingerprint, initial labels/links/owner) → commit → broadcast.
+Daemon flow inside one TX: resolve repo → idempotency check → look-alike check → insert issue + initial labels/links → bump `repos.next_issue_number` → append `issue.created` event with payload (idempotency, fingerprint, initial labels/links/owner) → commit → broadcast.
 
 ### 6.4 Detailed: `kata doctor` (system-only)
 
@@ -599,10 +635,10 @@ Read-only. JSON output is an array of findings; text output groups by severity.
 |---|---|---|
 | `daemon_unreachable` | error | `/ping` fails. |
 | `db_integrity_failed` | error | `PRAGMA integrity_check`. |
-| `schema_drift` | warn | DB schema version vs. binary expected. |
+| `schema_drift` | warn | DB `meta.schema_version` vs. binary's expected version. |
 | `runtime_files_stale` | warn | `daemon.<pid>.json` for non-existent PIDs. |
 | `config_parse_error` | warn | Global or per-repo config TOML failed to load. |
-| `purge_log_inconsistency` | warn | E.g., events exist with `id` between a recorded `events_deleted_min_id` and `events_deleted_max_id` (cascade missed rows), or a `purge_log` row is missing required fields. |
+| `purge_log_inconsistency` | warn | For each `purge_log` row, no `events` row should exist with `repo_identity` = the row's identity AND `issue_number` = the row's number (cascade missed rows). Reports per offending event. |
 | `skill_install_drift` | warn | Per agent: missing/outdated skills (byte-compare). |
 
 Doctor never recommends workflow mutations. It may recommend system-repair commands like `kata daemon reload`, `kata skills install`, or "remove stale runtime files at <paths>".
@@ -717,9 +753,11 @@ Optional fields: `working_dir` (absolute or repo-relative under repo root; defau
 
 ### 8.3 Event matching
 
+Hook `event` strings are fully qualified — same names used in `events.type` and SSE `event:` fields.
+
 - Exact: `event = "issue.commented"`.
 - Prefix wildcard: `event = "issue.*"` matches all `issue.<verb>`.
-- Catch-all: `event = "*"` matches everything except `sync.reset_required`.
+- Catch-all: `event = "*"` matches everything except `sync.reset_required` (which is never dispatched to hooks).
 
 ### 8.4 Stdin payload
 
@@ -766,8 +804,10 @@ User-defined `env` entries layer first; reserved `KATA_*` set last. Config rejec
 - `exec.Command(cmd, args...)`. **No shell.** **No env-var expansion in `args`.**
 - Worker pool default 4 (configurable, capped at 16). Bounded queue default 1000.
 - Per-hook timeout. SIGTERM → 5s grace → SIGKILL.
-- Capture stdout/stderr to `$KATA_DATA_DIR/hooks/output/<event_id>.<hook_index>.{out,err}`. Total disk usage capped (default 100MB; oldest files pruned first; configurable via `[hooks].output_disk_cap`).
-- Hook-run index: `$KATA_DATA_DIR/hooks/runs.jsonl` (rotated 50MB × 5). One JSON object per run with start/end times, exit code, timeout flag, stdout/stderr paths, truncation flag. Used by `kata daemon logs --hooks`.
+- Capture stdout/stderr to `$KATA_DATA_DIR/hooks/<dbhash>/output/<event_id>.<hook_index>.{out,err}`. Total disk usage capped (default 100MB per `<dbhash>`; oldest files pruned first; configurable via `[hooks].output_disk_cap`).
+- Hook-run index: `$KATA_DATA_DIR/hooks/<dbhash>/runs.jsonl` (rotated 50MB × 5). One JSON object per run with start/end times, exit code, timeout flag, stdout/stderr paths, truncation flag. Used by `kata daemon logs --hooks`.
+
+`<dbhash>` namespacing prevents two `KATA_DB` daemons from interleaving event-ID-keyed output files or sharing one `runs.jsonl`.
 
 ### 8.7 Reload
 
@@ -796,7 +836,7 @@ $KATA_DATA_DIR/
   kata.db                              # default; override KATA_DB
   kata.db-wal
   kata.db-shm
-  hooks/
+  hooks/<dbhash>/
     runs.jsonl
     output/<event_id>.<hook_index>.{out,err}
   runtime/<dbhash>/
@@ -872,8 +912,8 @@ internal/
     similarity.go        # tokenize, normalize, jaccard, weighted score
   skills/
     skills.go            # install, status, doctor; CLAUDE_CONFIG_DIR / CODEX_HOME
-    claude/{kata-using,kata-triage,kata-decompose,kata-land}/SKILL.md
-    codex/{kata-using,kata-triage,kata-decompose,kata-land}/SKILL.md
+    claude/{kata-using,kata-triage,kata-decompose}/SKILL.md
+    codex/{kata-using,kata-triage,kata-decompose}/SKILL.md
   testenv/testenv.go     # temp data dir, fresh daemon, generated client wired
   testutil/testutil.go   # git temp repos, fixtures
 ```
@@ -922,7 +962,7 @@ Pre-commit via `prek` (matches roborev/middleman): runs `make lint` with `always
 - Interactive shell mode.
 - Repo aliases / "previous repo" sugar.
 - `--watch` on individual list/show commands (use `kata events --tail`).
-- `kata repos forget` (defer to v2; v1 prints unsupported).
+- `kata repos forget` (no command for it in v1; deferred to v2).
 
 **TUI:**
 - Command palette (`:` reserved unbound).
@@ -964,7 +1004,7 @@ Pre-commit via `prek` (matches roborev/middleman): runs `make lint` with `always
 - **Default idempotency window 7 days** — long enough to catch flake-retry duplicates; short enough that intentional re-creates aren't blocked.
 - **`--label` flag** is repeated only (`--label bug --label safari`); no CSV.
 - **`--json` create output** is the full issue projection. `--quiet` (without `--json`) prints just the number for scripting.
-- **Skill set v1**: `kata-using`, `kata-triage`, `kata-decompose`, `kata-land`. The fourth (`kata-land`) is a loose adaptation of beads's "landing the plane" idea, scoped narrowly to closing out kata work; if it doesn't earn its keep in early use, drop it.
+- **Skill set v1**: `kata-using`, `kata-triage`, `kata-decompose`. A fourth "land/finish" skill was considered and dropped as imported process; add it later only if real usage shows it earns a skill.
 
 ---
 
