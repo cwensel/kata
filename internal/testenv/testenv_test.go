@@ -1,7 +1,6 @@
 package testenv_test
 
 import (
-	"context"
 	"io"
 	"testing"
 
@@ -15,8 +14,8 @@ func TestEnv_BootsDaemonAndAnswersPing(t *testing.T) {
 	resp, err := env.HTTP.Get(env.URL + "/api/v1/ping")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
-	bs, _ := io.ReadAll(resp.Body)
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 	assert.Contains(t, string(bs), `"ok":true`)
-	_ = context.Background
 }

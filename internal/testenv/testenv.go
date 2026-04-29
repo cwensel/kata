@@ -48,21 +48,38 @@ func New(t *testing.T) *Env {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = srv.Run(ctx) }()
-	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = srv.Run(ctx)
+	}()
+	// Cleanup must wait for Run to return (Shutdown drained) before the DB is
+	// closed, otherwise in-flight handlers can race against d.Close. t.Cleanup
+	// is LIFO, so this fires before the d.Close cleanup registered above.
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
-	// Wait briefly for /ping to answer.
+	// Wait for /ping to answer; if the daemon never becomes ready, fail loudly
+	// at New rather than letting the test report a confusing connection-refused
+	// on its first real request.
 	url := "http://" + addr
 	deadline := time.Now().Add(2 * time.Second)
 	client := &http.Client{Timeout: 2 * time.Second}
+	var lastErr error
+	ready := false
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(url + "/api/v1/ping") //nolint:noctx // polling loop; context would add noise without benefit
 		if err == nil {
 			_ = resp.Body.Close()
+			ready = true
 			break
 		}
+		lastErr = err
 		time.Sleep(20 * time.Millisecond)
 	}
+	require.Truef(t, ready, "daemon did not become ready within 2s: %v", lastErr)
 
 	return &Env{URL: url, HTTP: client, DB: d, Home: home}
 }
