@@ -90,7 +90,7 @@ A future `OpenReadOnly` (no migrations, no PRAGMA mutation, schema-version check
 - Persisted in the `events` table (which is also the audit trail).
 - Daemon broadcasts only **after DB commit**, with the row's `event_id` as the SSE `id:` field.
 - **Purge reserves a synthetic SSE cursor** strictly greater than the current max `events.id`. Concretely: in the same transaction that purges an issue, if any events were deleted, the daemon advances `sqlite_sequence.seq` for `events` by one (without inserting a row) and stores that reserved value as `purge_log.purge_reset_after_event_id`. Future real `events.id` values continue from `reserved + 1`, so the synthetic cursor is unique and unattainable by any real event.
-- On reconnect with `Last-Event-ID` (or `?after_id=N`; both → 400), daemon computes `MAX(purge_reset_after_event_id) FROM purge_log WHERE purge_reset_after_event_id > <cursor>`. If the result is non-null, the client's cursor is invalidated. Because every reserved cursor exceeds every event id that existed at the corresponding purge time, even a client at max-at-purge will be reset (strict `>` is correct against a strictly-greater reserved value; no off-by-one miss, no need for `>=`).
+- On reconnect with `Last-Event-ID` (or `?after_id=N`; both → 400), daemon computes `MAX(purge_reset_after_event_id) FROM purge_log WHERE purge_reset_after_event_id > <cursor>`. The per-repo stream (`?repo_id=N`) adds `AND repo_id = ?` so a purge in some other repo can't invalidate this client's cursor; the cross-repo stream omits the predicate. If the result is non-null, the client's cursor is invalidated. Because every reserved cursor exceeds every event id that existed at the corresponding purge time, even a client at max-at-purge will be reset (strict `>` is correct against a strictly-greater reserved value; no off-by-one miss, no need for `>=`).
 - If invalidated, daemon sends a single `sync.reset_required` synthetic event with `id:` = the **MAX** of all matching `purge_reset_after_event_id`s, then closes the stream. Using the max ensures one reset moves the client past every accumulated purge gap; the client adopts that id as its new cursor and refetches state.
 
 ### 2.7 Hooks (preview, full design §7)
@@ -247,8 +247,9 @@ CREATE INDEX idx_events_idempotency
 
 CREATE TABLE purge_log (
   id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id                     INTEGER NOT NULL,   -- snapshot; no FK so purge audit survives any future repo cleanup
   purged_issue_id             INTEGER NOT NULL,   -- the deleted issues.id; no FK (the row is gone)
-  repo_identity               TEXT NOT NULL,
+  repo_identity               TEXT NOT NULL,      -- snapshot of repos.identity at purge time
   issue_number                INTEGER NOT NULL,
   issue_title                 TEXT NOT NULL,
   issue_author                TEXT NOT NULL,
@@ -266,6 +267,8 @@ CREATE TABLE purge_log (
 );
 CREATE INDEX idx_purge_log_reset
   ON purge_log(purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
+CREATE INDEX idx_purge_log_repo_reset
+  ON purge_log(repo_id, purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
 CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
 CREATE INDEX idx_purge_log_lookup ON purge_log(repo_identity, issue_number);
 
@@ -316,11 +319,11 @@ The `issue.created` event payload includes initial `labels`, `links`, `owner`, `
 3. `kata delete <id> --force` — interactive prompt requires typing the issue number; sets `deleted_at`. Event `issue.soft_deleted`.
 4. `kata restore <id>` — clears `deleted_at`. Event `issue.restored`.
 5. `kata purge <id> --force` — interactive prompt requires typing exactly `PURGE #N`. In one TX:
-   1. Capture `purged_issue_id` (the `issues.id` rowid) and counts of dependent rows.
+   1. Capture `repo_id`, `repo_identity`, `purged_issue_id` (the `issues.id` rowid), `issue_number`, `issue_title`, `issue_author`, and counts of dependent rows.
    2. **Capture** `events_deleted_min_id` / `events_deleted_max_id` from `SELECT MIN(id), MAX(id) FROM events WHERE issue_id = N OR related_issue_id = N` *before* deleting anything. Both are NULL if the issue has no events.
    3. Cascade-delete `events WHERE issue_id = N OR related_issue_id = N`, `comments`, `links`, `issue_labels`.
    4. If any events were deleted in step 3: bump `sqlite_sequence.seq` for `events` by one (`UPDATE sqlite_sequence SET seq = seq + 1 WHERE name = 'events'`) and capture the new value as `purge_reset_after_event_id`.
-   5. Insert `purge_log` row with `purged_issue_id`, the captured counts, `events_deleted_min_id`/`events_deleted_max_id` from step 2, and `purge_reset_after_event_id` from step 4 (NULL if no events deleted).
+   5. Insert `purge_log` row with `repo_id`, `purged_issue_id`, `repo_identity`, the captured fields and counts, `events_deleted_min_id`/`events_deleted_max_id` from step 2, and `purge_reset_after_event_id` from step 4 (NULL if no events deleted).
    6. Delete the `issues` row.
    7. After commit, the daemon broadcasts a `sync.reset_required` event over SSE with `id:` = `purge_reset_after_event_id` if that value is non-null. Live subscribers (with cursors below the reserved value) drop cache, refetch, and adopt the reserved id as their new cursor.
 
@@ -477,7 +480,7 @@ data: {"event_id":81235,"type":"issue.commented","repo_id":3,"repo_identity":"gi
 - `event:` field = `events.type` (e.g. `issue.commented`) or `sync.reset_required`. Same fully qualified strings used in `events.type` and hook matchers.
 - `data:` is single-line JSON.
 - Daemon broadcasts after DB commit; in-memory broadcaster fans out.
-- On reconnect: compute `MAX(purge_reset_after_event_id) FROM purge_log WHERE purge_reset_after_event_id > <cursor>`. If non-null → send single `sync.reset_required` (with `id:` = that max value, `data.new_baseline` = same), close stream. Otherwise: replay `events WHERE id > ?` ordered by id (bounded ~10k rows; continue streaming live afterward).
+- On reconnect: compute `MAX(purge_reset_after_event_id) FROM purge_log WHERE purge_reset_after_event_id > <cursor>` (with `AND repo_id = ?` for `?repo_id=N` streams). If non-null → send single `sync.reset_required` (with `id:` = that max value, `data.new_baseline` = same), close stream. Otherwise: replay `events WHERE id > ?` ordered by id (bounded ~10k rows; continue streaming live afterward).
 - Heartbeats: `: keepalive\n\n` every 25s.
 
 `sync.reset_required` event IDs are reserved synthetic cursors. They are produced by bumping `sqlite_sequence.seq` for `events` (without inserting a row) at purge time, so the value is strictly greater than every real `events.id` that existed at the moment of purge, and no real event will ever be assigned that id (the next real insert continues from `reserved + 1`).
@@ -505,7 +508,7 @@ Scoring server-side; same numbers everywhere (CLI, TUI).
 
 For each request:
 
-1. Compute `reset_to = MAX(purge_reset_after_event_id) FROM purge_log WHERE purge_reset_after_event_id > <after_id>` (scoped by `repo_id` for the per-repo endpoint; cross-repo for the global one).
+1. Compute `reset_to = MAX(purge_reset_after_event_id) FROM purge_log WHERE purge_reset_after_event_id > <after_id>`. The per-repo endpoint adds `AND repo_id = ?` (using the snapshotted `purge_log.repo_id`); the cross-repo endpoint omits the predicate.
 2. **If `reset_to` is non-null** the cursor is invalidated. Return HTTP 200 with body:
    ```json
    {
