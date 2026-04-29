@@ -27,37 +27,53 @@ type AliasInfo struct {
 
 // DiscoverPaths walks upward from startPath looking for .kata.toml (W) and
 // .git (G). Both lookups are independent and inclusive of startPath itself.
-// A missing path returns ("", nil); resolution errors are returned.
+// startPath must point at an existing file or directory; a missing start path
+// is reported as a resolution error so a typo like `--workspace /no/such/dir`
+// fails loud instead of silently resolving an unrelated ancestor.
+// Errors from os.Stat that aren't "not exist" (permission denied, etc.) on
+// ancestor lookups also propagate.
 func DiscoverPaths(startPath string) (DiscoveredPaths, error) {
 	abs, err := filepath.Abs(startPath)
 	if err != nil {
 		return DiscoveredPaths{}, fmt.Errorf("abs %s: %w", startPath, err)
 	}
+	if _, err := os.Stat(abs); err != nil {
+		return DiscoveredPaths{}, fmt.Errorf("stat %s: %w", abs, err)
+	}
 	d := DiscoveredPaths{}
-	d.WorkspaceRoot = walkUp(abs, ProjectConfigFilename, false)
-	d.GitRoot = walkUp(abs, ".git", true)
+	if d.WorkspaceRoot, err = walkUp(abs, ProjectConfigFilename, false); err != nil {
+		return DiscoveredPaths{}, fmt.Errorf("discover %s: %w", ProjectConfigFilename, err)
+	}
+	if d.GitRoot, err = walkUp(abs, ".git", true); err != nil {
+		return DiscoveredPaths{}, fmt.Errorf("discover .git: %w", err)
+	}
 	return d, nil
 }
 
 // walkUp returns the first ancestor (inclusive) containing the named entry,
 // or "" if none. allowDir lets the entry be either a file or directory.
-func walkUp(start, entry string, allowDir bool) string {
+// os.IsNotExist failures are normal during traversal; other errors surface so
+// callers see e.g. permission-denied instead of treating it as "not found".
+func walkUp(start, entry string, allowDir bool) (string, error) {
 	dir := start
 	for {
 		path := filepath.Join(dir, entry)
 		info, err := os.Stat(path)
-		if err == nil {
+		switch {
+		case err == nil:
 			if info.IsDir() {
 				if allowDir {
-					return dir
+					return dir, nil
 				}
 			} else {
-				return dir
+				return dir, nil
 			}
+		case !os.IsNotExist(err):
+			return "", fmt.Errorf("stat %s: %w", path, err)
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return ""
+			return "", nil
 		}
 		dir = parent
 	}

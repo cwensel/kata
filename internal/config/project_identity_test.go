@@ -50,6 +50,13 @@ func TestDiscoverPaths_NeitherFound(t *testing.T) {
 	assert.Empty(t, d.GitRoot)
 }
 
+func TestDiscoverPaths_StartPathMissingErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist", "deeper")
+	_, err := config.DiscoverPaths(missing)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stat")
+}
+
 func TestNormalizeRemoteURL(t *testing.T) {
 	cases := []struct {
 		in, want string

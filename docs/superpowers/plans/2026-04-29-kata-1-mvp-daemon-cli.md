@@ -1649,21 +1649,23 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		// SQLite via database/sql already started a tx; ignore "cannot start a transaction within a transaction".
-	}
-
+	// Atomic number allocation: bump next_issue_number first and capture the
+	// pre-bump value via RETURNING. Concurrent CreateIssue calls serialize on
+	// this UPDATE, so each one gets a distinct number.
 	var (
 		identity string
 		nextNum  int64
 	)
 	if err := tx.QueryRowContext(ctx,
-		`SELECT identity, next_issue_number FROM projects WHERE id = ?`, p.ProjectID).
-		Scan(&identity, &nextNum); err != nil {
+		`UPDATE projects
+		 SET next_issue_number = next_issue_number + 1
+		 WHERE id = ?
+		 RETURNING next_issue_number - 1, identity`, p.ProjectID).
+		Scan(&nextNum, &identity); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, Event{}, ErrNotFound
 		}
-		return Issue{}, Event{}, fmt.Errorf("read project: %w", err)
+		return Issue{}, Event{}, fmt.Errorf("allocate issue number: %w", err)
 	}
 
 	res, err := tx.ExecContext(ctx,
@@ -1676,12 +1678,6 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	issueID, err := res.LastInsertId()
 	if err != nil {
 		return Issue{}, Event{}, err
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE projects SET next_issue_number = next_issue_number + 1 WHERE id = ?`,
-		p.ProjectID); err != nil {
-		return Issue{}, Event{}, fmt.Errorf("bump next_issue_number: %w", err)
 	}
 
 	evt, err := insertEventTx(ctx, tx, eventInsert{
@@ -1994,12 +1990,19 @@ func joinComma(parts []string) string {
 }
 
 // lookupIssueForEvent fetches the issue + its project's identity for event
-// snapshotting. Used inside transactions.
+// snapshotting. Used inside transactions. The query is written standalone
+// rather than concatenating issueSelect so the FROM/JOIN clause appears once.
 func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue, string, error) {
+	const q = `
+		SELECT i.id, i.project_id, i.number, i.title, i.body, i.status,
+		       i.closed_reason, i.owner, i.author, i.created_at, i.updated_at,
+		       i.closed_at, i.deleted_at, p.identity
+		FROM issues i
+		JOIN projects p ON p.id = i.project_id
+		WHERE i.id = ?`
 	var i Issue
 	var identity string
-	err := tx.QueryRowContext(ctx,
-		issueSelect+`, p.identity FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?`, issueID).
+	err := tx.QueryRowContext(ctx, q, issueID).
 		Scan(&i.ID, &i.ProjectID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &identity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, "", ErrNotFound
@@ -2059,7 +2062,7 @@ func insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Event, erro
 }
 ```
 
-Note: the `BEGIN IMMEDIATE` exec inside `CreateIssue` is best-effort upgrading; database/sql already starts a transaction on `BeginTx`. The simplest correct path here is just to use the implicit transaction — delete the `BEGIN IMMEDIATE` exec line if it errors during testing.
+Note: `CreateIssue` allocates the issue number atomically via `UPDATE projects ... RETURNING next_issue_number - 1, identity`. Concurrent calls serialize on that UPDATE so each one gets a unique number even though `BeginTx` starts a deferred transaction. There is no separate "bump" UPDATE — the allocation and bump happen in one statement.
 
 - [ ] **Step 4: Run test (expect pass)**
 
@@ -3239,9 +3242,9 @@ func withCSRFGuards(next http.Handler) http.Handler {
 			http.Error(w, "Origin header forbidden", http.StatusForbidden)
 			return
 		}
-		if isMutation(r.Method) {
+		if isMutation(r.Method) && r.ContentLength != 0 {
 			ct := r.Header.Get("Content-Type")
-			if !strings.HasPrefix(ct, "application/json") && ct != "" {
+			if !strings.HasPrefix(ct, "application/json") {
 				http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 				return
 			}
@@ -3812,7 +3815,16 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 		return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 
-	tomlCfg, _ := config.ReadProjectConfig(disc.WorkspaceRoot)
+	// Only read .kata.toml when a workspace root was actually discovered;
+	// passing "" to ReadProjectConfig would resolve to the daemon's cwd.
+	var tomlCfg *config.ProjectConfig
+	if disc.WorkspaceRoot != "" {
+		cfg, err := config.ReadProjectConfig(disc.WorkspaceRoot)
+		if err != nil && !errors.Is(err, config.ErrProjectConfigMissing) {
+			return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+		}
+		tomlCfg = cfg
+	}
 
 	// Decide identity + name.
 	var identity, name string
@@ -3851,6 +3863,13 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 
 	if err := config.ValidateIdentity(identity); err != nil {
 		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+
+	// When --project was supplied outside any git/workspace ancestor, synthesize
+	// a local-alias rooted at the start path so upsertAliasFor has something to
+	// attach. This is the explicit escape hatch documented in spec §2.4.
+	if disc.GitRoot == "" && disc.WorkspaceRoot == "" {
+		disc.WorkspaceRoot = abs
 	}
 
 	project, created, err := upsertProject(ctx, store, identity, name)
@@ -5991,7 +6010,13 @@ func newListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			url := fmt.Sprintf("%s/api/v1/projects/%d/issues?status=%s&limit=%d", baseURL, pid, status, limit)
+			// "all" is a CLI-only sentinel meaning "no filter"; the server
+			// expects an empty status to return both open and closed.
+			apiStatus := status
+			if apiStatus == "all" {
+				apiStatus = ""
+			}
+			url := fmt.Sprintf("%s/api/v1/projects/%d/issues?status=%s&limit=%d", baseURL, pid, apiStatus, limit)
 			status2, bs, err := httpDoJSON(ctx, client, http.MethodGet, url, nil)
 			if err != nil {
 				return err

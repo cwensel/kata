@@ -104,8 +104,8 @@ Given a start path:
 1. **`.kata.toml` wins.** If `W` exists and `<W>/.kata.toml` declares a valid `[project]` block:
    - Look up `projects WHERE identity = <toml.project.identity>`. If no row exists, fail with `project_not_initialized` (hint: run `kata init` in this workspace).
    - Compute the alias from `G` (or `W` per case 3 above). If the alias is unattached, attach it to this project. If attached to a *different* project, fail with `project_alias_conflict` (hint: `kata init --reassign`). `.kata.toml` does not silently override an existing alias mapping.
-   - Update `project_aliases.last_seen_at` and `last_seen_path`.
-2. **Else, alias lookup.** If `G` exists, compute `alias_identity` and look up `project_aliases`. On match, resolve to that project; update `last_seen_at`/`last_seen_path`.
+   - Update `project_aliases.last_seen_at` and `root_path`.
+2. **Else, alias lookup.** If `G` exists, compute `alias_identity` and look up `project_aliases`. On match, resolve to that project; update `last_seen_at`/`root_path`.
 3. **Else, fail.** Return `project_not_initialized` with hint `run "kata init" in this workspace`.
 
 Outside any git repo and without `.kata.toml`, every command except `kata init --project <X>` fails. kata never silently namespaces issues to "a random cwd."
@@ -1132,7 +1132,7 @@ internal/
   testutil/testutil.go   # git temp repos, fixtures
 ```
 
-**Project resolution lives in `internal/config/`**: `project_identity.go` derives alias identities (the deterministic alias_identity for a workspace path), `project_config.go` parses `.kata.toml`. The daemon's `handlers_projects.go` composes them with DB lookup. CLI does not own resolution; it sends `root_path`.
+**Project resolution lives in `internal/config/`**: `project_identity.go` derives alias identities (the deterministic alias_identity for a workspace path), `project_config.go` parses `.kata.toml`. The daemon's `handlers_projects.go` composes them with DB lookup. CLI does not own resolution; it sends `start_path` and the daemon walks upward for `.kata.toml` and `.git`.
 
 ### 9.3 Build, test, lint
 
