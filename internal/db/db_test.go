@@ -1,0 +1,65 @@
+package db_test
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/db"
+)
+
+func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kata.db")
+	d, err := db.Open(context.Background(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	var fk int
+	require.NoError(t, d.QueryRow("PRAGMA foreign_keys").Scan(&fk))
+	assert.Equal(t, 1, fk)
+
+	var mode string
+	require.NoError(t, d.QueryRow("PRAGMA journal_mode").Scan(&mode))
+	assert.Equal(t, "wal", mode)
+
+	var version string
+	require.NoError(t, d.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
+	assert.Equal(t, "1", version)
+}
+
+func TestOpen_IsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kata.db")
+	d1, err := db.Open(context.Background(), path)
+	require.NoError(t, err)
+	require.NoError(t, d1.Close())
+
+	d2, err := db.Open(context.Background(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d2.Close() })
+
+	var version string
+	require.NoError(t, d2.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
+	assert.Equal(t, "1", version)
+}
+
+func TestOpen_TimestampColumnsScanIntoTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kata.db")
+	d, err := db.Open(context.Background(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	_, err = d.Exec(`INSERT INTO projects(identity, name) VALUES('x','x')`)
+	require.NoError(t, err)
+
+	rows, err := d.Query(`SELECT created_at FROM projects`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	require.True(t, rows.Next())
+	var ts interface{}
+	require.NoError(t, rows.Scan(&ts))
+	// modernc.org/sqlite returns time.Time for DATETIME columns
+	_, ok := ts.(interface{ Year() int })
+	assert.True(t, ok, "expected time.Time, got %T", ts)
+}

@@ -1,0 +1,167 @@
+CREATE TABLE projects (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  identity          TEXT UNIQUE NOT NULL,
+  name              TEXT NOT NULL,
+  created_at        DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  next_issue_number INTEGER NOT NULL DEFAULT 1,
+  CHECK (length(trim(identity)) > 0),
+  CHECK (length(trim(name)) > 0)
+);
+
+CREATE TABLE project_aliases (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id      INTEGER NOT NULL REFERENCES projects(id),
+  alias_identity  TEXT UNIQUE NOT NULL,    -- normalized git remote, or 'local://<abs path>'
+  alias_kind      TEXT NOT NULL CHECK(alias_kind IN ('git','local')),
+  root_path       TEXT NOT NULL,           -- last seen absolute workspace root for this alias
+  created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  last_seen_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  CHECK (length(trim(alias_identity)) > 0),
+  CHECK (length(trim(root_path)) > 0)
+);
+CREATE INDEX idx_project_aliases_project ON project_aliases(project_id);
+
+CREATE TABLE issues (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id    INTEGER NOT NULL REFERENCES projects(id),
+  number        INTEGER NOT NULL,
+  title         TEXT NOT NULL,
+  body          TEXT NOT NULL DEFAULT '',
+  status        TEXT NOT NULL CHECK(status IN ('open','closed')) DEFAULT 'open',
+  closed_reason TEXT CHECK(closed_reason IN ('done','wontfix','duplicate')),
+  owner         TEXT,
+  author        TEXT NOT NULL,
+  created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  closed_at     DATETIME,
+  deleted_at    DATETIME,
+  UNIQUE(project_id, number),
+  CHECK (length(trim(title))  > 0),
+  CHECK (length(trim(author)) > 0),
+  CHECK (status = 'closed' OR (closed_at IS NULL AND closed_reason IS NULL))
+);
+CREATE INDEX idx_issues_project_status_updated
+  ON issues(project_id, status, updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_issues_project_updated
+  ON issues(project_id, updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_issues_owner
+  ON issues(owner) WHERE owner IS NOT NULL AND deleted_at IS NULL;
+
+CREATE TABLE comments (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id   INTEGER NOT NULL REFERENCES issues(id),
+  author     TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  CHECK (length(trim(author)) > 0),
+  CHECK (length(trim(body))   > 0)
+);
+CREATE INDEX idx_comments_issue ON comments(issue_id, created_at);
+
+CREATE TABLE links (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id    INTEGER NOT NULL REFERENCES projects(id),
+  from_issue_id INTEGER NOT NULL REFERENCES issues(id),
+  to_issue_id   INTEGER NOT NULL REFERENCES issues(id),
+  type          TEXT NOT NULL CHECK(type IN ('parent','blocks','related')),
+  author        TEXT NOT NULL,
+  created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(from_issue_id, to_issue_id, type),
+  CHECK (from_issue_id <> to_issue_id),
+  CHECK (length(trim(author)) > 0),
+  CHECK (type <> 'related' OR from_issue_id < to_issue_id)
+);
+CREATE UNIQUE INDEX uniq_one_parent_per_child
+  ON links(from_issue_id) WHERE type = 'parent';
+CREATE INDEX idx_links_from    ON links(from_issue_id, type);
+CREATE INDEX idx_links_to      ON links(to_issue_id, type);
+CREATE INDEX idx_links_project ON links(project_id);
+
+-- Enforce same-project: both endpoints must belong to links.project_id.
+CREATE TRIGGER trg_links_same_project_insert
+BEFORE INSERT ON links
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'cross-project links are not allowed')
+  WHERE (SELECT project_id FROM issues WHERE id = NEW.from_issue_id) <> NEW.project_id
+     OR (SELECT project_id FROM issues WHERE id = NEW.to_issue_id)   <> NEW.project_id;
+END;
+CREATE TRIGGER trg_links_same_project_update
+BEFORE UPDATE ON links
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'cross-project links are not allowed')
+  WHERE (SELECT project_id FROM issues WHERE id = NEW.from_issue_id) <> NEW.project_id
+     OR (SELECT project_id FROM issues WHERE id = NEW.to_issue_id)   <> NEW.project_id;
+END;
+
+CREATE TABLE issue_labels (
+  issue_id   INTEGER NOT NULL REFERENCES issues(id),
+  label      TEXT NOT NULL,
+  author     TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY(issue_id, label),
+  CHECK (length(label) BETWEEN 1 AND 64),
+  CHECK (label NOT GLOB '*[^a-z0-9._:-]*'),
+  CHECK (length(trim(author)) > 0)
+);
+CREATE INDEX idx_issue_labels_label ON issue_labels(label);
+
+CREATE TABLE events (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id       INTEGER NOT NULL REFERENCES projects(id),
+  project_identity TEXT NOT NULL,
+  issue_id         INTEGER REFERENCES issues(id),
+  issue_number     INTEGER,
+  related_issue_id INTEGER REFERENCES issues(id),
+  type             TEXT NOT NULL,
+  actor            TEXT NOT NULL,
+  payload          TEXT NOT NULL DEFAULT '{}',
+  created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  CHECK (length(trim(actor)) > 0),
+  CHECK (json_valid(payload))
+);
+CREATE INDEX idx_events_project ON events(project_id, id);
+CREATE INDEX idx_events_issue   ON events(issue_id, id) WHERE issue_id IS NOT NULL;
+CREATE INDEX idx_events_related ON events(related_issue_id, id) WHERE related_issue_id IS NOT NULL;
+CREATE INDEX idx_events_idempotency
+  ON events(project_id, json_extract(payload, '$.idempotency_key'), created_at)
+  WHERE type = 'issue.created' AND json_extract(payload, '$.idempotency_key') IS NOT NULL;
+
+CREATE TABLE purge_log (
+  id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id                  INTEGER NOT NULL,   -- snapshot; no FK so audit survives any future project cleanup
+  purged_issue_id             INTEGER NOT NULL,   -- the deleted issues.id; no FK (the row is gone)
+  project_identity            TEXT NOT NULL,      -- snapshot of projects.identity at purge time
+  issue_number                INTEGER NOT NULL,
+  issue_title                 TEXT NOT NULL,
+  issue_author                TEXT NOT NULL,
+  comment_count               INTEGER NOT NULL,
+  link_count                  INTEGER NOT NULL,
+  label_count                 INTEGER NOT NULL,
+  event_count                 INTEGER NOT NULL,
+  events_deleted_min_id       INTEGER,            -- audit (min events.id deleted; NULL if none)
+  events_deleted_max_id       INTEGER,            -- audit (max events.id deleted; NULL if none)
+  purge_reset_after_event_id  INTEGER,            -- SSE reset cursor; subscribers with cursor < this must reset
+  actor                       TEXT NOT NULL,
+  reason                      TEXT,
+  purged_at                   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  CHECK (length(trim(actor)) > 0)
+);
+CREATE INDEX idx_purge_log_reset
+  ON purge_log(purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
+CREATE INDEX idx_purge_log_project_reset
+  ON purge_log(project_id, purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
+CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
+CREATE INDEX idx_purge_log_lookup ON purge_log(project_identity, issue_number);
+
+CREATE TABLE meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+INSERT INTO meta(key, value) VALUES ('created_by_version', '0.1.0');
+
+-- FTS5 virtual table over issue title+body+comments, kept in sync via triggers in Plan 3.
+CREATE VIRTUAL TABLE issues_fts USING fts5(
+  title, body, comments,
+  content='', tokenize='unicode61 remove_diacritics 2'
+);
