@@ -134,7 +134,7 @@ coverage.out
 Create `/Users/wesm/code/vibekata/Makefile`:
 
 ```make
-.PHONY: build install test test-short lint vet clean fmt
+.PHONY: build install test test-short lint lint-ci vet clean fmt
 
 GOFLAGS_TEST := -shuffle=on
 
