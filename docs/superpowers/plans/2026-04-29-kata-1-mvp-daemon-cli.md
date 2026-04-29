@@ -1,258 +1,46 @@
-# kata Plan 1: MVP daemon + minimal CLI
+# Plan 1 — MVP Daemon + Minimal CLI Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up a kata daemon and CLI capable of creating, viewing, listing, commenting on, closing, and reopening issues for one repo, end-to-end. No links, labels, ownership, FTS, SSE, hooks, soft-delete, or skills yet — those land in subsequent plans.
+**Goal:** Build the bottom half of kata: a single-binary daemon (Unix socket / TCP loopback) with SQLite persistence, project resolution via `.kata.toml`, and a minimal CLI exercising init / create / show / list / edit / comment / close / reopen / whoami / health / projects.
 
-**Architecture:** Single Go binary (`cmd/kata`). Long-lived daemon listens on a Unix socket (default) or TCP loopback (Windows fallback), serves a Huma v2 HTTP API, and owns the only writer connection to a SQLite database (WAL, FK ON, pure-Go via `modernc.org/sqlite`). The CLI talks to the daemon over HTTP/JSON, auto-starts it on first use, and discovers it via per-PID runtime files namespaced by a hash of the effective DB path.
+**Architecture:** Cobra CLI auto-starts a Huma-on-net/http daemon over a per-PID Unix socket (TCP loopback fallback). Daemon owns path discovery (walks up for `.kata.toml`/`.git`), alias-identity computation, and all DB writes against `modernc.org/sqlite` in WAL mode. `.kata.toml` is the workspace binding contract; `kata init` is the only path that creates project rows.
 
-**Tech Stack:** Go 1.26, Huma v2 (`github.com/danielgtaylor/huma/v2`), Cobra (`github.com/spf13/cobra`), `modernc.org/sqlite`, `testify`, `BurntSushi/toml`. No CGO. golangci-lint. Pre-commit via `prek`.
+**Tech Stack:** Go 1.26 · `modernc.org/sqlite` v1.49.1 · `huma/v2` v2.37.3 · `cobra` v1.10.2 · `BurntSushi/toml` v1.6.0 · `mattn/go-isatty` v0.0.21 · `testify` v1.11.1.
 
----
+**Reference spec:** `docs/superpowers/specs/2026-04-29-kata-design.md` (commits `f52df47` + `df6b28a`). Plan 1 covers §2.1–2.5, §3.1–3.2 (issues/comments/projects/aliases/events/meta only — links/labels/purge_log/issues_fts schema is laid down in 0001_init.sql but not exercised), §4 (subset: ping, health, projects, projects/resolve, issues, comments, actions/close, actions/reopen), §6.1–6.4 (init/create/show/list/edit/close/reopen/comment/whoami/health/projects), §9.
 
-## Spec reference
+**Bootstrap state:** Module + tooling already committed (`0a8f83b` Bootstrap, `40e4955` Makefile lint-ci fix). `go.mod` declares all deps as `// indirect`; the first `go build` after each new import will promote them. When a task introduces a new dep, run `go get <pkg>@<version>` *before* writing the file that imports it so `go mod tidy` doesn't strip an unused indirect.
 
-This plan implements the Plan 1 scope from `docs/superpowers/specs/2026-04-29-kata-design.md`. Sections referenced inline as `spec:§N`.
+**Out of scope for Plan 1:** relationships (parent/blocks/related), labels, owners, search, idempotency, soft-delete/purge, SSE, polling, hooks, TUI, skills, doctor, agent-instructions. The schema is laid down in 0001_init.sql verbatim from spec §3.2 to avoid migration churn, but no code paths exercise the unused tables in this plan.
 
-## File structure
+**Conventions for every task:**
 
-```
-.gitignore
-.golangci.yml
-Makefile
-go.mod
-go.sum
-README.md
-prek.toml
-
-cmd/kata/
-  main.go                 # Cobra root, persistent flags, command registration
-  helpers.go              # body-source reader, JSON output, exit codes, repo discovery, daemon autostart
-  daemon_cmd.go           # `kata daemon {start,stop,status}`
-  init.go                 # `kata init`
-  create.go               # `kata create`
-  show.go                 # `kata show`
-  list.go                 # `kata list`
-  comment.go              # `kata comment`
-  close.go                # `kata close`
-  reopen.go               # `kata reopen`
-  whoami.go               # `kata whoami`
-  health.go               # `kata health`
-
-internal/
-  api/
-    types.go              # Request/response DTOs
-    errors.go             # Error envelope + Huma error hook
-    routes.go             # Huma route registration (wires handlers in)
-  config/
-    paths.go              # KATA_DATA_DIR, KATA_DB resolution; dbhash; runtime dir
-    repo_identity.go      # ResolveRepoIdentity, .kata-id, credential strip; cwd repo discovery
-  daemon/
-    endpoint.go           # DaemonEndpoint (Unix vs TCP loopback)
-    runtime.go            # daemon.<pid>.json: write, read, list, cleanup
-    server.go             # http.Server lifecycle, signal handling
-    health.go             # /api/v1/ping, /api/v1/health
-    handlers_repos.go     # POST /repos
-    handlers_issues.go    # POST + GET + GET-list issues
-    handlers_actions.go   # close, reopen
-    handlers_comments.go  # POST comment
-  db/
-    db.go                 # Open with PRAGMAs, embed + apply migrations
-    migrations/
-      0001_init.sql       # Full baseline schema (spec §3.2)
-    types.go              # Repo, Issue, Comment, Event, Link, IssueLabel, PurgeLog
-    queries.go            # CRUD helpers for Plan 1 surface
-  testenv/
-    testenv.go            # Temp data dir + fresh in-process daemon
-  testutil/
-    testutil.go           # Temp git repos, env-var scoping helpers
-```
-
-The full baseline schema (`0001_init.sql`) ships in Plan 1 even though Plan 1 does not use `links`, `issue_labels`, `purge_log`, or `issues_fts` directly — this avoids migration churn between plans.
+- TDD: write the failing test first, run it to confirm it fails, implement, run to confirm pass, commit.
+- Use `testify/require` for setup/preconditions and `testify/assert` for non-blocking checks; never `t.Fatal`/`t.Error` directly.
+- Table-driven tests where multiple cases exist.
+- `t.TempDir()` for any filesystem state. Never write to `~/.kata` from tests.
+- Tests run with `-shuffle=on` (already set in `Makefile`); never pass `-count=1`; never pass `-v` unless asked.
+- Commit messages: conventional (`feat:`, `fix:`, `chore:`, `test:`); subject ≤72 chars; one logical change per commit. Co-author trailer is not required for plan commits.
+- Pre-commit hook (`prek`) will run `make lint`. Run `make lint` locally before committing if you've touched Go files.
+- Never amend commits; always create new ones for fixes.
+- Tests must hit `make test`. Don't run `go test -v` or `-count=1`.
 
 ---
 
-## Task 1: Project bootstrap
+### Task 1: `internal/config/paths.go` — `KATA_HOME`, `KATA_DB`, dbhash, runtime dir resolution
 
-**Files:**
-- Create: `go.mod`, `Makefile`, `.gitignore`, `.golangci.yml`, `README.md`, `prek.toml`
-
-- [ ] **Step 1: Initialize Go module**
-
-Run:
-```
-cd /Users/wesm/code/vibekata
-go mod init github.com/wesm/kata
-```
-
-Expected: creates `go.mod` with `module github.com/wesm/kata` and `go 1.26.0` (or current local toolchain ≥ 1.26).
-
-- [ ] **Step 2: Add baseline dependencies**
-
-Run:
-```
-go get github.com/danielgtaylor/huma/v2@v2.37.3
-go get github.com/spf13/cobra@v1.10.2
-go get github.com/stretchr/testify@v1.11.1
-go get github.com/BurntSushi/toml@v1.6.0
-go get modernc.org/sqlite@v1.49.1
-go get github.com/mattn/go-isatty@v0.0.21
-go mod tidy
-```
-
-Expected: `go.mod` lists those as direct deps; `go.sum` populated.
-
-- [ ] **Step 3: Write `.gitignore`**
-
-Create `/Users/wesm/code/vibekata/.gitignore`:
-
-```
-# Build artifacts
-/kata
-/kata.exe
-/dist/
-/result
-
-# Test outputs
-*.test
-*.out
-coverage.out
-
-# Local data dir for manual testing
-/.kata/
-
-# IDE/editor
-.vscode/
-.idea/
-*.swp
-*~
-.DS_Store
-```
-
-- [ ] **Step 4: Write `Makefile`**
-
-Create `/Users/wesm/code/vibekata/Makefile`:
-
-```make
-.PHONY: build install test test-short lint lint-ci vet clean fmt
-
-GOFLAGS_TEST := -shuffle=on
-
-build:
-	go build ./...
-
-install:
-	GOBIN=$${HOME}/.local/bin go install ./cmd/kata
-
-test:
-	go test $(GOFLAGS_TEST) ./...
-
-test-short:
-	go test -short $(GOFLAGS_TEST) ./...
-
-lint:
-	golangci-lint run --config .golangci.yml
-
-lint-ci:
-	golangci-lint run --config .golangci.yml --no-fix
-
-vet:
-	go vet ./...
-
-fmt:
-	gofmt -w .
-
-clean:
-	rm -f kata kata.exe coverage.out
-	rm -rf dist
-```
-
-- [ ] **Step 5: Write `.golangci.yml`**
-
-Create `/Users/wesm/code/vibekata/.golangci.yml`:
-
-```yaml
-version: "2"
-run:
-  timeout: 3m
-linters:
-  default: standard
-  enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    - misspell
-    - revive
-    - gosec
-formatters:
-  enable:
-    - gofmt
-    - goimports
-```
-
-- [ ] **Step 6: Write `prek.toml`**
-
-Create `/Users/wesm/code/vibekata/prek.toml`:
-
-```toml
-repos = [
-  { repo = "local", hooks = [
-    { id = "make-lint", name = "make lint", entry = "make lint", language = "system", pass_filenames = false, always_run = true },
-  ] },
-]
-```
-
-- [ ] **Step 7: Write minimal `README.md`**
-
-Create `/Users/wesm/code/vibekata/README.md`:
-
-```markdown
-# kata
-
-Lightweight local issue tracker for AI agents. Daemon + CLI + (later) TUI; SQLite-backed. See `docs/superpowers/specs/2026-04-29-kata-design.md` for the design.
-
-## Build
-
-    make build
-    make install   # to ~/.local/bin/kata
-
-## Test
-
-    make test
-```
-
-- [ ] **Step 8: Verify build is green and commit**
-
-Run:
-```
-go build ./...
-go vet ./...
-```
-Expected: silent success.
-
-```
-git add go.mod go.sum Makefile .gitignore .golangci.yml prek.toml README.md
-git commit -m "Bootstrap kata Go module and tooling"
-```
-
----
-
-## Task 2: `internal/config/paths.go`
+Spec refs: §2.3, §9.1. The CLI and daemon both call into this package; it owns env-var precedence and path derivation.
 
 **Files:**
 - Create: `internal/config/paths.go`
 - Test: `internal/config/paths_test.go`
 
-`paths.go` resolves data dir, DB path, and runtime dir. Pure functions, fully unit-testable.
-
-- [ ] **Step 1: Write the failing tests**
-
-Create `/Users/wesm/code/vibekata/internal/config/paths_test.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
-package config
+// internal/config/paths_test.go
+package config_test
 
 import (
 	"os"
@@ -262,74 +50,80 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/config"
 )
 
-func TestDataDir(t *testing.T) {
-	t.Setenv("KATA_DATA_DIR", "")
-	t.Setenv("HOME", "/home/example")
-	assert.Equal(t, "/home/example/.kata", DataDir())
-
-	t.Setenv("KATA_DATA_DIR", "/tmp/kata-x")
-	assert.Equal(t, "/tmp/kata-x", DataDir())
-}
-
-func TestDBPath(t *testing.T) {
-	t.Setenv("KATA_DB", "")
-	t.Setenv("KATA_DATA_DIR", "/tmp/kata-y")
-	assert.Equal(t, "/tmp/kata-y/kata.db", DBPath())
-
-	t.Setenv("KATA_DB", "/tmp/custom.db")
-	assert.Equal(t, "/tmp/custom.db", DBPath())
-}
-
-func TestDBHash(t *testing.T) {
-	a := DBHashFor("/tmp/a/kata.db")
-	b := DBHashFor("/tmp/b/kata.db")
-	require.Len(t, a, 12)
-	require.Len(t, b, 12)
-	assert.NotEqual(t, a, b)
-	assert.Equal(t, a, DBHashFor("/tmp/a/kata.db"))
-}
-
-func TestRuntimeDir(t *testing.T) {
-	t.Setenv("KATA_DATA_DIR", "/tmp/kata-rt")
-	t.Setenv("KATA_DB", "/tmp/kata-rt/kata.db")
-	dir := RuntimeDir()
-	assert.True(t, strings.HasPrefix(dir, "/tmp/kata-rt/runtime/"), dir)
-	assert.Equal(t, DBHashFor(DBPath()), filepath.Base(dir))
-}
-
-func TestEnsureDataDirs(t *testing.T) {
+func TestKataHome_PrefersEnvOverDefault(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("KATA_DATA_DIR", tmp)
+	t.Setenv("KATA_HOME", tmp)
+
+	got, err := config.KataHome()
+	require.NoError(t, err)
+	assert.Equal(t, tmp, got)
+}
+
+func TestKataHome_DefaultsToUserHomeDotKata(t *testing.T) {
+	t.Setenv("KATA_HOME", "")
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	got, err := config.KataHome()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".kata"), got)
+}
+
+func TestKataDB_PrefersEnvOverHomeJoin(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "custom.db"))
+
+	got, err := config.KataDB()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(tmp, "custom.db"), got)
+}
+
+func TestKataDB_DefaultsToHomeKataDB(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", "")
+
+	got, err := config.KataDB()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(tmp, "kata.db"), got)
+}
+
+func TestDBHash_StableTwelveLowerHex(t *testing.T) {
+	a := config.DBHash("/Users/foo/.kata/kata.db")
+	b := config.DBHash("/Users/foo/.kata/kata.db")
+	c := config.DBHash("/Users/foo/.kata/other.db")
+
+	assert.Len(t, a, 12)
+	assert.Equal(t, a, b)
+	assert.NotEqual(t, a, c)
+	assert.Equal(t, strings.ToLower(a), a)
+}
+
+func TestRuntimeDir_NamespaceIsDBHashUnderHome(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
 	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
 
-	require.NoError(t, EnsureDataDirs())
-
-	for _, sub := range []string{"runtime", "hooks"} {
-		info, err := os.Stat(filepath.Join(tmp, sub))
-		require.NoError(t, err)
-		assert.True(t, info.IsDir())
-	}
-
-	rt := RuntimeDir()
-	info, err := os.Stat(rt)
+	got, err := config.RuntimeDir()
 	require.NoError(t, err)
-	assert.True(t, info.IsDir())
+	hash := config.DBHash(filepath.Join(tmp, "kata.db"))
+	assert.Equal(t, filepath.Join(tmp, "runtime", hash), got)
 }
 ```
 
-- [ ] **Step 2: Run the tests to confirm they fail**
+- [ ] **Step 2: Run test (expect failure)**
 
-Run: `go test -shuffle=on ./internal/config/...`
-Expected: build error (`undefined: DataDir`, etc.).
+Run: `go test ./internal/config/...`
+Expected: FAIL — package doesn't exist yet.
 
 - [ ] **Step 3: Implement `paths.go`**
 
-Create `/Users/wesm/code/vibekata/internal/config/paths.go`:
-
 ```go
-// Package config resolves kata's filesystem paths and per-repo identity.
+// internal/config/paths.go
 package config
 
 import (
@@ -340,277 +134,449 @@ import (
 	"path/filepath"
 )
 
-// DataDir returns the effective data directory.
-// Precedence: $KATA_DATA_DIR, then $HOME/.kata.
-func DataDir() string {
-	if v := os.Getenv("KATA_DATA_DIR"); v != "" {
-		return v
+// KataHome returns the resolved data directory honoring $KATA_HOME, falling back
+// to $HOME/.kata. The directory is not created here; callers materialize it.
+func KataHome() (string, error) {
+	if v := os.Getenv("KATA_HOME"); v != "" {
+		return v, nil
 	}
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		// Fall back to the working directory rather than failing —
-		// CLI commands will surface the underlying error if writes fail.
-		return ".kata"
+	if err != nil {
+		return "", fmt.Errorf("resolve user home: %w", err)
 	}
-	return filepath.Join(home, ".kata")
+	return filepath.Join(home, ".kata"), nil
 }
 
-// DBPath returns the effective SQLite database path.
-// Precedence: $KATA_DB, then $KATA_DATA_DIR/kata.db.
-func DBPath() string {
+// KataDB returns the effective DB path honoring $KATA_DB, falling back to
+// <KataHome>/kata.db. Returned path is not validated for existence.
+func KataDB() (string, error) {
 	if v := os.Getenv("KATA_DB"); v != "" {
-		return v
+		return v, nil
 	}
-	return filepath.Join(DataDir(), "kata.db")
+	home, err := KataHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "kata.db"), nil
 }
 
-// DBHash returns the 12-hex-char namespace key for the effective DB path.
-func DBHash() string {
-	return DBHashFor(DBPath())
-}
-
-// DBHashFor returns the 12-hex-char namespace key for an arbitrary DB path.
-// Uses the absolute path; falls back to the input when Abs fails.
-func DBHashFor(dbPath string) string {
+// DBHash returns the first 12 lower-hex chars of sha256(absolute(dbPath)).
+// Used to namespace runtime files, sockets, and hook output per database.
+func DBHash(dbPath string) string {
 	abs, err := filepath.Abs(dbPath)
 	if err != nil {
 		abs = dbPath
 	}
 	sum := sha256.Sum256([]byte(abs))
-	return hex.EncodeToString(sum[:6]) // 6 bytes = 12 hex chars
+	return hex.EncodeToString(sum[:])[:12]
 }
 
-// RuntimeDir returns the per-DB runtime directory under the data dir.
-func RuntimeDir() string {
-	return filepath.Join(DataDir(), "runtime", DBHash())
-}
-
-// HooksDir returns the per-DB hooks directory under the data dir.
-func HooksDir() string {
-	return filepath.Join(DataDir(), "hooks", DBHash())
-}
-
-// EnsureDataDirs creates the data dir, runtime dir, and hooks dir with 0700 perms.
-func EnsureDataDirs() error {
-	for _, p := range []string{DataDir(), RuntimeDir(), HooksDir()} {
-		if err := os.MkdirAll(p, 0o700); err != nil {
-			return fmt.Errorf("create %s: %w", p, err)
-		}
+// RuntimeDir returns <KataHome>/runtime/<dbhash>. The directory is not created.
+func RuntimeDir() (string, error) {
+	home, err := KataHome()
+	if err != nil {
+		return "", err
 	}
-	return nil
+	db, err := KataDB()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "runtime", DBHash(db)), nil
 }
 ```
 
-- [ ] **Step 4: Run tests to confirm they pass**
+- [ ] **Step 4: Run test (expect pass)**
 
-Run: `go test -shuffle=on ./internal/config/...`
-Expected: PASS.
+Run: `go test ./internal/config/...`
+Expected: PASS, all five tests green.
 
 - [ ] **Step 5: Commit**
 
-```
-git add internal/config/paths.go internal/config/paths_test.go
-git commit -m "Add config.paths: data dir, DB path, dbhash, runtime dir"
+```bash
+go mod tidy
+make lint
+git add internal/config/ go.mod go.sum
+git commit -m "feat(config): add paths.go for KATA_HOME/KATA_DB/dbhash"
 ```
 
 ---
 
-## Task 3: `internal/config/repo_identity.go`
+### Task 2: `internal/config/project_config.go` — parse and write `.kata.toml`
+
+Spec refs: §6.3. v1 schema: `version=1; [project] identity=<str>, name=<str?>`.
 
 **Files:**
-- Create: `internal/config/repo_identity.go`
-- Test: `internal/config/repo_identity_test.go`
-- Test helper: `internal/testutil/testutil.go`
+- Create: `internal/config/project_config.go`
+- Test: `internal/config/project_config_test.go`
 
-Spec: §2.4. Daemon-side resolution; CLI helpers (cwd repo discovery) live in this package because the CLI also needs them to send `root_path`.
+- [ ] **Step 1: Add `BurntSushi/toml` dependency before importing it**
 
-- [ ] **Step 1: Write the test helper for temp git repos**
-
-Create `/Users/wesm/code/vibekata/internal/testutil/testutil.go`:
-
-```go
-// Package testutil provides shared test helpers for kata tests.
-package testutil
-
-import (
-	"os/exec"
-	"path/filepath"
-	"testing"
-
-	"github.com/stretchr/testify/require"
-)
-
-// MakeGitRepo creates a fresh git repo in a fresh temp dir and returns its path.
-// The repo has at least one commit so HEAD is valid.
-func MakeGitRepo(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	run := func(args ...string) {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		require.NoErrorf(t, err, "git %v: %s", args, out)
-	}
-	run("init", "-q", "--initial-branch=main")
-	run("config", "user.email", "test@example.com")
-	run("config", "user.name", "kata-test")
-	require.NoError(t, exec.Command("touch", filepath.Join(dir, ".keep")).Run())
-	run("add", ".keep")
-	run("commit", "-q", "-m", "init")
-	return dir
-}
-
-// SetGitRemote adds a remote named `name` with the given URL.
-func SetGitRemote(t *testing.T, repoDir, name, url string) {
-	t.Helper()
-	cmd := exec.Command("git", "remote", "add", name, url)
-	cmd.Dir = repoDir
-	out, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "git remote add %s %s: %s", name, url, out)
-}
-
-// WriteFile writes data to repoDir/path, creating parents.
-func WriteFile(t *testing.T, repoDir, relPath, data string) {
-	t.Helper()
-	p := filepath.Join(repoDir, relPath)
-	require.NoError(t, MkdirAll(filepath.Dir(p)))
-	require.NoError(t, WriteFileBytes(p, []byte(data)))
-}
+```bash
+go get github.com/BurntSushi/toml@v1.6.0
 ```
 
-…and at the bottom add the small helpers (kept separate so they're easy to unit-test if desired):
+- [ ] **Step 2: Write failing test**
 
 ```go
+// internal/config/project_config_test.go
+package config_test
+
 import (
 	"os"
-)
-
-// MkdirAll is a thin wrapper.
-func MkdirAll(p string) error { return os.MkdirAll(p, 0o755) }
-
-// WriteFileBytes is a thin wrapper for 0o644 file writes.
-func WriteFileBytes(p string, b []byte) error { return os.WriteFile(p, b, 0o644) }
-```
-
-(Combine these into one file with a single `import` block.)
-
-- [ ] **Step 2: Write the failing tests for repo identity**
-
-Create `/Users/wesm/code/vibekata/internal/config/repo_identity_test.go`:
-
-```go
-package config
-
-import (
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/testutil"
+	"github.com/wesm/kata/internal/config"
 )
 
-func TestStripURLCredentials(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"https://user:pass@github.com/foo/bar.git", "https://github.com/foo/bar.git"},
-		{"https://github.com/foo/bar.git", "https://github.com/foo/bar.git"},
-		{"git@github.com:foo/bar.git", "git@github.com:foo/bar.git"},
-		{"user:pass@host:foo/bar.git", "host:foo/bar.git"},
-		{"", ""},
+func TestReadProjectConfig_Roundtrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".kata.toml")
+	require.NoError(t, os.WriteFile(path, []byte(`version = 1
+
+[project]
+identity = "github.com/wesm/kata"
+name     = "kata"
+`), 0o644))
+
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, 1, cfg.Version)
+	assert.Equal(t, "github.com/wesm/kata", cfg.Project.Identity)
+	assert.Equal(t, "kata", cfg.Project.Name)
+}
+
+func TestReadProjectConfig_Missing(t *testing.T) {
+	cfg, err := config.ReadProjectConfig(t.TempDir())
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, config.ErrProjectConfigMissing)
+}
+
+func TestReadProjectConfig_RejectsBadVersion(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"),
+		[]byte(`version = 2
+
+[project]
+identity = "x"
+name = "y"
+`), 0o644))
+
+	_, err := config.ReadProjectConfig(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported .kata.toml version")
+}
+
+func TestReadProjectConfig_RejectsBlankIdentity(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"),
+		[]byte(`version = 1
+
+[project]
+identity = "   "
+name = "x"
+`), 0o644))
+
+	_, err := config.ReadProjectConfig(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project.identity")
+}
+
+func TestWriteProjectConfig_DerivesNameFromLastSegment(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, config.WriteProjectConfig(dir, "github.com/wesm/kata", ""))
+
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "kata", cfg.Project.Name)
+}
+
+func TestWriteProjectConfig_PreservesExplicitName(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, config.WriteProjectConfig(dir, "github.com/wesm/kata", "Kata Tracker"))
+
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "Kata Tracker", cfg.Project.Name)
+}
+```
+
+- [ ] **Step 3: Run test (expect failure)**
+
+Run: `go test ./internal/config/...`
+Expected: FAIL — symbols don't exist.
+
+- [ ] **Step 4: Implement `project_config.go`**
+
+```go
+// internal/config/project_config.go
+package config
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// ErrProjectConfigMissing is returned by ReadProjectConfig when the workspace
+// has no .kata.toml at the given path.
+var ErrProjectConfigMissing = errors.New(".kata.toml not found")
+
+// ProjectConfigFilename is the canonical filename committed at workspace roots.
+const ProjectConfigFilename = ".kata.toml"
+
+// ProjectConfig is the parsed contents of a workspace .kata.toml.
+type ProjectConfig struct {
+	Version int             `toml:"version"`
+	Project ProjectBindings `toml:"project"`
+}
+
+// ProjectBindings carries the [project] block.
+type ProjectBindings struct {
+	Identity string `toml:"identity"`
+	Name     string `toml:"name,omitempty"`
+}
+
+// ReadProjectConfig parses <workspaceRoot>/.kata.toml and validates v1 fields.
+// Returns (nil, ErrProjectConfigMissing) when the file does not exist; other
+// I/O or validation errors are returned as-is.
+func ReadProjectConfig(workspaceRoot string) (*ProjectConfig, error) {
+	path := filepath.Join(workspaceRoot, ProjectConfigFilename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrProjectConfigMissing
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, stripURLCredentials(c.in), c.in)
+	var cfg ProjectConfig
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if cfg.Version != 1 {
+		return nil, fmt.Errorf("unsupported .kata.toml version %d (expected 1)", cfg.Version)
+	}
+	if strings.TrimSpace(cfg.Project.Identity) == "" {
+		return nil, fmt.Errorf("project.identity must be a non-empty string")
+	}
+	cfg.Project.Identity = strings.TrimSpace(cfg.Project.Identity)
+	cfg.Project.Name = strings.TrimSpace(cfg.Project.Name)
+	return &cfg, nil
+}
+
+// WriteProjectConfig writes a v1 .kata.toml at <workspaceRoot>/.kata.toml.
+// If name is empty the last `/` or `:` segment of identity is used.
+func WriteProjectConfig(workspaceRoot, identity, name string) error {
+	if strings.TrimSpace(identity) == "" {
+		return fmt.Errorf("identity must be non-empty")
+	}
+	if name == "" {
+		name = lastSegment(identity)
+	}
+	body := fmt.Sprintf("version = 1\n\n[project]\nidentity = %q\nname     = %q\n",
+		identity, name)
+	path := filepath.Join(workspaceRoot, ProjectConfigFilename)
+	return os.WriteFile(path, []byte(body), 0o644)
+}
+
+func lastSegment(identity string) string {
+	for i := len(identity) - 1; i >= 0; i-- {
+		if identity[i] == '/' || identity[i] == ':' {
+			return identity[i+1:]
+		}
+	}
+	return identity
+}
+```
+
+- [ ] **Step 5: Run test (expect pass)**
+
+Run: `go test ./internal/config/...`
+Expected: all six tests pass plus the four from Task 1.
+
+- [ ] **Step 6: Commit**
+
+```bash
+go mod tidy
+make lint
+git add internal/config/ go.mod go.sum
+git commit -m "feat(config): parse and write .kata.toml workspace binding"
+```
+
+---
+
+### Task 3: `internal/config/project_identity.go` — path discovery + alias identity
+
+Spec refs: §2.4 (path discovery, alias identity, identity validation). Walk upward from a `start_path` to find `W` (first `.kata.toml` ancestor) and `G` (first `.git` ancestor). Compute `alias_identity` from `G`'s git remote (normalized) or fall back to `local://`.
+
+**Files:**
+- Create: `internal/config/project_identity.go`
+- Test: `internal/config/project_identity_test.go`
+
+- [ ] **Step 1: Write failing test**
+
+```go
+// internal/config/project_identity_test.go
+package config_test
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/config"
+)
+
+func TestDiscoverPaths_FindsKataTomlAndGit(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".kata.toml"), []byte("version = 1\n\n[project]\nidentity = \"x\"\nname = \"x\"\n"), 0o644))
+	sub := filepath.Join(root, "a", "b")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+
+	d, err := config.DiscoverPaths(sub)
+	require.NoError(t, err)
+	assert.Equal(t, root, d.WorkspaceRoot)
+	assert.Equal(t, root, d.GitRoot)
+}
+
+func TestDiscoverPaths_KataTomlInSubdirOfGit(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+	sub := filepath.Join(root, "subproject")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, ".kata.toml"), []byte("version = 1\n\n[project]\nidentity = \"x\"\nname = \"x\"\n"), 0o644))
+
+	d, err := config.DiscoverPaths(sub)
+	require.NoError(t, err)
+	assert.Equal(t, sub, d.WorkspaceRoot)
+	assert.Equal(t, root, d.GitRoot)
+}
+
+func TestDiscoverPaths_NeitherFound(t *testing.T) {
+	d, err := config.DiscoverPaths(t.TempDir())
+	require.NoError(t, err)
+	assert.Empty(t, d.WorkspaceRoot)
+	assert.Empty(t, d.GitRoot)
 }
 
 func TestNormalizeRemoteURL(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"https://github.com/foo/bar.git", "github.com/foo/bar"},
-		{"https://github.com/foo/bar", "github.com/foo/bar"},
-		{"git@github.com:foo/bar.git", "github.com/foo/bar"},
-		{"ssh://git@github.com/foo/bar.git", "github.com/foo/bar"},
+		{"https://github.com/wesm/kata.git", "github.com/wesm/kata"},
+		{"https://github.com/wesm/kata", "github.com/wesm/kata"},
+		{"https://user:pass@github.com/wesm/kata.git", "github.com/wesm/kata"},
+		{"git@github.com:wesm/kata.git", "github.com/wesm/kata"},
+		{"ssh://git@gitlab.com/team/repo.git", "gitlab.com/team/repo"},
 	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, NormalizeRemoteURL(c.in), c.in)
+	for _, tc := range cases {
+		got, err := config.NormalizeRemoteURL(tc.in)
+		require.NoError(t, err, tc.in)
+		assert.Equal(t, tc.want, got, tc.in)
 	}
 }
 
-func TestResolveRepoIdentity_DotKataID(t *testing.T) {
-	dir := testutil.MakeGitRepo(t)
-	testutil.WriteFile(t, dir, ".kata-id", "  custom-id-x  \n")
-	id, err := ResolveRepoIdentity(dir)
+func TestComputeAliasIdentity_GitWithRemote(t *testing.T) {
+	dir := initGitRepo(t)
+	requireGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	a, err := config.ComputeAliasIdentity(config.DiscoveredPaths{GitRoot: dir})
 	require.NoError(t, err)
-	assert.Equal(t, "custom-id-x", id)
+	assert.Equal(t, "github.com/wesm/kata", a.Identity)
+	assert.Equal(t, "git", a.Kind)
+	assert.Equal(t, dir, a.RootPath)
 }
 
-func TestResolveRepoIdentity_GitOrigin(t *testing.T) {
-	dir := testutil.MakeGitRepo(t)
-	testutil.SetGitRemote(t, dir, "origin", "https://user:pass@github.com/wesm/kata.git")
-	id, err := ResolveRepoIdentity(dir)
+func TestComputeAliasIdentity_GitNoRemote(t *testing.T) {
+	dir := initGitRepo(t)
+
+	a, err := config.ComputeAliasIdentity(config.DiscoveredPaths{GitRoot: dir})
 	require.NoError(t, err)
-	assert.Equal(t, "github.com/wesm/kata", id)
+	assert.Equal(t, "local://"+dir, a.Identity)
+	assert.Equal(t, "local", a.Kind)
 }
 
-func TestResolveRepoIdentity_AnyRemote(t *testing.T) {
-	dir := testutil.MakeGitRepo(t)
-	testutil.SetGitRemote(t, dir, "upstream", "git@github.com:wesm/kata.git")
-	id, err := ResolveRepoIdentity(dir)
+func TestComputeAliasIdentity_NonGitWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	a, err := config.ComputeAliasIdentity(config.DiscoveredPaths{WorkspaceRoot: ws})
 	require.NoError(t, err)
-	assert.Equal(t, "github.com/wesm/kata", id)
+	assert.Equal(t, "local://"+ws, a.Identity)
+	assert.Equal(t, "local", a.Kind)
+	assert.Equal(t, ws, a.RootPath)
 }
 
-func TestResolveRepoIdentity_LocalFallback(t *testing.T) {
-	dir := testutil.MakeGitRepo(t)
-	id, err := ResolveRepoIdentity(dir)
-	require.NoError(t, err)
-	abs, _ := filepath.Abs(dir)
-	assert.Equal(t, "local://"+abs, id)
+func TestComputeAliasIdentity_Neither(t *testing.T) {
+	_, err := config.ComputeAliasIdentity(config.DiscoveredPaths{})
+	require.Error(t, err)
 }
 
-func TestDiscoverRepoFromCwd(t *testing.T) {
-	dir := testutil.MakeGitRepo(t)
-	sub := filepath.Join(dir, "a", "b")
-	require.NoError(t, testutil.MkdirAll(sub))
-	root, err := DiscoverRepoFromCwd(sub)
-	require.NoError(t, err)
-	abs, _ := filepath.Abs(dir)
-	assert.Equal(t, abs, root)
+func TestValidateIdentity(t *testing.T) {
+	cases := []struct {
+		in   string
+		ok   bool
+		hint string
+	}{
+		{"github.com/wesm/kata", true, ""},
+		{"local:///abs/path", true, ""},
+		{"a_b.c-d:foo/bar", true, ""},
+		{"", false, "non-empty"},
+		{"  spaces in middle  ", false, "whitespace"},
+		{"has space", false, "whitespace"},
+		{"https://u:p@host/x", false, "credential"},
+	}
+	for _, tc := range cases {
+		err := config.ValidateIdentity(tc.in)
+		if tc.ok {
+			assert.NoError(t, err, tc.in)
+		} else {
+			require.Error(t, err, tc.in)
+			assert.Contains(t, err.Error(), tc.hint, tc.in)
+		}
+	}
 }
 
-func TestDiscoverRepoFromCwd_NotARepo(t *testing.T) {
+// helpers
+
+func initGitRepo(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
-	_, err := DiscoverRepoFromCwd(dir)
-	assert.ErrorIs(t, err, ErrNoRepo)
+	requireGit(t, dir, "init", "--quiet")
+	requireGit(t, dir, "config", "user.email", "x@example.com")
+	requireGit(t, dir, "config", "user.name", "x")
+	return dir
 }
 
-func TestValidateKataID(t *testing.T) {
-	require.NoError(t, ValidateKataID("github.com/wesm/kata"))
-	require.NoError(t, ValidateKataID("custom-id_1.2"))
-	assert.Error(t, ValidateKataID(""))
-	assert.Error(t, ValidateKataID("https://user:pw@example.com"))
-	assert.Error(t, ValidateKataID("contains whitespace"))
+func requireGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v: %s", args, out)
 }
 ```
 
-- [ ] **Step 3: Run the tests to confirm they fail**
+- [ ] **Step 2: Run test (expect failure)**
 
-Run: `go test -shuffle=on ./internal/config/...`
-Expected: build errors for missing symbols.
+Run: `go test ./internal/config/...`
+Expected: FAIL — symbols don't exist.
 
-- [ ] **Step 4: Implement `repo_identity.go`**
-
-Create `/Users/wesm/code/vibekata/internal/config/repo_identity.go`:
+- [ ] **Step 3: Implement `project_identity.go`**
 
 ```go
+// internal/config/project_identity.go
 package config
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -618,194 +584,237 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
-// ErrNoRepo is returned by DiscoverRepoFromCwd when the directory is not in a git repo.
-var ErrNoRepo = errors.New("not a git repo")
+// DiscoveredPaths is the result of walking upward from a start path.
+// Both fields may be empty (no .kata.toml and no .git ancestor).
+type DiscoveredPaths struct {
+	WorkspaceRoot string // first ancestor with .kata.toml (inclusive)
+	GitRoot       string // first ancestor with .git (inclusive)
+}
 
-// DiscoverRepoFromCwd walks up from `start` looking for a `.git` directory.
-// Returns the absolute path of the directory containing `.git`.
-func DiscoverRepoFromCwd(start string) (string, error) {
-	abs, err := filepath.Abs(start)
+// AliasInfo is the alias-identity record derived from a workspace.
+type AliasInfo struct {
+	Identity string // git remote (normalized) or "local://<abs path>"
+	Kind     string // "git" | "local"
+	RootPath string // GitRoot when present, else WorkspaceRoot
+}
+
+// DiscoverPaths walks upward from startPath looking for .kata.toml (W) and
+// .git (G). Both lookups are independent and inclusive of startPath itself.
+// A missing path returns ("", nil); resolution errors are returned.
+func DiscoverPaths(startPath string) (DiscoveredPaths, error) {
+	abs, err := filepath.Abs(startPath)
 	if err != nil {
-		return "", err
+		return DiscoveredPaths{}, fmt.Errorf("abs %s: %w", startPath, err)
 	}
-	cur := abs
+	d := DiscoveredPaths{}
+	d.WorkspaceRoot = walkUp(abs, ProjectConfigFilename, false)
+	d.GitRoot = walkUp(abs, ".git", true)
+	return d, nil
+}
+
+// walkUp returns the first ancestor (inclusive) containing the named entry,
+// or "" if none. allowDir lets the entry be either a file or directory.
+func walkUp(start, entry string, allowDir bool) string {
+	dir := start
 	for {
-		if _, err := os.Stat(filepath.Join(cur, ".git")); err == nil {
-			return cur, nil
+		path := filepath.Join(dir, entry)
+		info, err := os.Stat(path)
+		if err == nil {
+			if info.IsDir() {
+				if allowDir {
+					return dir
+				}
+			} else {
+				return dir
+			}
 		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return "", ErrNoRepo
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
 		}
-		cur = parent
+		dir = parent
 	}
 }
 
-// ResolveRepoIdentity computes the canonical identity for a repo at `repoRoot`.
-// Order:
-//  1. .kata-id file (validated).
-//  2. Git remote `origin` URL (credentials stripped, normalized).
-//  3. Any other git remote URL (same).
-//  4. local://<absolute path>.
-func ResolveRepoIdentity(repoRoot string) (string, error) {
-	abs, err := filepath.Abs(repoRoot)
+// ComputeAliasIdentity derives the alias for a workspace per spec §2.4. Order:
+// 1. GitRoot with remote → normalized origin URL
+// 2. GitRoot without remote → local://<abs(GitRoot)>
+// 3. WorkspaceRoot only → local://<abs(WorkspaceRoot)>
+// 4. Neither → error
+func ComputeAliasIdentity(d DiscoveredPaths) (AliasInfo, error) {
+	if d.GitRoot != "" {
+		remote, err := readGitRemote(d.GitRoot)
+		if err != nil {
+			return AliasInfo{}, err
+		}
+		if remote != "" {
+			id, err := NormalizeRemoteURL(remote)
+			if err != nil {
+				return AliasInfo{}, err
+			}
+			return AliasInfo{Identity: id, Kind: "git", RootPath: d.GitRoot}, nil
+		}
+		return AliasInfo{
+			Identity: "local://" + d.GitRoot,
+			Kind:     "local",
+			RootPath: d.GitRoot,
+		}, nil
+	}
+	if d.WorkspaceRoot != "" {
+		return AliasInfo{
+			Identity: "local://" + d.WorkspaceRoot,
+			Kind:     "local",
+			RootPath: d.WorkspaceRoot,
+		}, nil
+	}
+	return AliasInfo{}, fmt.Errorf("no workspace or git root discovered")
+}
+
+// readGitRemote returns the URL of "origin" (or the first remote listed by
+// `git remote` when no origin exists). Returns ("", nil) if no remotes.
+func readGitRemote(gitRoot string) (string, error) {
+	out, err := runGit(gitRoot, "remote")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("git remote: %w", err)
 	}
-
-	if id, ok, err := readKataID(abs); err != nil {
-		return "", err
-	} else if ok {
-		return id, nil
+	remotes := strings.Fields(strings.TrimSpace(out))
+	if len(remotes) == 0 {
+		return "", nil
 	}
-
-	if url, ok := gitRemoteURL(abs, "origin"); ok {
-		return NormalizeRemoteURL(stripURLCredentials(url)), nil
-	}
-	if url, ok := gitAnyRemoteURL(abs); ok {
-		return NormalizeRemoteURL(stripURLCredentials(url)), nil
-	}
-
-	return "local://" + abs, nil
-}
-
-func readKataID(repoRoot string) (string, bool, error) {
-	data, err := os.ReadFile(filepath.Join(repoRoot, ".kata-id"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
+	target := "origin"
+	hasOrigin := false
+	for _, r := range remotes {
+		if r == "origin" {
+			hasOrigin = true
+			break
 		}
-		return "", false, fmt.Errorf("read .kata-id: %w", err)
 	}
-	id := strings.TrimSpace(string(data))
-	if err := ValidateKataID(id); err != nil {
-		return "", false, fmt.Errorf("invalid .kata-id: %w", err)
+	if !hasOrigin {
+		target = remotes[0]
 	}
-	return id, true, nil
+	url, err := runGit(gitRoot, "remote", "get-url", target)
+	if err != nil {
+		return "", fmt.Errorf("git remote get-url %s: %w", target, err)
+	}
+	return strings.TrimSpace(url), nil
 }
 
-var validIDRe = regexp.MustCompile(`^[A-Za-z0-9._:/\\-]+$`)
+func runGit(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	return string(out), err
+}
 
-// ValidateKataID enforces a conservative charset and rejects URL-looking strings with credentials.
-func ValidateKataID(id string) error {
+// scpLikeRE matches "user@host:path[/...]" SCP-style git URLs.
+var scpLikeRE = regexp.MustCompile(`^([^@\s]+)@([^:\s]+):(.+)$`)
+
+// NormalizeRemoteURL strips credentials, normalizes SSH↔HTTPS, drops trailing
+// .git, and returns "host/path" form (e.g. "github.com/wesm/kata").
+func NormalizeRemoteURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("empty remote url")
+	}
+	if m := scpLikeRE.FindStringSubmatch(raw); m != nil {
+		host := m[2]
+		path := strings.TrimSuffix(m[3], ".git")
+		return host + "/" + path, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("parse remote url %q: not a recognized form", raw)
+	}
+	host := u.Host
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	path := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git")
+	if path == "" {
+		return host, nil
+	}
+	return host + "/" + path, nil
+}
+
+var identityCharsetRE = regexp.MustCompile(`^[A-Za-z0-9._:/\-]+$`)
+
+// ValidateIdentity enforces the spec §2.4 charset and forbids whitespace and
+// embedded URL credentials.
+func ValidateIdentity(id string) error {
 	if id == "" {
-		return errors.New("identity is empty")
+		return fmt.Errorf("identity must be non-empty")
 	}
-	if strings.ContainsAny(id, " \t\r\n") {
-		return errors.New("identity contains whitespace")
+	for _, r := range id {
+		if unicode.IsSpace(r) {
+			return fmt.Errorf("identity contains whitespace: %q", id)
+		}
 	}
-	if strings.Contains(id, "@") && (strings.HasPrefix(id, "http://") || strings.HasPrefix(id, "https://")) {
-		return errors.New("identity must not embed credentials")
+	if strings.HasPrefix(id, "http://") || strings.HasPrefix(id, "https://") {
+		// reject embedded credentials.
+		if strings.Contains(id, "@") {
+			return fmt.Errorf("identity must not embed credentials: %q", id)
+		}
 	}
-	if !validIDRe.MatchString(id) {
-		return errors.New("identity contains invalid characters")
+	if !identityCharsetRE.MatchString(stripLocalScheme(id)) {
+		return fmt.Errorf("identity contains disallowed characters: %q", id)
 	}
 	return nil
 }
 
-func gitRemoteURL(repoRoot, remote string) (string, bool) {
-	cmd := exec.Command("git", "config", "--get", "remote."+remote+".url")
-	cmd.Dir = repoRoot
-	out, err := cmd.Output()
-	if err != nil {
-		return "", false
+// stripLocalScheme allows local://<abs path> identities through the charset
+// check by ignoring the scheme prefix and validating the remainder.
+func stripLocalScheme(id string) string {
+	const prefix = "local://"
+	if strings.HasPrefix(id, prefix) {
+		return strings.ReplaceAll(id[len(prefix):], "/", "")
 	}
-	url := strings.TrimSpace(string(out))
-	return url, url != ""
-}
-
-func gitAnyRemoteURL(repoRoot string) (string, bool) {
-	cmd := exec.Command("git", "remote")
-	cmd.Dir = repoRoot
-	out, err := cmd.Output()
-	if err != nil {
-		return "", false
-	}
-	for _, name := range strings.Fields(string(out)) {
-		if url, ok := gitRemoteURL(repoRoot, name); ok {
-			return url, true
-		}
-	}
-	return "", false
-}
-
-// stripURLCredentials removes user:pass@ from URL-shaped strings.
-// Falls back to splitting on '@' for SCP-style git URLs (`user:pass@host:path`).
-func stripURLCredentials(raw string) string {
-	if raw == "" {
-		return raw
-	}
-	if u, err := url.Parse(raw); err == nil && u.Scheme != "" {
-		if u.User != nil {
-			u.User = nil
-			return u.String()
-		}
-		return raw
-	}
-	// SCP-style: `git@host:path` is fine; `user:pass@host:path` we strip.
-	if strings.Contains(raw, ":") && strings.Contains(raw, "@") {
-		at := strings.Index(raw, "@")
-		head := raw[:at]
-		if strings.Contains(head, ":") {
-			return raw[at+1:]
-		}
-	}
-	return raw
-}
-
-// NormalizeRemoteURL produces a stable, scheme-free identity for common git URL shapes.
-// "https://github.com/foo/bar.git" → "github.com/foo/bar"
-// "git@github.com:foo/bar.git"     → "github.com/foo/bar"
-// "ssh://git@github.com/foo/bar"   → "github.com/foo/bar"
-// Everything else is returned trimmed of trailing ".git".
-func NormalizeRemoteURL(raw string) string {
-	s := strings.TrimSuffix(raw, ".git")
-	if u, err := url.Parse(s); err == nil && u.Scheme != "" && u.Host != "" {
-		path := strings.TrimPrefix(u.Path, "/")
-		return u.Host + "/" + path
-	}
-	if at := strings.Index(s, "@"); at >= 0 {
-		rest := s[at+1:]
-		if colon := strings.Index(rest, ":"); colon >= 0 {
-			return rest[:colon] + "/" + rest[colon+1:]
-		}
-		return rest
-	}
-	return s
+	return id
 }
 ```
 
-- [ ] **Step 5: Run tests to confirm they pass**
+- [ ] **Step 4: Run test (expect pass)**
 
-Run: `go test -shuffle=on ./internal/config/...`
-Expected: PASS.
+Run: `go test ./internal/config/...`
+Expected: all tests in `internal/config/` pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
-```
-git add internal/config/repo_identity.go internal/config/repo_identity_test.go internal/testutil/testutil.go
-git commit -m "Add config.repo_identity and testutil git helpers"
+```bash
+go mod tidy
+make lint
+git add internal/config/ go.mod go.sum
+git commit -m "feat(config): discover paths + compute alias identity"
 ```
 
 ---
 
-## Task 4: `internal/db/db.go` + baseline migration
+### Task 4: `internal/db/migrations/0001_init.sql` + `internal/db/db.go`
+
+Spec refs: §3.1 (PRAGMAs), §3.2 (full schema), §9.2 (`internal/db/`). Embed all migration files via `//go:embed migrations/*.sql`. Run them in lex order at `Open` time. Schema timestamp columns use `DATETIME` so the driver scans into `time.Time`.
 
 **Files:**
-- Create: `internal/db/db.go`
 - Create: `internal/db/migrations/0001_init.sql`
+- Create: `internal/db/db.go`
 - Test: `internal/db/db_test.go`
 
-Open opens the SQLite DB with the right PRAGMAs and runs embedded migrations once (tracked via `meta.schema_version`).
+- [ ] **Step 1: Add `modernc.org/sqlite` dependency**
 
-- [ ] **Step 1: Write the failing tests**
+```bash
+go get modernc.org/sqlite@v1.49.1
+```
 
-Create `/Users/wesm/code/vibekata/internal/db/db_test.go`:
+- [ ] **Step 2: Write the migration SQL verbatim from spec §3.2**
+
+Create `internal/db/migrations/0001_init.sql` with the exact SQL from spec §3.2 (projects, project_aliases, issues, comments, links, links triggers, issue_labels, events, purge_log, meta inserts, issues_fts virtual table). Do not omit any table — Plan 1 lays the full schema even though only projects/aliases/issues/comments/events/meta are exercised here.
+
+- [ ] **Step 3: Write failing test**
 
 ```go
-package db
+// internal/db/db_test.go
+package db_test
 
 import (
 	"context"
@@ -814,239 +823,80 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/db"
 )
 
-func TestOpen_AppliesSchemaAndPragmas(t *testing.T) {
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "kata.db")
-	d, err := Open(context.Background(), dbPath)
+func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kata.db")
+	d, err := db.Open(context.Background(), path)
 	require.NoError(t, err)
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	var fk int
-	require.NoError(t, d.DB().QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&fk))
+	require.NoError(t, d.QueryRow("PRAGMA foreign_keys").Scan(&fk))
 	assert.Equal(t, 1, fk)
 
-	var jm string
-	require.NoError(t, d.DB().QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&jm))
-	assert.Equal(t, "wal", jm)
+	var mode string
+	require.NoError(t, d.QueryRow("PRAGMA journal_mode").Scan(&mode))
+	assert.Equal(t, "wal", mode)
 
 	var version string
-	require.NoError(t, d.DB().QueryRowContext(context.Background(), "SELECT value FROM meta WHERE key='schema_version'").Scan(&version))
+	require.NoError(t, d.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
 	assert.Equal(t, "1", version)
 }
 
-func TestOpen_Idempotent(t *testing.T) {
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "kata.db")
-	d, err := Open(context.Background(), dbPath)
+func TestOpen_IsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kata.db")
+	d1, err := db.Open(context.Background(), path)
 	require.NoError(t, err)
-	require.NoError(t, d.Close())
+	require.NoError(t, d1.Close())
 
-	d2, err := Open(context.Background(), dbPath)
+	d2, err := db.Open(context.Background(), path)
 	require.NoError(t, err)
-	defer d2.Close()
+	t.Cleanup(func() { _ = d2.Close() })
 
 	var version string
-	require.NoError(t, d2.DB().QueryRowContext(context.Background(), "SELECT value FROM meta WHERE key='schema_version'").Scan(&version))
+	require.NoError(t, d2.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
 	assert.Equal(t, "1", version)
 }
 
-func TestOpen_RejectsNewerSchema(t *testing.T) {
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "kata.db")
-	d, err := Open(context.Background(), dbPath)
+func TestOpen_TimestampColumnsScanIntoTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kata.db")
+	d, err := db.Open(context.Background(), path)
 	require.NoError(t, err)
-	_, err = d.DB().ExecContext(context.Background(), "UPDATE meta SET value='999' WHERE key='schema_version'")
-	require.NoError(t, err)
-	require.NoError(t, d.Close())
+	t.Cleanup(func() { _ = d.Close() })
 
-	_, err = Open(context.Background(), dbPath)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "newer schema")
+	_, err = d.Exec(`INSERT INTO projects(identity, name) VALUES('x','x')`)
+	require.NoError(t, err)
+
+	rows, err := d.Query(`SELECT created_at FROM projects`)
+	require.NoError(t, err)
+	defer rows.Close()
+	require.True(t, rows.Next())
+	var ts interface{}
+	require.NoError(t, rows.Scan(&ts))
+	// modernc.org/sqlite returns time.Time for DATETIME columns
+	_, ok := ts.(interface{ Year() int })
+	assert.True(t, ok, "expected time.Time, got %T", ts)
 }
 ```
 
-- [ ] **Step 2: Run tests to confirm they fail**
+- [ ] **Step 4: Run test (expect failure)**
 
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: build error.
+Run: `go test ./internal/db/...`
+Expected: FAIL — package does not exist.
 
-- [ ] **Step 3: Write the baseline migration**
-
-Create `/Users/wesm/code/vibekata/internal/db/migrations/0001_init.sql` containing the exact baseline schema from spec §3.2 (full file). Reproduce here verbatim:
-
-```sql
-CREATE TABLE repos (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  identity          TEXT UNIQUE NOT NULL,
-  root_path         TEXT NOT NULL,
-  name              TEXT NOT NULL,
-  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  next_issue_number INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE issues (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo_id       INTEGER NOT NULL REFERENCES repos(id),
-  number        INTEGER NOT NULL,
-  title         TEXT NOT NULL,
-  body          TEXT NOT NULL DEFAULT '',
-  status        TEXT NOT NULL CHECK(status IN ('open','closed')) DEFAULT 'open',
-  closed_reason TEXT CHECK(closed_reason IN ('done','wontfix','duplicate')),
-  owner         TEXT,
-  author        TEXT NOT NULL,
-  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  closed_at     TEXT,
-  deleted_at    TEXT,
-  UNIQUE(repo_id, number),
-  CHECK (length(trim(title))  > 0),
-  CHECK (length(trim(author)) > 0),
-  CHECK (status = 'closed' OR (closed_at IS NULL AND closed_reason IS NULL))
-);
-CREATE INDEX idx_issues_repo_status_updated
-  ON issues(repo_id, status, updated_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_issues_repo_updated
-  ON issues(repo_id, updated_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_issues_owner
-  ON issues(owner) WHERE owner IS NOT NULL AND deleted_at IS NULL;
-
-CREATE TABLE comments (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  issue_id   INTEGER NOT NULL REFERENCES issues(id),
-  author     TEXT NOT NULL,
-  body       TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  CHECK (length(trim(author)) > 0),
-  CHECK (length(trim(body))   > 0)
-);
-CREATE INDEX idx_comments_issue ON comments(issue_id, created_at);
-
-CREATE TABLE links (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo_id       INTEGER NOT NULL REFERENCES repos(id),
-  from_issue_id INTEGER NOT NULL REFERENCES issues(id),
-  to_issue_id   INTEGER NOT NULL REFERENCES issues(id),
-  type          TEXT NOT NULL CHECK(type IN ('parent','blocks','related')),
-  author        TEXT NOT NULL,
-  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  UNIQUE(from_issue_id, to_issue_id, type),
-  CHECK (from_issue_id <> to_issue_id),
-  CHECK (length(trim(author)) > 0),
-  CHECK (type <> 'related' OR from_issue_id < to_issue_id)
-);
-CREATE UNIQUE INDEX uniq_one_parent_per_child
-  ON links(from_issue_id) WHERE type = 'parent';
-CREATE INDEX idx_links_from ON links(from_issue_id, type);
-CREATE INDEX idx_links_to   ON links(to_issue_id, type);
-CREATE INDEX idx_links_repo ON links(repo_id);
-
-CREATE TRIGGER trg_links_same_repo_insert
-BEFORE INSERT ON links
-FOR EACH ROW BEGIN
-  SELECT RAISE(ABORT, 'cross-repo links are not allowed')
-  WHERE (SELECT repo_id FROM issues WHERE id = NEW.from_issue_id) <> NEW.repo_id
-     OR (SELECT repo_id FROM issues WHERE id = NEW.to_issue_id)   <> NEW.repo_id;
-END;
-CREATE TRIGGER trg_links_same_repo_update
-BEFORE UPDATE ON links
-FOR EACH ROW BEGIN
-  SELECT RAISE(ABORT, 'cross-repo links are not allowed')
-  WHERE (SELECT repo_id FROM issues WHERE id = NEW.from_issue_id) <> NEW.repo_id
-     OR (SELECT repo_id FROM issues WHERE id = NEW.to_issue_id)   <> NEW.repo_id;
-END;
-
-CREATE TABLE issue_labels (
-  issue_id   INTEGER NOT NULL REFERENCES issues(id),
-  label      TEXT NOT NULL,
-  author     TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  PRIMARY KEY(issue_id, label),
-  CHECK (length(label) BETWEEN 1 AND 64),
-  CHECK (label NOT GLOB '*[^a-z0-9._:-]*'),
-  CHECK (length(trim(author)) > 0)
-);
-CREATE INDEX idx_issue_labels_label ON issue_labels(label);
-
-CREATE TABLE events (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo_id          INTEGER NOT NULL REFERENCES repos(id),
-  repo_identity    TEXT NOT NULL,
-  issue_id         INTEGER REFERENCES issues(id),
-  issue_number     INTEGER,
-  related_issue_id INTEGER REFERENCES issues(id),
-  type             TEXT NOT NULL,
-  actor            TEXT NOT NULL,
-  payload          TEXT NOT NULL DEFAULT '{}',
-  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  CHECK (length(trim(actor)) > 0),
-  CHECK (json_valid(payload))
-);
-CREATE INDEX idx_events_repo    ON events(repo_id, id);
-CREATE INDEX idx_events_issue   ON events(issue_id, id) WHERE issue_id IS NOT NULL;
-CREATE INDEX idx_events_related ON events(related_issue_id, id) WHERE related_issue_id IS NOT NULL;
-CREATE INDEX idx_events_idempotency
-  ON events(repo_id, json_extract(payload, '$.idempotency_key'), created_at)
-  WHERE type = 'issue.created' AND json_extract(payload, '$.idempotency_key') IS NOT NULL;
-
-CREATE TABLE purge_log (
-  id                          INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo_id                     INTEGER NOT NULL,
-  purged_issue_id             INTEGER NOT NULL,
-  repo_identity               TEXT NOT NULL,
-  issue_number                INTEGER NOT NULL,
-  issue_title                 TEXT NOT NULL,
-  issue_author                TEXT NOT NULL,
-  comment_count               INTEGER NOT NULL,
-  link_count                  INTEGER NOT NULL,
-  label_count                 INTEGER NOT NULL,
-  event_count                 INTEGER NOT NULL,
-  events_deleted_min_id       INTEGER,
-  events_deleted_max_id       INTEGER,
-  purge_reset_after_event_id  INTEGER,
-  actor                       TEXT NOT NULL,
-  reason                      TEXT,
-  purged_at                   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  CHECK (length(trim(actor)) > 0)
-);
-CREATE INDEX idx_purge_log_reset
-  ON purge_log(purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
-CREATE INDEX idx_purge_log_repo_reset
-  ON purge_log(repo_id, purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
-CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
-CREATE INDEX idx_purge_log_lookup ON purge_log(repo_identity, issue_number);
-
--- FTS5 virtual table over issue title+body+comments. Triggers in Plan 3 maintain it.
-CREATE VIRTUAL TABLE issues_fts USING fts5(
-  title, body, comments,
-  content='', tokenize='unicode61 remove_diacritics 2'
-);
-
-CREATE TABLE meta (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-INSERT INTO meta(key, value) VALUES ('schema_version', '1');
-INSERT INTO meta(key, value) VALUES ('created_by_version', '0.1.0');
-```
-
-- [ ] **Step 4: Implement `db.go`**
-
-Create `/Users/wesm/code/vibekata/internal/db/db.go`:
+- [ ] **Step 5: Implement `db.go`**
 
 ```go
-// Package db opens the kata SQLite database and applies embedded migrations.
+// internal/db/db.go
 package db
 
 import (
 	"context"
 	"database/sql"
 	"embed"
-	"errors"
 	"fmt"
-	"io/fs"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -1057,219 +907,204 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// CurrentSchemaVersion is the schema version this binary supports.
-const CurrentSchemaVersion = 1
-
-// DB wraps *sql.DB with a Close() that the caller is expected to invoke.
+// DB wraps *sql.DB. Use Open to construct one with PRAGMAs applied.
 type DB struct {
-	sqldb *sql.DB
+	*sql.DB
+	path string
 }
 
-// Open opens (creating if missing) the SQLite database at `path`, sets the
-// required PRAGMAs on every connection, and applies any pending migrations.
-//
-// It returns an error if the on-disk schema_version is greater than this
-// binary's CurrentSchemaVersion (downgrade refusal).
+// Open opens (and if needed initializes) the kata SQLite database at path.
+// PRAGMAs are applied for every connection (via the connection string and
+// post-open exec) and pending migrations are run inside a transaction.
 func Open(ctx context.Context, path string) (*DB, error) {
-	if path == "" {
-		return nil, errors.New("db.Open: empty path")
-	}
-	dsn := "file:" + path + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)"
-	sqldb, err := sql.Open("sqlite", dsn)
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)",
+		path,
+	)
+	sdb, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("sql.Open: %w", err)
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	// modernc/sqlite handles connections per-statement; cap concurrency to one
-	// writer to avoid SQLITE_BUSY under simultaneous writers in-process.
-	sqldb.SetMaxOpenConns(1)
-
-	if err := sqldb.PingContext(ctx); err != nil {
-		_ = sqldb.Close()
-		return nil, fmt.Errorf("db.Open: ping %s: %w", path, err)
+	// Single writer is fine for v1; SetMaxOpenConns left at default for reads.
+	if err := sdb.PingContext(ctx); err != nil {
+		_ = sdb.Close()
+		return nil, fmt.Errorf("ping %s: %w", path, err)
 	}
-
-	d := &DB{sqldb: sqldb}
+	d := &DB{DB: sdb, path: path}
 	if err := d.migrate(ctx); err != nil {
-		_ = sqldb.Close()
+		_ = sdb.Close()
 		return nil, err
 	}
 	return d, nil
 }
 
-// Close closes the underlying *sql.DB.
-func (d *DB) Close() error { return d.sqldb.Close() }
-
-// DB returns the underlying *sql.DB. Use sparingly; prefer the typed query helpers.
-func (d *DB) DB() *sql.DB { return d.sqldb }
+// Path returns the resolved database path.
+func (d *DB) Path() string { return d.path }
 
 func (d *DB) migrate(ctx context.Context) error {
-	// 1. Bootstrap the meta table if it doesn't exist (new DB) so we can read schema_version.
-	//    We do this by checking if any user table exists; if not, run the first migration in full.
-	tables, err := d.listTables(ctx)
+	current, err := d.currentVersion(ctx)
 	if err != nil {
 		return err
 	}
-	if len(tables) == 0 {
-		return d.applyMigration(ctx, "0001_init.sql")
-	}
-
-	// 2. Existing DB: read schema_version, refuse downgrade.
-	var current int
-	row := d.sqldb.QueryRowContext(ctx, "SELECT value FROM meta WHERE key='schema_version'")
-	var s string
-	if err := row.Scan(&s); err != nil {
-		return fmt.Errorf("read schema_version: %w", err)
-	}
-	current, err = strconv.Atoi(s)
+	files, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
-		return fmt.Errorf("parse schema_version %q: %w", s, err)
+		return fmt.Errorf("read embed: %w", err)
 	}
-	if current > CurrentSchemaVersion {
-		return fmt.Errorf("db has newer schema (version %d) than this binary supports (%d)", current, CurrentSchemaVersion)
-	}
-
-	// 3. For Plan 1 we only have one migration; future plans add 0002_*.sql etc.
-	files, err := listMigrationFiles()
-	if err != nil {
-		return err
-	}
-	for _, name := range files {
-		v, err := migrationVersion(name)
+	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
+	for _, f := range files {
+		ver, err := parseMigrationVersion(f.Name())
 		if err != nil {
 			return err
 		}
-		if v <= current {
+		if ver <= current {
 			continue
 		}
-		if err := d.applyMigration(ctx, name); err != nil {
-			return err
+		body, err := migrationsFS.ReadFile("migrations/" + f.Name())
+		if err != nil {
+			return fmt.Errorf("read %s: %w", f.Name(), err)
+		}
+		tx, err := d.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin tx for %s: %w", f.Name(), err)
+		}
+		if _, err := tx.ExecContext(ctx, string(body)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("apply %s: %w", f.Name(), err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO meta(key,value) VALUES('schema_version', ?)
+			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.Itoa(ver)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("record version %d: %w", ver, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit %s: %w", f.Name(), err)
 		}
 	}
 	return nil
 }
 
-func (d *DB) listTables(ctx context.Context) ([]string, error) {
-	rows, err := d.sqldb.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+// currentVersion returns 0 when the meta table doesn't exist yet (fresh DB).
+func (d *DB) currentVersion(ctx context.Context) (int, error) {
+	exists, err := d.tableExists(ctx, "meta")
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		out = append(out, n)
+	if !exists {
+		return 0, nil
 	}
-	return out, rows.Err()
+	var v string
+	err = d.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='schema_version'`).Scan(&v)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read schema_version: %w", err)
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("parse schema_version %q: %w", v, err)
+	}
+	return n, nil
 }
 
-func (d *DB) applyMigration(ctx context.Context, name string) error {
-	body, err := migrationsFS.ReadFile("migrations/" + name)
+func (d *DB) tableExists(ctx context.Context, name string) (bool, error) {
+	var n int
+	err := d.QueryRowContext(ctx,
+		`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
 	if err != nil {
-		return fmt.Errorf("read migration %s: %w", name, err)
+		return false, err
 	}
-	tx, err := d.sqldb.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, string(body)); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("apply %s: %w", name, err)
-	}
-	return tx.Commit()
+	return true, nil
 }
 
-func listMigrationFiles() ([]string, error) {
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+// parseMigrationVersion extracts the leading integer from filenames like
+// "0001_init.sql" → 1.
+func parseMigrationVersion(name string) (int, error) {
+	parts := strings.SplitN(name, "_", 2)
+	if len(parts) < 2 {
+		return 0, fmt.Errorf("invalid migration filename: %s", name)
+	}
+	n, err := strconv.Atoi(parts[0])
 	if err != nil {
-		return nil, err
+		return 0, fmt.Errorf("parse version in %s: %w", name, err)
 	}
-	var files []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
-			continue
-		}
-		files = append(files, e.Name())
-	}
-	sort.Strings(files)
-	return files, nil
-}
-
-func migrationVersion(name string) (int, error) {
-	base := filepath.Base(name)
-	parts := strings.SplitN(base, "_", 2)
-	if len(parts) < 1 {
-		return 0, fmt.Errorf("malformed migration name %q", name)
-	}
-	v, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, fmt.Errorf("migration %s: %w", name, err)
-	}
-	return v, nil
+	return n, nil
 }
 ```
 
-- [ ] **Step 5: Run tests to confirm they pass**
+- [ ] **Step 6: Run test (expect pass)**
 
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: PASS.
+Run: `go test ./internal/db/...`
+Expected: all three tests pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
-```
-git add internal/db/db.go internal/db/db_test.go internal/db/migrations/0001_init.sql
-git commit -m "Add db.Open with embedded baseline migration and PRAGMAs"
+```bash
+go mod tidy
+make lint
+git add internal/db/ go.mod go.sum
+git commit -m "feat(db): open SQLite with PRAGMAs and run embedded migrations"
 ```
 
 ---
 
-## Task 5: `internal/db/types.go`
+### Task 5: `internal/db/types.go` — model types
+
+Spec refs: §9.2. Plan 1 needs Project, ProjectAlias, Issue, Comment, Event types. Other types (Link, Label, PurgeLog) are stubbed with their column shapes for later plans, but can be skipped if not exercised here. Keep this minimal: declare only what Plan 1 reads/writes.
 
 **Files:**
 - Create: `internal/db/types.go`
 
-Define the core Go structs that the query layer (Task 6+) will return.
-
-- [ ] **Step 1: Implement `types.go`**
-
-Create `/Users/wesm/code/vibekata/internal/db/types.go`:
+- [ ] **Step 1: Implement (no test — pure type declarations exercised by later tasks)**
 
 ```go
+// internal/db/types.go
 package db
 
 import "time"
 
-// Repo is one row of the `repos` table.
-type Repo struct {
+// Project mirrors a row in projects.
+type Project struct {
 	ID              int64     `json:"id"`
 	Identity        string    `json:"identity"`
-	RootPath        string    `json:"root_path"`
 	Name            string    `json:"name"`
 	CreatedAt       time.Time `json:"created_at"`
 	NextIssueNumber int64     `json:"next_issue_number"`
 }
 
-// Issue is one row of the `issues` table, plus the joined repo identity for convenience.
-type Issue struct {
-	ID            int64      `json:"id"`
-	RepoID        int64      `json:"repo_id"`
-	RepoIdentity  string     `json:"repo_identity"`
-	Number        int64      `json:"number"`
-	Title         string     `json:"title"`
-	Body          string     `json:"body"`
-	Status        string     `json:"status"`         // 'open' | 'closed'
-	ClosedReason  *string    `json:"closed_reason"`  // 'done' | 'wontfix' | 'duplicate' | nil
-	Owner         *string    `json:"owner"`
-	Author        string     `json:"author"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	ClosedAt      *time.Time `json:"closed_at"`
-	DeletedAt     *time.Time `json:"deleted_at"`
+// ProjectAlias mirrors a row in project_aliases.
+type ProjectAlias struct {
+	ID             int64     `json:"id"`
+	ProjectID      int64     `json:"project_id"`
+	AliasIdentity  string    `json:"alias_identity"`
+	AliasKind      string    `json:"alias_kind"`
+	RootPath       string    `json:"root_path"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastSeenAt     time.Time `json:"last_seen_at"`
 }
 
-// Comment is one row of the `comments` table.
+// Issue mirrors a row in issues.
+type Issue struct {
+	ID           int64      `json:"id"`
+	ProjectID    int64      `json:"project_id"`
+	Number       int64      `json:"number"`
+	Title        string     `json:"title"`
+	Body         string     `json:"body"`
+	Status       string     `json:"status"`
+	ClosedReason *string    `json:"closed_reason,omitempty"`
+	Owner        *string    `json:"owner,omitempty"`
+	Author       string     `json:"author"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	ClosedAt     *time.Time `json:"closed_at,omitempty"`
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
+}
+
+// Comment mirrors a row in comments.
 type Comment struct {
 	ID        int64     `json:"id"`
 	IssueID   int64     `json:"issue_id"`
@@ -1278,54 +1113,48 @@ type Comment struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Event is one row of the `events` table.
+// Event mirrors a row in events.
 type Event struct {
-	ID             int64     `json:"id"`
-	RepoID         int64     `json:"repo_id"`
-	RepoIdentity   string    `json:"repo_identity"`
-	IssueID        *int64    `json:"issue_id"`
-	IssueNumber    *int64    `json:"issue_number"`
-	RelatedIssueID *int64    `json:"related_issue_id"`
-	Type           string    `json:"type"`    // e.g. "issue.created"
-	Actor          string    `json:"actor"`
-	Payload        string    `json:"payload"` // raw JSON (validated server-side)
-	CreatedAt      time.Time `json:"created_at"`
-}
-
-// EventBrief is a compact event reference returned in mutation responses.
-type EventBrief struct {
-	ID        int64     `json:"id"`
-	Type      string    `json:"type"`
-	CreatedAt time.Time `json:"created_at"`
+	ID              int64     `json:"id"`
+	ProjectID       int64     `json:"project_id"`
+	ProjectIdentity string    `json:"project_identity"`
+	IssueID         *int64    `json:"issue_id,omitempty"`
+	IssueNumber     *int64    `json:"issue_number,omitempty"`
+	RelatedIssueID  *int64    `json:"related_issue_id,omitempty"`
+	Type            string    `json:"type"`
+	Actor           string    `json:"actor"`
+	Payload         string    `json:"payload"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 ```
 
 - [ ] **Step 2: Verify compile**
 
 Run: `go build ./...`
-Expected: silent.
+Expected: compiles cleanly.
 
 - [ ] **Step 3: Commit**
 
-```
+```bash
 git add internal/db/types.go
-git commit -m "Add db domain types (Repo, Issue, Comment, Event)"
+git commit -m "feat(db): declare model types"
 ```
 
 ---
 
-## Task 6: Repo queries
+### Task 6: `internal/db/queries.go` — projects + aliases CRUD
+
+Spec refs: §2.4, §3.2. The handlers in §4.2 need: create project; lookup by identity; lookup by id; list; attach alias to project; update last_seen on alias; lookup alias by identity. Use row-by-row testify-style tests; isolate via `t.TempDir()` per test.
 
 **Files:**
-- Modify: create new `internal/db/queries.go`
-- Test: `internal/db/queries_repos_test.go`
+- Create: `internal/db/queries.go`
+- Test: `internal/db/queries_projects_test.go`
 
-- [ ] **Step 1: Write failing tests**
-
-Create `/Users/wesm/code/vibekata/internal/db/queries_repos_test.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
-package db
+// internal/db/queries_projects_test.go
+package db_test
 
 import (
 	"context"
@@ -1334,67 +1163,127 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/db"
 )
 
-func openTestDB(t *testing.T) *DB {
+func openTestDB(t *testing.T) *db.DB {
 	t.Helper()
-	tmp := t.TempDir()
-	d, err := Open(context.Background(), filepath.Join(tmp, "kata.db"))
+	d, err := db.Open(context.Background(), filepath.Join(t.TempDir(), "kata.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
 
-func TestRepoUpsertByIdentity(t *testing.T) {
+func TestCreateProject_RoundTrips(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
 
-	r1, created, err := d.RepoUpsertByIdentity(ctx, "github.com/wesm/kata", "/repo/path", "kata")
+	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
 	require.NoError(t, err)
-	assert.True(t, created)
-	assert.NotZero(t, r1.ID)
-	assert.Equal(t, "github.com/wesm/kata", r1.Identity)
-	assert.Equal(t, "/repo/path", r1.RootPath)
+	assert.Equal(t, "github.com/wesm/kata", p.Identity)
+	assert.Equal(t, "kata", p.Name)
+	assert.Equal(t, int64(1), p.NextIssueNumber)
+	assert.False(t, p.CreatedAt.IsZero())
 
-	r2, created2, err := d.RepoUpsertByIdentity(ctx, "github.com/wesm/kata", "/new/path", "kata")
+	got, err := d.ProjectByIdentity(ctx, "github.com/wesm/kata")
 	require.NoError(t, err)
-	assert.False(t, created2)
-	assert.Equal(t, r1.ID, r2.ID)
-	assert.Equal(t, "/new/path", r2.RootPath, "root_path is updated on every resolve")
+	assert.Equal(t, p.ID, got.ID)
 }
 
-func TestRepoGetAndList(t *testing.T) {
+func TestProjectByIdentity_NotFound(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.ProjectByIdentity(context.Background(), "missing")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestCreateProject_DuplicateIdentity(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-
-	_, _, err := d.RepoUpsertByIdentity(ctx, "ident-a", "/a", "a")
+	_, err := d.CreateProject(ctx, "x", "x")
 	require.NoError(t, err)
-	_, _, err = d.RepoUpsertByIdentity(ctx, "ident-b", "/b", "b")
+	_, err = d.CreateProject(ctx, "x", "x")
+	require.Error(t, err)
+}
+
+func TestAttachAlias_AndLookup(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
 	require.NoError(t, err)
 
-	repos, err := d.RepoList(ctx)
+	a, err := d.AttachAlias(ctx, p.ID, "github.com/wesm/kata", "git", "/tmp/x")
 	require.NoError(t, err)
-	assert.Len(t, repos, 2)
+	assert.Equal(t, p.ID, a.ProjectID)
+	assert.Equal(t, "git", a.AliasKind)
 
-	r, err := d.RepoGet(ctx, repos[0].ID)
+	got, err := d.AliasByIdentity(ctx, "github.com/wesm/kata")
 	require.NoError(t, err)
-	assert.Equal(t, repos[0].Identity, r.Identity)
+	assert.Equal(t, a.ID, got.ID)
+}
 
-	_, err = d.RepoGet(ctx, 9999)
-	assert.ErrorIs(t, err, ErrNotFound)
+func TestAliasByIdentity_NotFound(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.AliasByIdentity(context.Background(), "missing")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestTouchAlias_UpdatesLastSeen(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "x", "x")
+	require.NoError(t, err)
+	a, err := d.AttachAlias(ctx, p.ID, "x", "git", "/tmp/x")
+	require.NoError(t, err)
+
+	require.NoError(t, d.TouchAlias(ctx, a.ID, "/tmp/y"))
+	got, err := d.AliasByIdentity(ctx, "x")
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/y", got.RootPath)
+	assert.True(t, !got.LastSeenAt.Before(a.LastSeenAt))
+}
+
+func TestListProjects_Empty(t *testing.T) {
+	d := openTestDB(t)
+	got, err := d.ListProjects(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestListProjects_OrdersByIDAsc(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	_, _ = d.CreateProject(ctx, "a", "a")
+	_, _ = d.CreateProject(ctx, "b", "b")
+
+	got, err := d.ListProjects(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "a", got[0].Identity)
+	assert.Equal(t, "b", got[1].Identity)
+}
+
+func TestProjectAliases_ReturnsAllForProject(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p", "p")
+	_, _ = d.AttachAlias(ctx, p.ID, "alias-a", "git", "/tmp/a")
+	_, _ = d.AttachAlias(ctx, p.ID, "alias-b", "git", "/tmp/b")
+
+	got, err := d.ProjectAliases(ctx, p.ID)
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
 }
 ```
 
-- [ ] **Step 2: Run tests to confirm they fail**
+- [ ] **Step 2: Run test (expect failure)**
 
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: build error.
+Run: `go test ./internal/db/...`
+Expected: FAIL — symbols missing.
 
-- [ ] **Step 3: Implement queries.go (initial version, repo helpers)**
-
-Create `/Users/wesm/code/vibekata/internal/db/queries.go`:
+- [ ] **Step 3: Implement queries**
 
 ```go
+// internal/db/queries.go
 package db
 
 import (
@@ -1402,143 +1291,173 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 )
 
-// ErrNotFound indicates a row could not be found by the given key.
+// ErrNotFound is returned when a single-row lookup matches zero rows.
 var ErrNotFound = errors.New("not found")
 
-// RepoUpsertByIdentity inserts a repo if no row with the given identity exists,
-// otherwise updates root_path and returns the existing row. Returns the row and
-// `created=true` if an insert happened.
-func (d *DB) RepoUpsertByIdentity(ctx context.Context, identity, rootPath, name string) (Repo, bool, error) {
-	tx, err := d.sqldb.BeginTx(ctx, nil)
+// CreateProject inserts a new projects row with default next_issue_number=1.
+func (d *DB) CreateProject(ctx context.Context, identity, name string) (Project, error) {
+	res, err := d.ExecContext(ctx,
+		`INSERT INTO projects(identity, name) VALUES(?, ?)`, identity, name)
 	if err != nil {
-		return Repo{}, false, err
+		return Project{}, fmt.Errorf("insert project: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	row := tx.QueryRowContext(ctx, `SELECT id, identity, root_path, name, created_at, next_issue_number FROM repos WHERE identity = ?`, identity)
-	r, err := scanRepo(row)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		// Insert new
-		res, err := tx.ExecContext(ctx, `INSERT INTO repos (identity, root_path, name) VALUES (?, ?, ?)`, identity, rootPath, name)
-		if err != nil {
-			return Repo{}, false, fmt.Errorf("repo insert: %w", err)
-		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return Repo{}, false, err
-		}
-		if err := tx.Commit(); err != nil {
-			return Repo{}, false, err
-		}
-		got, err := d.RepoGet(ctx, id)
-		return got, true, err
-	case err != nil:
-		return Repo{}, false, err
-	default:
-		// Update root_path (last seen)
-		_, err := tx.ExecContext(ctx, `UPDATE repos SET root_path = ?, name = ? WHERE id = ?`, rootPath, name, r.ID)
-		if err != nil {
-			return Repo{}, false, fmt.Errorf("repo update: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return Repo{}, false, err
-		}
-		got, err := d.RepoGet(ctx, r.ID)
-		return got, false, err
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Project{}, fmt.Errorf("last id: %w", err)
 	}
+	return d.ProjectByID(ctx, id)
 }
 
-// RepoGet fetches one repo by id. Returns ErrNotFound if missing.
-func (d *DB) RepoGet(ctx context.Context, id int64) (Repo, error) {
-	row := d.sqldb.QueryRowContext(ctx, `SELECT id, identity, root_path, name, created_at, next_issue_number FROM repos WHERE id = ?`, id)
-	r, err := scanRepo(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Repo{}, ErrNotFound
-	}
-	return r, err
+// ProjectByID fetches one project by its rowid.
+func (d *DB) ProjectByID(ctx context.Context, id int64) (Project, error) {
+	row := d.QueryRowContext(ctx, projectSelect+` WHERE id = ?`, id)
+	return scanProject(row)
 }
 
-// RepoList returns all repos sorted by name.
-func (d *DB) RepoList(ctx context.Context) ([]Repo, error) {
-	rows, err := d.sqldb.QueryContext(ctx, `SELECT id, identity, root_path, name, created_at, next_issue_number FROM repos ORDER BY name ASC`)
+// ProjectByIdentity fetches one project by its UNIQUE identity.
+func (d *DB) ProjectByIdentity(ctx context.Context, identity string) (Project, error) {
+	row := d.QueryRowContext(ctx, projectSelect+` WHERE identity = ?`, identity)
+	return scanProject(row)
+}
+
+// ListProjects returns every project ordered by id ASC.
+func (d *DB) ListProjects(ctx context.Context) ([]Project, error) {
+	rows, err := d.QueryContext(ctx, projectSelect+` ORDER BY id ASC`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	defer rows.Close()
-	var out []Repo
+	var out []Project
 	for rows.Next() {
-		r, err := scanRepo(rows)
+		p, err := scanProject(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, r)
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
-type scanner interface {
-	Scan(dest ...any) error
-}
-
-func scanRepo(s scanner) (Repo, error) {
-	var r Repo
-	var createdAt string
-	if err := s.Scan(&r.ID, &r.Identity, &r.RootPath, &r.Name, &createdAt, &r.NextIssueNumber); err != nil {
-		return Repo{}, err
-	}
-	t, err := parseSQLiteTime(createdAt)
+// AttachAlias inserts a project_aliases row.
+func (d *DB) AttachAlias(ctx context.Context, projectID int64, identity, kind, rootPath string) (ProjectAlias, error) {
+	res, err := d.ExecContext(ctx,
+		`INSERT INTO project_aliases(project_id, alias_identity, alias_kind, root_path)
+		 VALUES(?, ?, ?, ?)`, projectID, identity, kind, rootPath)
 	if err != nil {
-		return Repo{}, err
+		return ProjectAlias{}, fmt.Errorf("insert alias: %w", err)
 	}
-	r.CreatedAt = t
-	return r, nil
+	id, err := res.LastInsertId()
+	if err != nil {
+		return ProjectAlias{}, err
+	}
+	return d.aliasByID(ctx, id)
 }
 
-func parseSQLiteTime(s string) (time.Time, error) {
-	for _, layout := range []string{
-		"2006-01-02T15:04:05.000Z",
-		"2006-01-02T15:04:05Z",
-	} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC(), nil
-		}
+// AliasByIdentity returns the alias for a given alias_identity.
+func (d *DB) AliasByIdentity(ctx context.Context, identity string) (ProjectAlias, error) {
+	row := d.QueryRowContext(ctx, aliasSelect+` WHERE alias_identity = ?`, identity)
+	return scanAlias(row)
+}
+
+func (d *DB) aliasByID(ctx context.Context, id int64) (ProjectAlias, error) {
+	row := d.QueryRowContext(ctx, aliasSelect+` WHERE id = ?`, id)
+	return scanAlias(row)
+}
+
+// TouchAlias updates last_seen_at to now and rewrites root_path.
+func (d *DB) TouchAlias(ctx context.Context, aliasID int64, rootPath string) error {
+	_, err := d.ExecContext(ctx,
+		`UPDATE project_aliases
+		 SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+		     root_path    = ?
+		 WHERE id = ?`, rootPath, aliasID)
+	if err != nil {
+		return fmt.Errorf("touch alias: %w", err)
 	}
-	return time.Time{}, fmt.Errorf("parse sqlite time %q", s)
+	return nil
+}
+
+// ProjectAliases returns every alias attached to a project ordered by id ASC.
+func (d *DB) ProjectAliases(ctx context.Context, projectID int64) ([]ProjectAlias, error) {
+	rows, err := d.QueryContext(ctx, aliasSelect+` WHERE project_id = ? ORDER BY id ASC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list aliases: %w", err)
+	}
+	defer rows.Close()
+	var out []ProjectAlias
+	for rows.Next() {
+		a, err := scanAlias(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+const projectSelect = `SELECT id, identity, name, created_at, next_issue_number FROM projects`
+
+type rowScanner interface {
+	Scan(...any) error
+}
+
+func scanProject(r rowScanner) (Project, error) {
+	var p Project
+	err := r.Scan(&p.ID, &p.Identity, &p.Name, &p.CreatedAt, &p.NextIssueNumber)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Project{}, ErrNotFound
+	}
+	if err != nil {
+		return Project{}, fmt.Errorf("scan project: %w", err)
+	}
+	return p, nil
+}
+
+const aliasSelect = `SELECT id, project_id, alias_identity, alias_kind, root_path, created_at, last_seen_at FROM project_aliases`
+
+func scanAlias(r rowScanner) (ProjectAlias, error) {
+	var a ProjectAlias
+	err := r.Scan(&a.ID, &a.ProjectID, &a.AliasIdentity, &a.AliasKind, &a.RootPath, &a.CreatedAt, &a.LastSeenAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectAlias{}, ErrNotFound
+	}
+	if err != nil {
+		return ProjectAlias{}, fmt.Errorf("scan alias: %w", err)
+	}
+	return a, nil
 }
 ```
 
-- [ ] **Step 4: Run tests to confirm they pass**
+- [ ] **Step 4: Run test (expect pass)**
 
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: PASS.
+Run: `go test ./internal/db/...`
+Expected: all tests pass (DB tests + project/alias tests).
 
 - [ ] **Step 5: Commit**
 
-```
-git add internal/db/queries.go internal/db/queries_repos_test.go
-git commit -m "Add db.RepoUpsertByIdentity, RepoGet, RepoList"
+```bash
+make lint
+git add internal/db/queries.go internal/db/queries_projects_test.go
+git commit -m "feat(db): project + alias CRUD with last_seen tracking"
 ```
 
 ---
 
-## Task 7: Issue queries (create/get/list)
+### Task 7: `internal/db/queries.go` — issues, comments, events, close/reopen
+
+Spec refs: §3.2 (issues, comments, events), §3.4 (lifecycle). Plan 1 needs: CreateIssue (atomically allocates `number` from `projects.next_issue_number`, appends `issue.created` event), GetIssueByNumber, ListIssuesByProject, CreateComment (+event), CloseIssue (+event), ReopenIssue (+event), EventsByIssue (helpful for `kata show --include-events` later, but Plan 1 leaves it unused).
 
 **Files:**
-- Modify: `internal/db/queries.go`
+- Modify: `internal/db/queries.go` (append; don't restructure existing project/alias funcs)
 - Test: `internal/db/queries_issues_test.go`
 
-The create path runs in a `BEGIN IMMEDIATE` transaction: read `repos.next_issue_number`, insert the issue, bump `next_issue_number`, append an `issue.created` event row. Returns the new issue + the brief event reference.
-
-- [ ] **Step 1: Write failing tests**
-
-Create `/Users/wesm/code/vibekata/internal/db/queries_issues_test.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
-package db
+// internal/db/queries_issues_test.go
+package db_test
 
 import (
 	"context"
@@ -1546,230 +1465,283 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/db"
 )
 
-func makeRepo(t *testing.T, d *DB, identity string) Repo {
-	t.Helper()
-	r, _, err := d.RepoUpsertByIdentity(context.Background(), identity, "/p", "name")
-	require.NoError(t, err)
-	return r
-}
-
-func TestIssueCreate_AssignsSequentialNumbers(t *testing.T) {
+func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	r := makeRepo(t, d, "id-a")
+	p, _ := d.CreateProject(ctx, "p", "p")
 
-	i1, ev1, err := d.IssueCreate(ctx, IssueCreateInput{
-		RepoID: r.ID, Title: "first", Body: "b1", Author: "alice",
+	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		Title:     "first",
+		Body:      "details",
+		Author:    "agent-1",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), i1.Number)
-	assert.Equal(t, "issue.created", ev1.Type)
-	assert.NotZero(t, ev1.ID)
+	assert.Equal(t, int64(1), issue.Number)
+	assert.Equal(t, "open", issue.Status)
+	assert.Equal(t, "agent-1", issue.Author)
+	assert.Equal(t, "issue.created", evt.Type)
+	assert.NotNil(t, evt.IssueID)
+	require.NotNil(t, evt.IssueNumber)
+	assert.Equal(t, int64(1), *evt.IssueNumber)
 
-	i2, _, err := d.IssueCreate(ctx, IssueCreateInput{
-		RepoID: r.ID, Title: "second", Body: "", Author: "bob",
-	})
+	p2, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(2), i2.Number)
+	assert.Equal(t, int64(2), p2.NextIssueNumber)
 }
 
-func TestIssueCreate_PerRepoNumbering(t *testing.T) {
+func TestCreateIssue_NumbersAreSequentialPerProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	a := makeRepo(t, d, "id-a")
-	b := makeRepo(t, d, "id-b")
+	p, _ := d.CreateProject(ctx, "p", "p")
 
-	i1, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: a.ID, Title: "x", Author: "u"})
-	require.NoError(t, err)
-	i2, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: b.ID, Title: "y", Author: "u"})
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), i1.Number)
-	assert.Equal(t, int64(1), i2.Number, "issue numbers are per-repo")
+	for i := 1; i <= 3; i++ {
+		issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID, Title: "x", Author: "a",
+		})
+		require.NoError(t, err)
+		assert.EqualValues(t, i, issue.Number)
+	}
 }
 
-func TestIssueCreate_RejectsEmptyTitleAndAuthor(t *testing.T) {
+func TestGetIssueByNumber_NotFound(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	r := makeRepo(t, d, "id-x")
-
-	_, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "", Author: "u"})
-	require.Error(t, err)
-	_, _, err = d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "t", Author: ""})
-	require.Error(t, err)
+	p, _ := d.CreateProject(ctx, "p", "p")
+	_, err := d.IssueByNumber(ctx, p.ID, 99)
+	assert.ErrorIs(t, err, db.ErrNotFound)
 }
 
-func TestIssueGetByNumber(t *testing.T) {
+func TestListIssues_DefaultsToOpenOnlyAndExcludesDeleted(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	r := makeRepo(t, d, "id-y")
-
-	i, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "t", Author: "u"})
-	require.NoError(t, err)
-
-	got, err := d.IssueGetByNumber(ctx, r.ID, i.Number)
-	require.NoError(t, err)
-	assert.Equal(t, i.ID, got.ID)
-	assert.Equal(t, "id-y", got.RepoIdentity)
-
-	_, err = d.IssueGetByNumber(ctx, r.ID, 999)
-	assert.ErrorIs(t, err, ErrNotFound)
-}
-
-func TestIssueList_FiltersAndDefaultSort(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	r := makeRepo(t, d, "id-z")
-
+	p, _ := d.CreateProject(ctx, "p", "p")
 	for _, title := range []string{"a", "b", "c"} {
-		_, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: title, Author: "u"})
+		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID, Title: title, Author: "x",
+		})
 		require.NoError(t, err)
 	}
 
-	all, err := d.IssueList(ctx, IssueListFilter{RepoID: r.ID, Limit: 50})
+	got, err := d.ListIssues(ctx, db.ListIssuesParams{ProjectID: p.ID, Status: "open"})
 	require.NoError(t, err)
-	assert.Len(t, all, 3)
+	assert.Len(t, got, 3)
+}
 
-	open, err := d.IssueList(ctx, IssueListFilter{RepoID: r.ID, Status: "open", Limit: 50})
-	require.NoError(t, err)
-	assert.Len(t, open, 3)
+func TestCreateComment_EmitsEvent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p", "p")
+	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
 
-	closed, err := d.IssueList(ctx, IssueListFilter{RepoID: r.ID, Status: "closed", Limit: 50})
+	cmt, evt, err := d.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: issue.ID, Author: "agent", Body: "hi",
+	})
 	require.NoError(t, err)
-	assert.Len(t, closed, 0)
+	assert.Equal(t, "hi", cmt.Body)
+	assert.Equal(t, "issue.commented", evt.Type)
+}
+
+func TestCloseIssue_SetsStatusAndEmitsEvent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p", "p")
+	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
+
+	updated, evt, changed, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, "closed", updated.Status)
+	require.NotNil(t, updated.ClosedReason)
+	assert.Equal(t, "done", *updated.ClosedReason)
+	assert.NotNil(t, updated.ClosedAt)
+	assert.Equal(t, "issue.closed", evt.Type)
+}
+
+func TestCloseIssue_OnAlreadyClosedIsNoOp(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p", "p")
+	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
+	_, _, _, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
+	require.NoError(t, err)
+
+	_, evt, changed, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Nil(t, evt)
+}
+
+func TestReopenIssue_ClearsStatusAndEmitsEvent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p", "p")
+	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
+	_, _, _, _ = d.CloseIssue(ctx, issue.ID, "done", "agent")
+
+	updated, evt, changed, err := d.ReopenIssue(ctx, issue.ID, "agent")
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, "open", updated.Status)
+	assert.Nil(t, updated.ClosedAt)
+	assert.Nil(t, updated.ClosedReason)
+	assert.Equal(t, "issue.reopened", evt.Type)
+}
+
+func TestEditIssue_SetsFieldsAndEmitsEvent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p", "p")
+	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "old", Body: "ob", Author: "x"})
+
+	newTitle := "new"
+	updated, evt, changed, err := d.EditIssue(ctx, db.EditIssueParams{
+		IssueID: issue.ID, Title: &newTitle, Actor: "agent",
+	})
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, "new", updated.Title)
+	require.NotNil(t, evt)
+	assert.Equal(t, "issue.updated", evt.Type)
+}
+
+func TestEditIssue_NoFieldsIsValidationError(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p", "p")
+	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
+
+	_, _, _, err := d.EditIssue(ctx, db.EditIssueParams{IssueID: issue.ID, Actor: "agent"})
+	assert.ErrorIs(t, err, db.ErrNoFields)
 }
 ```
 
-- [ ] **Step 2: Run tests to confirm they fail**
+- [ ] **Step 2: Run test (expect failure)**
 
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: build errors.
+Run: `go test ./internal/db/...`
+Expected: FAIL — symbols missing.
 
-- [ ] **Step 3: Append issue helpers to `queries.go`**
-
-Append to `/Users/wesm/code/vibekata/internal/db/queries.go`:
+- [ ] **Step 3: Implement issues/comments/events/close/reopen/edit**
 
 ```go
-// IssueCreateInput is the daemon-level input to IssueCreate. The handler layer
-// is responsible for resolving repo and validating actor.
-type IssueCreateInput struct {
-	RepoID  int64
-	Title   string
-	Body    string
-	Author  string
-	// Plan 1 doesn't accept owner, labels, links, or idempotency; those land in
-	// later plans and will extend this struct without breaking call sites.
+// append to internal/db/queries.go
+
+// ErrNoFields is returned by EditIssue when no field is set.
+var ErrNoFields = errors.New("no fields to update")
+
+// CreateIssueParams carries inputs for CreateIssue.
+type CreateIssueParams struct {
+	ProjectID int64
+	Title     string
+	Body      string
+	Author    string
 }
 
-// IssueCreate inserts an issue, bumps the per-repo number, appends an
-// `issue.created` event, and returns the new issue + a brief event reference.
-// Runs under BEGIN IMMEDIATE so concurrent creates are linearized.
-func (d *DB) IssueCreate(ctx context.Context, in IssueCreateInput) (Issue, EventBrief, error) {
-	tx, err := d.sqldb.BeginTx(ctx, nil)
+// CreateIssue inserts an issue, allocates the next number atomically, and
+// appends an issue.created event in the same transaction.
+func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event, error) {
+	tx, err := d.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
-		return Issue{}, EventBrief{}, err
+		return Issue{}, Event{}, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		// SQLite ignores nested BEGINs; ignore "cannot start a transaction within a transaction"
-		// by relying on the outer BeginTx instead.
+	if _, err := tx.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		// SQLite via database/sql already started a tx; ignore "cannot start a transaction within a transaction".
 	}
 
-	var repoID int64
-	var identity string
-	var nextNum int64
-	row := tx.QueryRowContext(ctx, `SELECT id, identity, next_issue_number FROM repos WHERE id = ?`, in.RepoID)
-	if err := row.Scan(&repoID, &identity, &nextNum); err != nil {
+	var (
+		identity string
+		nextNum  int64
+	)
+	if err := tx.QueryRowContext(ctx,
+		`SELECT identity, next_issue_number FROM projects WHERE id = ?`, p.ProjectID).
+		Scan(&identity, &nextNum); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return Issue{}, EventBrief{}, ErrNotFound
+			return Issue{}, Event{}, ErrNotFound
 		}
-		return Issue{}, EventBrief{}, err
+		return Issue{}, Event{}, fmt.Errorf("read project: %w", err)
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO issues (repo_id, number, title, body, author) VALUES (?, ?, ?, ?, ?)`,
-		repoID, nextNum, in.Title, in.Body, in.Author,
-	)
+		`INSERT INTO issues(project_id, number, title, body, author)
+		 VALUES(?, ?, ?, ?, ?)`,
+		p.ProjectID, nextNum, p.Title, p.Body, p.Author)
 	if err != nil {
-		return Issue{}, EventBrief{}, fmt.Errorf("issue insert: %w", err)
+		return Issue{}, Event{}, fmt.Errorf("insert issue: %w", err)
 	}
 	issueID, err := res.LastInsertId()
 	if err != nil {
-		return Issue{}, EventBrief{}, err
+		return Issue{}, Event{}, err
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE repos SET next_issue_number = next_issue_number + 1 WHERE id = ?`, repoID,
-	); err != nil {
-		return Issue{}, EventBrief{}, fmt.Errorf("bump next_issue_number: %w", err)
+		`UPDATE projects SET next_issue_number = next_issue_number + 1 WHERE id = ?`,
+		p.ProjectID); err != nil {
+		return Issue{}, Event{}, fmt.Errorf("bump next_issue_number: %w", err)
 	}
 
-	evRes, err := tx.ExecContext(ctx,
-		`INSERT INTO events (repo_id, repo_identity, issue_id, issue_number, type, actor, payload)
-		 VALUES (?, ?, ?, ?, 'issue.created', ?, '{}')`,
-		repoID, identity, issueID, nextNum, in.Author,
-	)
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       p.ProjectID,
+		ProjectIdentity: identity,
+		IssueID:         &issueID,
+		IssueNumber:     &nextNum,
+		Type:            "issue.created",
+		Actor:           p.Author,
+		Payload:         "{}",
+	})
 	if err != nil {
-		return Issue{}, EventBrief{}, fmt.Errorf("event insert: %w", err)
+		return Issue{}, Event{}, err
 	}
-	evID, _ := evRes.LastInsertId()
 
 	if err := tx.Commit(); err != nil {
-		return Issue{}, EventBrief{}, err
+		return Issue{}, Event{}, fmt.Errorf("commit: %w", err)
 	}
 
-	got, err := d.issueGetByID(ctx, issueID)
+	issue, err := d.IssueByID(ctx, issueID)
 	if err != nil {
-		return Issue{}, EventBrief{}, err
+		return Issue{}, Event{}, err
 	}
-	ev, err := d.eventBrief(ctx, evID)
-	return got, ev, err
+	return issue, evt, nil
 }
 
-// IssueGetByNumber fetches an issue by (repoID, number).
-func (d *DB) IssueGetByNumber(ctx context.Context, repoID, number int64) (Issue, error) {
-	row := d.sqldb.QueryRowContext(ctx, issueSelect+` WHERE i.repo_id = ? AND i.number = ? AND i.deleted_at IS NULL`, repoID, number)
-	i, err := scanIssue(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Issue{}, ErrNotFound
-	}
-	return i, err
+// IssueByID fetches an issue by rowid.
+func (d *DB) IssueByID(ctx context.Context, id int64) (Issue, error) {
+	row := d.QueryRowContext(ctx, issueSelect+` WHERE id = ?`, id)
+	return scanIssue(row)
 }
 
-func (d *DB) issueGetByID(ctx context.Context, id int64) (Issue, error) {
-	row := d.sqldb.QueryRowContext(ctx, issueSelect+` WHERE i.id = ?`, id)
-	i, err := scanIssue(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Issue{}, ErrNotFound
-	}
-	return i, err
+// IssueByNumber fetches an issue by (project_id, number).
+func (d *DB) IssueByNumber(ctx context.Context, projectID, number int64) (Issue, error) {
+	row := d.QueryRowContext(ctx, issueSelect+` WHERE project_id = ? AND number = ?`, projectID, number)
+	return scanIssue(row)
 }
 
-// IssueListFilter is the input to IssueList. Plan 1 supports repo + status + limit.
-type IssueListFilter struct {
-	RepoID int64
-	Status string // "open", "closed", or "" for all
-	Limit  int
+// ListIssuesParams filters list output. Status="" → all. Empty struct → all.
+type ListIssuesParams struct {
+	ProjectID int64
+	Status    string // "open" | "closed" | "" (any)
+	Limit     int    // 0 = no limit
 }
 
-// IssueList returns issues matching the filter, sorted by updated_at DESC.
-func (d *DB) IssueList(ctx context.Context, f IssueListFilter) ([]Issue, error) {
-	q := issueSelect + ` WHERE i.repo_id = ? AND i.deleted_at IS NULL`
-	args := []any{f.RepoID}
-	if f.Status != "" {
-		q += " AND i.status = ?"
-		args = append(args, f.Status)
+// ListIssues returns issues in the given project, excluding soft-deleted rows.
+func (d *DB) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, error) {
+	q := issueSelect + ` WHERE project_id = ? AND deleted_at IS NULL`
+	args := []any{p.ProjectID}
+	if p.Status != "" {
+		q += ` AND status = ?`
+		args = append(args, p.Status)
 	}
-	q += " ORDER BY i.updated_at DESC, i.id DESC"
-	if f.Limit > 0 {
-		q += " LIMIT ?"
-		args = append(args, f.Limit)
+	q += ` ORDER BY updated_at DESC, id DESC`
+	if p.Limit > 0 {
+		q += fmt.Sprintf(` LIMIT %d`, p.Limit)
 	}
-	rows, err := d.sqldb.QueryContext(ctx, q, args...)
+	rows, err := d.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list issues: %w", err)
 	}
 	defer rows.Close()
 	var out []Issue
@@ -1783,1202 +1755,1194 @@ func (d *DB) IssueList(ctx context.Context, f IssueListFilter) ([]Issue, error) 
 	return out, rows.Err()
 }
 
-const issueSelect = `
-SELECT i.id, i.repo_id, r.identity, i.number, i.title, i.body, i.status,
-       i.closed_reason, i.owner, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at
-FROM issues i
-JOIN repos r ON r.id = i.repo_id`
-
-func scanIssue(s scanner) (Issue, error) {
-	var i Issue
-	var createdAt, updatedAt string
-	var closedAt, deletedAt sql.NullString
-	var closedReason sql.NullString
-	var owner sql.NullString
-	if err := s.Scan(
-		&i.ID, &i.RepoID, &i.RepoIdentity, &i.Number, &i.Title, &i.Body, &i.Status,
-		&closedReason, &owner, &i.Author, &createdAt, &updatedAt, &closedAt, &deletedAt,
-	); err != nil {
-		return Issue{}, err
-	}
-	t, err := parseSQLiteTime(createdAt)
-	if err != nil {
-		return Issue{}, err
-	}
-	i.CreatedAt = t
-	t, err = parseSQLiteTime(updatedAt)
-	if err != nil {
-		return Issue{}, err
-	}
-	i.UpdatedAt = t
-	if closedAt.Valid {
-		t, err := parseSQLiteTime(closedAt.String)
-		if err != nil {
-			return Issue{}, err
-		}
-		i.ClosedAt = &t
-	}
-	if deletedAt.Valid {
-		t, err := parseSQLiteTime(deletedAt.String)
-		if err != nil {
-			return Issue{}, err
-		}
-		i.DeletedAt = &t
-	}
-	if closedReason.Valid {
-		s := closedReason.String
-		i.ClosedReason = &s
-	}
-	if owner.Valid {
-		s := owner.String
-		i.Owner = &s
-	}
-	return i, nil
-}
-
-func (d *DB) eventBrief(ctx context.Context, id int64) (EventBrief, error) {
-	row := d.sqldb.QueryRowContext(ctx, `SELECT id, type, created_at FROM events WHERE id = ?`, id)
-	var b EventBrief
-	var createdAt string
-	if err := row.Scan(&b.ID, &b.Type, &createdAt); err != nil {
-		return EventBrief{}, err
-	}
-	t, err := parseSQLiteTime(createdAt)
-	if err != nil {
-		return EventBrief{}, err
-	}
-	b.CreatedAt = t
-	return b, nil
-}
-```
-
-- [ ] **Step 4: Run tests to confirm they pass**
-
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```
-git add internal/db/queries.go internal/db/queries_issues_test.go
-git commit -m "Add db.IssueCreate, IssueGetByNumber, IssueList"
-```
-
----
-
-## Task 8: Comment queries
-
-**Files:**
-- Modify: `internal/db/queries.go`
-- Test: `internal/db/queries_comments_test.go`
-
-- [ ] **Step 1: Write failing tests**
-
-Create `/Users/wesm/code/vibekata/internal/db/queries_comments_test.go`:
-
-```go
-package db
-
-import (
-	"context"
-	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-)
-
-func TestCommentCreateAndList(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	r := makeRepo(t, d, "id-c")
-	issue, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "t", Author: "u"})
-	require.NoError(t, err)
-
-	c1, ev1, err := d.CommentCreate(ctx, CommentCreateInput{
-		IssueID: issue.ID, Author: "alice", Body: "first comment",
-	})
-	require.NoError(t, err)
-	assert.NotZero(t, c1.ID)
-	assert.Equal(t, "issue.commented", ev1.Type)
-
-	c2, _, err := d.CommentCreate(ctx, CommentCreateInput{
-		IssueID: issue.ID, Author: "bob", Body: "second",
-	})
-	require.NoError(t, err)
-	assert.True(t, c2.ID > c1.ID)
-
-	all, err := d.CommentListByIssue(ctx, issue.ID)
-	require.NoError(t, err)
-	assert.Len(t, all, 2)
-	assert.Equal(t, "first comment", all[0].Body)
-	assert.Equal(t, "second", all[1].Body)
-}
-
-func TestCommentCreate_BumpsIssueUpdatedAt(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	r := makeRepo(t, d, "id-c2")
-	i, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "t", Author: "u"})
-	require.NoError(t, err)
-
-	before := i.UpdatedAt
-	_, _, err = d.CommentCreate(ctx, CommentCreateInput{IssueID: i.ID, Author: "x", Body: "y"})
-	require.NoError(t, err)
-
-	updated, err := d.IssueGetByNumber(ctx, r.ID, i.Number)
-	require.NoError(t, err)
-	assert.True(t, !updated.UpdatedAt.Before(before))
-}
-
-func TestCommentCreate_RejectsEmptyBody(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	r := makeRepo(t, d, "id-c3")
-	i, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "t", Author: "u"})
-	require.NoError(t, err)
-
-	_, _, err = d.CommentCreate(ctx, CommentCreateInput{IssueID: i.ID, Author: "u", Body: ""})
-	require.Error(t, err)
-}
-```
-
-- [ ] **Step 2: Run tests to confirm they fail**
-
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: build errors.
-
-- [ ] **Step 3: Append comment helpers to `queries.go`**
-
-Append:
-
-```go
-// CommentCreateInput is the daemon-level input to CommentCreate.
-type CommentCreateInput struct {
+// CreateCommentParams carries inputs for CreateComment.
+type CreateCommentParams struct {
 	IssueID int64
 	Author  string
 	Body    string
 }
 
-// CommentCreate appends a comment, bumps the issue's updated_at, and writes an
-// `issue.commented` event with payload {"comment_id": N}.
-func (d *DB) CommentCreate(ctx context.Context, in CommentCreateInput) (Comment, EventBrief, error) {
-	tx, err := d.sqldb.BeginTx(ctx, nil)
+// CreateComment appends a comment + issue.commented event in one tx, bumping
+// issues.updated_at.
+func (d *DB) CreateComment(ctx context.Context, p CreateCommentParams) (Comment, Event, error) {
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return Comment{}, EventBrief{}, err
+		return Comment{}, Event{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var repoID int64
-	var identity string
-	var number int64
-	row := tx.QueryRowContext(ctx,
-		`SELECT i.repo_id, r.identity, i.number FROM issues i JOIN repos r ON r.id = i.repo_id
-		 WHERE i.id = ? AND i.deleted_at IS NULL`, in.IssueID)
-	if err := row.Scan(&repoID, &identity, &number); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Comment{}, EventBrief{}, ErrNotFound
-		}
-		return Comment{}, EventBrief{}, err
+	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, p.IssueID)
+	if err != nil {
+		return Comment{}, Event{}, err
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO comments (issue_id, author, body) VALUES (?, ?, ?)`,
-		in.IssueID, in.Author, in.Body,
-	)
+		`INSERT INTO comments(issue_id, author, body) VALUES(?, ?, ?)`,
+		p.IssueID, p.Author, p.Body)
 	if err != nil {
-		return Comment{}, EventBrief{}, fmt.Errorf("comment insert: %w", err)
+		return Comment{}, Event{}, fmt.Errorf("insert comment: %w", err)
 	}
-	commentID, _ := res.LastInsertId()
+	commentID, err := res.LastInsertId()
+	if err != nil {
+		return Comment{}, Event{}, err
+	}
 
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE issues SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, in.IssueID,
-	); err != nil {
-		return Comment{}, EventBrief{}, fmt.Errorf("bump updated_at: %w", err)
+		`UPDATE issues SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		p.IssueID); err != nil {
+		return Comment{}, Event{}, fmt.Errorf("touch issue: %w", err)
 	}
 
-	evRes, err := tx.ExecContext(ctx,
-		`INSERT INTO events (repo_id, repo_identity, issue_id, issue_number, type, actor, payload)
-		 VALUES (?, ?, ?, ?, 'issue.commented', ?, json_object('comment_id', ?))`,
-		repoID, identity, in.IssueID, number, in.Author, commentID,
-	)
+	payload := fmt.Sprintf(`{"comment_id":%d}`, commentID)
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       issue.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &issue.ID,
+		IssueNumber:     &issue.Number,
+		Type:            "issue.commented",
+		Actor:           p.Author,
+		Payload:         payload,
+	})
 	if err != nil {
-		return Comment{}, EventBrief{}, fmt.Errorf("event insert: %w", err)
+		return Comment{}, Event{}, err
 	}
-	evID, _ := evRes.LastInsertId()
 
 	if err := tx.Commit(); err != nil {
-		return Comment{}, EventBrief{}, err
+		return Comment{}, Event{}, err
 	}
 
-	got, err := d.commentGet(ctx, commentID)
-	if err != nil {
-		return Comment{}, EventBrief{}, err
-	}
-	ev, err := d.eventBrief(ctx, evID)
-	return got, ev, err
-}
-
-// CommentListByIssue returns all comments on an issue in chronological order.
-func (d *DB) CommentListByIssue(ctx context.Context, issueID int64) ([]Comment, error) {
-	rows, err := d.sqldb.QueryContext(ctx,
-		`SELECT id, issue_id, author, body, created_at FROM comments WHERE issue_id = ? ORDER BY created_at ASC, id ASC`,
-		issueID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Comment
-	for rows.Next() {
-		c, err := scanComment(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
-func (d *DB) commentGet(ctx context.Context, id int64) (Comment, error) {
-	row := d.sqldb.QueryRowContext(ctx,
-		`SELECT id, issue_id, author, body, created_at FROM comments WHERE id = ?`, id)
-	c, err := scanComment(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Comment{}, ErrNotFound
-	}
-	return c, err
-}
-
-func scanComment(s scanner) (Comment, error) {
 	var c Comment
-	var createdAt string
-	if err := s.Scan(&c.ID, &c.IssueID, &c.Author, &c.Body, &createdAt); err != nil {
-		return Comment{}, err
+	if err := d.QueryRowContext(ctx,
+		`SELECT id, issue_id, author, body, created_at FROM comments WHERE id = ?`,
+		commentID).Scan(&c.ID, &c.IssueID, &c.Author, &c.Body, &c.CreatedAt); err != nil {
+		return Comment{}, Event{}, fmt.Errorf("read comment: %w", err)
 	}
-	t, err := parseSQLiteTime(createdAt)
-	if err != nil {
-		return Comment{}, err
-	}
-	c.CreatedAt = t
-	return c, nil
-}
-```
-
-- [ ] **Step 4: Run tests to confirm they pass**
-
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```
-git add internal/db/queries.go internal/db/queries_comments_test.go
-git commit -m "Add db.CommentCreate, CommentListByIssue"
-```
-
----
-
-## Task 9: Close + reopen actions
-
-**Files:**
-- Modify: `internal/db/queries.go`
-- Test: `internal/db/queries_actions_test.go`
-
-- [ ] **Step 1: Write failing tests**
-
-Create `/Users/wesm/code/vibekata/internal/db/queries_actions_test.go`:
-
-```go
-package db
-
-import (
-	"context"
-	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-)
-
-func TestIssueClose_DefaultReason(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	r := makeRepo(t, d, "id-cl")
-	i, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "t", Author: "u"})
-	require.NoError(t, err)
-
-	closed, ev, changed, err := d.IssueClose(ctx, i.ID, "u", "")
-	require.NoError(t, err)
-	assert.True(t, changed)
-	assert.NotNil(t, ev)
-	assert.Equal(t, "issue.closed", ev.Type)
-	assert.Equal(t, "closed", closed.Status)
-	require.NotNil(t, closed.ClosedReason)
-	assert.Equal(t, "done", *closed.ClosedReason)
-	require.NotNil(t, closed.ClosedAt)
+	return c, evt, nil
 }
 
-func TestIssueClose_NoOpWhenAlreadyClosed(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	r := makeRepo(t, d, "id-cl2")
-	i, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "t", Author: "u"})
-	require.NoError(t, err)
-
-	_, _, _, err = d.IssueClose(ctx, i.ID, "u", "wontfix")
-	require.NoError(t, err)
-
-	_, ev, changed, err := d.IssueClose(ctx, i.ID, "u", "")
-	require.NoError(t, err)
-	assert.False(t, changed)
-	assert.Nil(t, ev, "no event emitted on no-op close")
-}
-
-func TestIssueClose_RejectsBadReason(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	r := makeRepo(t, d, "id-cl3")
-	i, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "t", Author: "u"})
-	require.NoError(t, err)
-
-	_, _, _, err = d.IssueClose(ctx, i.ID, "u", "bogus")
-	require.Error(t, err)
-}
-
-func TestIssueReopen(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	r := makeRepo(t, d, "id-ro")
-	i, _, err := d.IssueCreate(ctx, IssueCreateInput{RepoID: r.ID, Title: "t", Author: "u"})
-	require.NoError(t, err)
-
-	_, _, _, err = d.IssueClose(ctx, i.ID, "u", "duplicate")
-	require.NoError(t, err)
-
-	got, ev, changed, err := d.IssueReopen(ctx, i.ID, "u")
-	require.NoError(t, err)
-	assert.True(t, changed)
-	assert.NotNil(t, ev)
-	assert.Equal(t, "issue.reopened", ev.Type)
-	assert.Equal(t, "open", got.Status)
-	assert.Nil(t, got.ClosedReason)
-	assert.Nil(t, got.ClosedAt)
-
-	_, ev2, changed2, err := d.IssueReopen(ctx, i.ID, "u")
-	require.NoError(t, err)
-	assert.False(t, changed2)
-	assert.Nil(t, ev2)
-}
-```
-
-- [ ] **Step 2: Run tests to confirm they fail**
-
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: build errors.
-
-- [ ] **Step 3: Append action helpers to `queries.go`**
-
-Append:
-
-```go
-// IssueClose closes the given issue with the given reason ("" → "done").
-// Returns the updated issue, an event reference (nil if no-op), and `changed=true`
-// when the status actually transitioned.
-func (d *DB) IssueClose(ctx context.Context, issueID int64, actor, reason string) (Issue, *EventBrief, bool, error) {
+// CloseIssue sets status=closed unless already closed.
+func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string) (Issue, *Event, bool, error) {
 	if reason == "" {
 		reason = "done"
 	}
-	switch reason {
-	case "done", "wontfix", "duplicate":
-	default:
-		return Issue{}, nil, false, fmt.Errorf("invalid closed_reason %q", reason)
-	}
-
-	tx, err := d.sqldb.BeginTx(ctx, nil)
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var repoID int64
-	var identity string
-	var number int64
-	var status string
-	row := tx.QueryRowContext(ctx,
-		`SELECT i.repo_id, r.identity, i.number, i.status FROM issues i JOIN repos r ON r.id = i.repo_id
-		 WHERE i.id = ? AND i.deleted_at IS NULL`, issueID)
-	if err := row.Scan(&repoID, &identity, &number, &status); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Issue{}, nil, false, ErrNotFound
-		}
+	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	if err != nil {
 		return Issue{}, nil, false, err
 	}
-
-	if status == "closed" {
-		// no-op
-		got, err := d.issueGetByID(ctx, issueID)
-		_ = tx.Rollback()
-		return got, nil, false, err
+	if issue.Status == "closed" {
+		return issue, nil, false, tx.Commit()
 	}
-
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE issues
-		    SET status='closed', closed_reason=?,
-		        closed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-		        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-		  WHERE id=?`, reason, issueID); err != nil {
-		return Issue{}, nil, false, fmt.Errorf("close update: %w", err)
+		 SET status        = 'closed',
+		     closed_reason = ?,
+		     closed_at     = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+		     updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		 WHERE id = ?`, reason, issueID); err != nil {
+		return Issue{}, nil, false, fmt.Errorf("close: %w", err)
 	}
-
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO events (repo_id, repo_identity, issue_id, issue_number, type, actor, payload)
-		 VALUES (?, ?, ?, ?, 'issue.closed', ?, json_object('reason', ?))`,
-		repoID, identity, issueID, number, actor, reason)
+	payload := fmt.Sprintf(`{"reason":%q}`, reason)
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       issue.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &issue.ID,
+		IssueNumber:     &issue.Number,
+		Type:            "issue.closed",
+		Actor:           actor,
+		Payload:         payload,
+	})
 	if err != nil {
-		return Issue{}, nil, false, fmt.Errorf("close event: %w", err)
+		return Issue{}, nil, false, err
 	}
-	evID, _ := res.LastInsertId()
 	if err := tx.Commit(); err != nil {
 		return Issue{}, nil, false, err
 	}
-	got, err := d.issueGetByID(ctx, issueID)
+	updated, err := d.IssueByID(ctx, issueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
-	ev, err := d.eventBrief(ctx, evID)
-	return got, &ev, true, err
+	return updated, &evt, true, nil
 }
 
-// IssueReopen flips a closed issue back to open and clears closed_reason / closed_at.
-func (d *DB) IssueReopen(ctx context.Context, issueID int64, actor string) (Issue, *EventBrief, bool, error) {
-	tx, err := d.sqldb.BeginTx(ctx, nil)
+// ReopenIssue clears status=closed unless already open.
+func (d *DB) ReopenIssue(ctx context.Context, issueID int64, actor string) (Issue, *Event, bool, error) {
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var repoID int64
-	var identity string
-	var number int64
-	var status string
-	row := tx.QueryRowContext(ctx,
-		`SELECT i.repo_id, r.identity, i.number, i.status FROM issues i JOIN repos r ON r.id = i.repo_id
-		 WHERE i.id = ? AND i.deleted_at IS NULL`, issueID)
-	if err := row.Scan(&repoID, &identity, &number, &status); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Issue{}, nil, false, ErrNotFound
-		}
+	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	if err != nil {
 		return Issue{}, nil, false, err
 	}
-
-	if status == "open" {
-		got, err := d.issueGetByID(ctx, issueID)
-		_ = tx.Rollback()
-		return got, nil, false, err
+	if issue.Status == "open" {
+		return issue, nil, false, tx.Commit()
 	}
-
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE issues
-		    SET status='open', closed_reason=NULL, closed_at=NULL,
-		        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-		  WHERE id=?`, issueID); err != nil {
-		return Issue{}, nil, false, fmt.Errorf("reopen update: %w", err)
+		 SET status        = 'open',
+		     closed_reason = NULL,
+		     closed_at     = NULL,
+		     updated_at    = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		 WHERE id = ?`, issueID); err != nil {
+		return Issue{}, nil, false, fmt.Errorf("reopen: %w", err)
 	}
-
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO events (repo_id, repo_identity, issue_id, issue_number, type, actor, payload)
-		 VALUES (?, ?, ?, ?, 'issue.reopened', ?, '{}')`,
-		repoID, identity, issueID, number, actor)
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       issue.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &issue.ID,
+		IssueNumber:     &issue.Number,
+		Type:            "issue.reopened",
+		Actor:           actor,
+		Payload:         "{}",
+	})
 	if err != nil {
-		return Issue{}, nil, false, fmt.Errorf("reopen event: %w", err)
+		return Issue{}, nil, false, err
 	}
-	evID, _ := res.LastInsertId()
 	if err := tx.Commit(); err != nil {
 		return Issue{}, nil, false, err
 	}
-	got, err := d.issueGetByID(ctx, issueID)
+	updated, err := d.IssueByID(ctx, issueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
-	ev, err := d.eventBrief(ctx, evID)
-	return got, &ev, true, err
+	return updated, &evt, true, nil
+}
+
+// EditIssueParams carries the optional fields for an edit. Nil = leave alone.
+type EditIssueParams struct {
+	IssueID int64
+	Title   *string
+	Body    *string
+	Owner   *string
+	Actor   string
+}
+
+// EditIssue mutates title/body/owner. ErrNoFields if none are set.
+func (d *DB) EditIssue(ctx context.Context, p EditIssueParams) (Issue, *Event, bool, error) {
+	if p.Title == nil && p.Body == nil && p.Owner == nil {
+		return Issue{}, nil, false, ErrNoFields
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, p.IssueID)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+
+	sets := []string{`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`}
+	args := []any{}
+	if p.Title != nil {
+		sets = append(sets, `title = ?`)
+		args = append(args, *p.Title)
+	}
+	if p.Body != nil {
+		sets = append(sets, `body = ?`)
+		args = append(args, *p.Body)
+	}
+	if p.Owner != nil {
+		sets = append(sets, `owner = ?`)
+		args = append(args, *p.Owner)
+	}
+	args = append(args, p.IssueID)
+	q := fmt.Sprintf(`UPDATE issues SET %s WHERE id = ?`, joinComma(sets))
+	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		return Issue{}, nil, false, fmt.Errorf("update issue: %w", err)
+	}
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       issue.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &issue.ID,
+		IssueNumber:     &issue.Number,
+		Type:            "issue.updated",
+		Actor:           p.Actor,
+		Payload:         "{}",
+	})
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Issue{}, nil, false, err
+	}
+	updated, err := d.IssueByID(ctx, p.IssueID)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	return updated, &evt, true, nil
+}
+
+func joinComma(parts []string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += ", "
+		}
+		out += p
+	}
+	return out
+}
+
+// lookupIssueForEvent fetches the issue + its project's identity for event
+// snapshotting. Used inside transactions.
+func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue, string, error) {
+	var i Issue
+	var identity string
+	err := tx.QueryRowContext(ctx,
+		issueSelect+`, p.identity FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?`, issueID).
+		Scan(&i.ID, &i.ProjectID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &identity)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Issue{}, "", ErrNotFound
+	}
+	if err != nil {
+		return Issue{}, "", fmt.Errorf("lookup issue: %w", err)
+	}
+	return i, identity, nil
+}
+
+const issueSelect = `SELECT i.id, i.project_id, i.number, i.title, i.body, i.status, i.closed_reason, i.owner, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i`
+
+func scanIssue(r rowScanner) (Issue, error) {
+	var i Issue
+	err := r.Scan(&i.ID, &i.ProjectID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Issue{}, ErrNotFound
+	}
+	if err != nil {
+		return Issue{}, fmt.Errorf("scan issue: %w", err)
+	}
+	return i, nil
+}
+
+// eventInsert is the tx-internal payload used by insertEventTx.
+type eventInsert struct {
+	ProjectID       int64
+	ProjectIdentity string
+	IssueID         *int64
+	IssueNumber     *int64
+	RelatedIssueID  *int64
+	Type            string
+	Actor           string
+	Payload         string
+}
+
+func insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Event, error) {
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO events(project_id, project_identity, issue_id, issue_number, related_issue_id, type, actor, payload)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		in.ProjectID, in.ProjectIdentity, in.IssueID, in.IssueNumber, in.RelatedIssueID, in.Type, in.Actor, in.Payload)
+	if err != nil {
+		return Event{}, fmt.Errorf("insert event: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Event{}, err
+	}
+	var e Event
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, project_id, project_identity, issue_id, issue_number, related_issue_id, type, actor, payload, created_at FROM events WHERE id = ?`, id).
+		Scan(&e.ID, &e.ProjectID, &e.ProjectIdentity, &e.IssueID, &e.IssueNumber, &e.RelatedIssueID, &e.Type, &e.Actor, &e.Payload, &e.CreatedAt)
+	if err != nil {
+		return Event{}, fmt.Errorf("read event: %w", err)
+	}
+	return e, nil
 }
 ```
 
-- [ ] **Step 4: Run tests to confirm they pass**
+Note: the `BEGIN IMMEDIATE` exec inside `CreateIssue` is best-effort upgrading; database/sql already starts a transaction on `BeginTx`. The simplest correct path here is just to use the implicit transaction — delete the `BEGIN IMMEDIATE` exec line if it errors during testing.
 
-Run: `go test -shuffle=on ./internal/db/...`
-Expected: PASS.
+- [ ] **Step 4: Run test (expect pass)**
+
+Run: `go test ./internal/db/...`
+Expected: all DB tests pass.
 
 - [ ] **Step 5: Commit**
 
-```
-git add internal/db/queries.go internal/db/queries_actions_test.go
-git commit -m "Add db.IssueClose and IssueReopen with no-op detection"
+```bash
+make lint
+git add internal/db/queries.go internal/db/queries_issues_test.go
+git commit -m "feat(db): issue/comment lifecycle with event emission"
 ```
 
 ---
 
-## Task 10: `internal/daemon/endpoint.go`
+### Task 8: `internal/daemon/namespace.go` — runtime + socket dirs per dbhash
+
+Spec refs: §2.3, §9.1. Resolve `<KataHome>/runtime/<dbhash>/` (data dir, contains `daemon.<pid>.json` + `daemon.log`) and `<XDG_RUNTIME_DIR or fallback>/kata/<dbhash>/` (socket location).
 
 **Files:**
-- Create: `internal/daemon/endpoint.go`
-- Test: `internal/daemon/endpoint_test.go`
+- Create: `internal/daemon/namespace.go`
+- Test: `internal/daemon/namespace_test.go`
 
-Spec: §2.2. Encapsulates Unix vs TCP transport for the daemon. Modeled directly on roborev's `internal/daemon/endpoint.go`.
-
-- [ ] **Step 1: Write failing tests**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/endpoint_test.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
-package daemon
+// internal/daemon/namespace_test.go
+package daemon_test
 
 import (
-	"runtime"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/config"
+	"github.com/wesm/kata/internal/daemon"
 )
 
-func TestParseEndpoint_Default(t *testing.T) {
-	ep, err := ParseEndpoint("")
+func TestNamespace_DataDirIsKataHomeRuntime(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+
+	ns, err := daemon.NewNamespace()
 	require.NoError(t, err)
-	if runtime.GOOS == "windows" {
-		assert.Equal(t, "tcp", ep.Network)
-		assert.Equal(t, "127.0.0.1:7474", ep.Address)
-	} else {
-		assert.Equal(t, "tcp", ep.Network)
-		assert.Equal(t, "127.0.0.1:7474", ep.Address)
-	}
+	hash := config.DBHash(filepath.Join(tmp, "kata.db"))
+	assert.Equal(t, filepath.Join(tmp, "runtime", hash), ns.DataDir)
+	assert.Equal(t, hash, ns.DBHash)
 }
 
-func TestParseEndpoint_TCPLoopbackOnly(t *testing.T) {
-	_, err := ParseEndpoint("8.8.8.8:80")
-	require.Error(t, err)
-	_, err = ParseEndpoint("127.0.0.1:1234")
+func TestNamespace_SocketDirHonorsXDGRuntimeDir(t *testing.T) {
+	tmp := t.TempDir()
+	xdg := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	t.Setenv("XDG_RUNTIME_DIR", xdg)
+
+	ns, err := daemon.NewNamespace()
 	require.NoError(t, err)
-	_, err = ParseEndpoint("localhost:1234")
-	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(xdg, "kata", ns.DBHash), ns.SocketDir)
 }
 
-func TestParseEndpoint_Unix(t *testing.T) {
-	ep, err := ParseEndpoint("unix:///tmp/kata.sock")
+func TestNamespace_SocketDirFallsBackToTmpDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	t.Setenv("TMPDIR", "/var/folders/xy")
+
+	ns, err := daemon.NewNamespace()
 	require.NoError(t, err)
-	assert.Equal(t, "unix", ep.Network)
-	assert.Equal(t, "/tmp/kata.sock", ep.Address)
-}
-
-func TestParseEndpoint_UnixRejectsRelative(t *testing.T) {
-	_, err := ParseEndpoint("unix://relative/path")
-	require.Error(t, err)
-}
-
-func TestEndpoint_BaseURL(t *testing.T) {
-	tcp := DaemonEndpoint{Network: "tcp", Address: "127.0.0.1:7474"}
-	assert.Equal(t, "http://127.0.0.1:7474", tcp.BaseURL())
-	unix := DaemonEndpoint{Network: "unix", Address: "/tmp/kata.sock"}
-	assert.Equal(t, "http://localhost", unix.BaseURL())
+	assert.Contains(t, ns.SocketDir, "kata-")
+	assert.Contains(t, ns.SocketDir, ns.DBHash)
 }
 ```
 
-- [ ] **Step 2: Run tests to confirm they fail**
+- [ ] **Step 2: Run test (expect failure)**
 
-Run: `go test -shuffle=on ./internal/daemon/...`
-Expected: build errors.
+Run: `go test ./internal/daemon/...`
+Expected: FAIL — package missing.
 
-- [ ] **Step 3: Implement `endpoint.go`**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/endpoint.go`:
+- [ ] **Step 3: Implement**
 
 ```go
-// Package daemon contains the kata daemon HTTP server, runtime files, and process lifecycle.
+// internal/daemon/namespace.go
 package daemon
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"net"
-	"net/http"
+	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
-	"time"
+
+	"github.com/wesm/kata/internal/config"
 )
 
-// MaxUnixPathLen is the platform socket path length limit.
-var MaxUnixPathLen = func() int {
-	if runtime.GOOS == "darwin" {
-		return 104
-	}
-	return 108
-}()
-
-// DaemonEndpoint describes how to reach the daemon.
-type DaemonEndpoint struct {
-	Network string // "tcp" or "unix"
-	Address string // "127.0.0.1:7474" or "/path/to/daemon.sock"
+// Namespace bundles per-dbhash directories used by daemon runtime files and
+// (on Unix) the listening socket.
+type Namespace struct {
+	DBHash    string // 12-char dbhash
+	DataDir   string // <KataHome>/runtime/<dbhash>
+	SocketDir string // <XDG_RUNTIME_DIR>/kata/<dbhash> or fallback
 }
 
-// ParseEndpoint parses an addr string. Empty input returns the default loopback TCP endpoint.
-// Recognized forms:
-//   - "" → default 127.0.0.1:7474 (TCP loopback)
-//   - "unix:///abs/path" → Unix domain socket at /abs/path
-//   - "127.0.0.1:port" / "localhost:port" / "[::1]:port" → TCP loopback
-func ParseEndpoint(addr string) (DaemonEndpoint, error) {
-	if addr == "" {
-		return DaemonEndpoint{Network: "tcp", Address: "127.0.0.1:7474"}, nil
-	}
-	if strings.HasPrefix(addr, "unix://") {
-		return parseUnix(addr)
-	}
-	if after, ok := strings.CutPrefix(addr, "http://"); ok {
-		return parseTCP(after)
-	}
-	return parseTCP(addr)
-}
-
-func parseTCP(addr string) (DaemonEndpoint, error) {
-	host, _, err := net.SplitHostPort(addr)
+// NewNamespace resolves directories from $KATA_HOME / $KATA_DB / $XDG_RUNTIME_DIR / $TMPDIR.
+// Directories are not created — call EnsureDirs at startup.
+func NewNamespace() (*Namespace, error) {
+	dbPath, err := config.KataDB()
 	if err != nil {
-		return DaemonEndpoint{}, fmt.Errorf("parse tcp address %q: %w", addr, err)
+		return nil, fmt.Errorf("resolve KATA_DB: %w", err)
 	}
-	if !isLoopback(host) {
-		return DaemonEndpoint{}, fmt.Errorf("daemon address %q must use loopback (127.0.0.1, ::1, localhost)", addr)
+	dataRoot, err := config.RuntimeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve runtime dir: %w", err)
 	}
-	return DaemonEndpoint{Network: "tcp", Address: addr}, nil
+	hash := config.DBHash(dbPath)
+
+	socketDir := socketParent(hash)
+
+	return &Namespace{
+		DBHash:    hash,
+		DataDir:   dataRoot,
+		SocketDir: socketDir,
+	}, nil
 }
 
-func isLoopback(host string) bool {
-	switch host {
-	case "127.0.0.1", "::1", "localhost":
-		return true
+func socketParent(dbhash string) string {
+	if v := os.Getenv("XDG_RUNTIME_DIR"); v != "" {
+		return filepath.Join(v, "kata", dbhash)
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
+	tmp := os.Getenv("TMPDIR")
+	if tmp == "" {
+		tmp = os.TempDir()
 	}
-	return false
+	return filepath.Join(tmp, fmt.Sprintf("kata-%d", os.Getuid()), dbhash)
 }
 
-func parseUnix(raw string) (DaemonEndpoint, error) {
-	path := strings.TrimPrefix(raw, "unix://")
-	if path == "" {
-		return DaemonEndpoint{}, errors.New("unix:// requires a path")
+// EnsureDirs materializes DataDir (0700) and SocketDir (0700).
+func (n *Namespace) EnsureDirs() error {
+	if err := os.MkdirAll(n.DataDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir data dir: %w", err)
 	}
-	if !filepath.IsAbs(path) {
-		return DaemonEndpoint{}, fmt.Errorf("unix socket path %q must be absolute", path)
+	if err := os.MkdirAll(n.SocketDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir socket dir: %w", err)
 	}
-	if strings.ContainsRune(path, 0) {
-		return DaemonEndpoint{}, errors.New("unix socket path contains null byte")
-	}
-	if len(path) >= MaxUnixPathLen {
-		return DaemonEndpoint{}, fmt.Errorf("unix socket path %q (%d bytes) exceeds platform limit %d", path, len(path), MaxUnixPathLen)
-	}
-	return DaemonEndpoint{Network: "unix", Address: path}, nil
-}
-
-// BaseURL returns the HTTP base URL for constructing requests.
-func (e DaemonEndpoint) BaseURL() string {
-	if e.Network == "unix" {
-		return "http://localhost"
-	}
-	return "http://" + e.Address
-}
-
-// HTTPClient returns an http.Client wired to this transport.
-func (e DaemonEndpoint) HTTPClient(timeout time.Duration) *http.Client {
-	if e.Network == "unix" {
-		return &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return (&net.Dialer{}).DialContext(ctx, "unix", e.Address)
-				},
-				DisableKeepAlives: true,
-				Proxy:             nil,
-			},
-		}
-	}
-	return &http.Client{Timeout: timeout}
-}
-
-// Listener creates a net.Listener.
-func (e DaemonEndpoint) Listener() (net.Listener, error) {
-	return net.Listen(e.Network, e.Address)
-}
-
-// String is a human-readable representation, e.g. "unix:/path" or "tcp:127.0.0.1:7474".
-func (e DaemonEndpoint) String() string {
-	return e.Network + ":" + e.Address
+	return nil
 }
 ```
 
-- [ ] **Step 4: Run tests to confirm they pass**
+- [ ] **Step 4: Run test (expect pass)**
 
-Run: `go test -shuffle=on ./internal/daemon/...`
+Run: `go test ./internal/daemon/...`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
-```
-git add internal/daemon/endpoint.go internal/daemon/endpoint_test.go
-git commit -m "Add daemon.DaemonEndpoint with Unix and TCP-loopback parsing"
+```bash
+make lint
+git add internal/daemon/ go.mod go.sum
+git commit -m "feat(daemon): resolve per-dbhash data and socket dirs"
 ```
 
 ---
 
-## Task 11: `internal/daemon/runtime.go`
+### Task 9: `internal/daemon/runtime.go` — `daemon.<pid>.json` lifecycle
+
+Spec refs: §2.3. Atomic write/rename of `daemon.<pid>.json` containing `{pid, addr, started_at, db_path}`. List + clean stale files (where the PID is dead). Reading walks `runtime/<dbhash>/daemon.*.json`.
 
 **Files:**
 - Create: `internal/daemon/runtime.go`
 - Test: `internal/daemon/runtime_test.go`
 
-Spec: §2.3. Per-PID runtime files namespaced under `$KATA_DATA_DIR/runtime/<dbhash>/`.
-
-- [ ] **Step 1: Write failing tests**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/runtime_test.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
-package daemon
+// internal/daemon/runtime_test.go
+package daemon_test
 
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/daemon"
 )
 
-func setupRuntimeDir(t *testing.T) string {
-	t.Helper()
-	tmp := t.TempDir()
-	t.Setenv("KATA_DATA_DIR", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
-	return tmp
-}
-
-func TestWriteAndReadRuntime(t *testing.T) {
-	setupRuntimeDir(t)
-	ep := DaemonEndpoint{Network: "tcp", Address: "127.0.0.1:7474"}
-	require.NoError(t, WriteRuntime(ep, "0.1.0"))
-	defer RemoveRuntime()
-
-	got, err := ReadRuntime()
+func TestRuntimeFile_RoundTripWriteRead(t *testing.T) {
+	dir := t.TempDir()
+	rec := daemon.RuntimeRecord{
+		PID:       4242,
+		Address:   "unix:///tmp/kata.sock",
+		DBPath:    "/tmp/kata.db",
+		StartedAt: time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC),
+	}
+	path, err := daemon.WriteRuntimeFile(dir, rec)
 	require.NoError(t, err)
-	assert.Equal(t, os.Getpid(), got.PID)
-	assert.Equal(t, "tcp", got.Network)
-	assert.Equal(t, "127.0.0.1:7474", got.Addr)
-	assert.Equal(t, "0.1.0", got.Version)
-}
+	assert.Equal(t, filepath.Join(dir, "daemon.4242.json"), path)
 
-func TestListAllRuntimes(t *testing.T) {
-	setupRuntimeDir(t)
-	ep := DaemonEndpoint{Network: "tcp", Address: "127.0.0.1:7474"}
-	require.NoError(t, WriteRuntime(ep, "0.1.0"))
-	defer RemoveRuntime()
-
-	all, err := ListAllRuntimes()
+	got, err := daemon.ReadRuntimeFile(path)
 	require.NoError(t, err)
-	require.Len(t, all, 1)
-	assert.Equal(t, os.Getpid(), all[0].PID)
+	assert.Equal(t, rec.PID, got.PID)
+	assert.Equal(t, rec.Address, got.Address)
 }
 
-func TestRemoveRuntime(t *testing.T) {
-	setupRuntimeDir(t)
-	ep := DaemonEndpoint{Network: "unix", Address: "/tmp/kata.sock"}
-	require.NoError(t, WriteRuntime(ep, "0.1.0"))
+func TestListRuntimeFiles_FindsAllInDir(t *testing.T) {
+	dir := t.TempDir()
+	for _, pid := range []int{1, 2, 3} {
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "daemon."+strconv.Itoa(pid)+".json"),
+			[]byte(`{"pid":`+strconv.Itoa(pid)+`,"address":"x","db_path":"x","started_at":"2026-01-01T00:00:00Z"}`), 0o644))
+	}
 
-	RemoveRuntime()
+	got, err := daemon.ListRuntimeFiles(dir)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+}
 
-	_, err := ReadRuntime()
-	assert.Error(t, err)
+func TestRuntimeFile_AtomicViaTempRename(t *testing.T) {
+	// Two concurrent writes shouldn't produce a half-written file.
+	// We assert by writing once and then reading — the value must match.
+	dir := t.TempDir()
+	rec := daemon.RuntimeRecord{PID: 7, Address: "x", DBPath: "x", StartedAt: time.Now().UTC()}
+	_, err := daemon.WriteRuntimeFile(dir, rec)
+	require.NoError(t, err)
+	got, err := daemon.ReadRuntimeFile(filepath.Join(dir, "daemon.7.json"))
+	require.NoError(t, err)
+	assert.Equal(t, rec.PID, got.PID)
+}
+
+func TestProcessAlive_TrueForSelfFalseForGarbagePID(t *testing.T) {
+	assert.True(t, daemon.ProcessAlive(os.Getpid()))
+	assert.False(t, daemon.ProcessAlive(99999999))
 }
 ```
 
-- [ ] **Step 2: Run tests to confirm they fail**
+- [ ] **Step 2: Run test (expect failure)**
 
-Run: `go test -shuffle=on ./internal/daemon/...`
-Expected: build error.
+Run: `go test ./internal/daemon/...`
+Expected: FAIL.
 
-- [ ] **Step 3: Implement `runtime.go`**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/runtime.go`:
+- [ ] **Step 3: Implement**
 
 ```go
+// internal/daemon/runtime.go
 package daemon
 
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
-
-	"github.com/wesm/kata/internal/config"
 )
 
-// RuntimeInfo is the on-disk daemon discovery file.
-type RuntimeInfo struct {
-	PID        int    `json:"pid"`
-	Network    string `json:"network"`
-	Addr       string `json:"addr"`
-	Version    string `json:"version"`
-	SourcePath string `json:"-"` // populated by ListAllRuntimes
+// RuntimeRecord is the on-disk shape of daemon.<pid>.json.
+type RuntimeRecord struct {
+	PID       int       `json:"pid"`
+	Address   string    `json:"address"`     // unix:///path or 127.0.0.1:7474
+	DBPath    string    `json:"db_path"`
+	StartedAt time.Time `json:"started_at"`
 }
 
-// PingInfo is what /api/v1/ping returns.
-type PingInfo struct {
-	Service       string `json:"service"`
-	Version       string `json:"version"`
-	PID           int    `json:"pid"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
-}
-
-// Endpoint converts the runtime info back to a DaemonEndpoint.
-func (r RuntimeInfo) Endpoint() DaemonEndpoint {
-	return DaemonEndpoint{Network: r.Network, Address: r.Addr}
-}
-
-// RuntimePath returns the runtime file path for the current process.
-func RuntimePath() string {
-	return RuntimePathForPID(os.Getpid())
-}
-
-// RuntimePathForPID returns the runtime file path for a specific PID.
-func RuntimePathForPID(pid int) string {
-	return filepath.Join(config.RuntimeDir(), fmt.Sprintf("daemon.%d.json", pid))
-}
-
-// WriteRuntime writes the current process's runtime file atomically.
-func WriteRuntime(ep DaemonEndpoint, version string) error {
-	if err := config.EnsureDataDirs(); err != nil {
-		return err
+// WriteRuntimeFile writes <dir>/daemon.<pid>.json atomically (write to .tmp,
+// fsync-ish, rename). Returns the resolved file path.
+func WriteRuntimeFile(dir string, rec RuntimeRecord) (string, error) {
+	if rec.PID <= 0 {
+		return "", fmt.Errorf("pid must be > 0")
 	}
-	info := RuntimeInfo{
-		PID:     os.Getpid(),
-		Network: ep.Network,
-		Addr:    ep.Address,
-		Version: version,
-	}
-	data, err := json.MarshalIndent(info, "", "  ")
+	final := filepath.Join(dir, fmt.Sprintf("daemon.%d.json", rec.PID))
+	tmp := final + ".tmp"
+	body, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
-		return err
+		return "", fmt.Errorf("marshal: %w", err)
 	}
+	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+		return "", fmt.Errorf("write tmp: %w", err)
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		return "", fmt.Errorf("rename: %w", err)
+	}
+	return final, nil
+}
 
-	dst := RuntimePath()
-	tmp, err := os.CreateTemp(filepath.Dir(dst), "daemon.*.json.tmp")
+// ReadRuntimeFile parses one file.
+func ReadRuntimeFile(path string) (RuntimeRecord, error) {
+	body, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return RuntimeRecord{}, fmt.Errorf("read %s: %w", path, err)
 	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
+	var rec RuntimeRecord
+	if err := json.Unmarshal(body, &rec); err != nil {
+		return RuntimeRecord{}, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, dst); err != nil {
-		return err
-	}
-	cleanup = false
-	if err := os.Chmod(dst, 0o644); err != nil {
-		return err
-	}
-	return nil
+	return rec, nil
 }
 
-// ReadRuntime reads the current process's runtime file.
-func ReadRuntime() (*RuntimeInfo, error) {
-	return ReadRuntimeForPID(os.Getpid())
-}
-
-// ReadRuntimeForPID reads a specific PID's runtime file.
-func ReadRuntimeForPID(pid int) (*RuntimeInfo, error) {
-	data, err := os.ReadFile(RuntimePathForPID(pid))
-	if err != nil {
-		return nil, err
-	}
-	var info RuntimeInfo
-	if err := json.Unmarshal(data, &info); err != nil {
-		return nil, err
-	}
-	info.SourcePath = RuntimePathForPID(pid)
-	return &info, nil
-}
-
-// RemoveRuntime removes the current process's runtime file.
-func RemoveRuntime() {
-	_ = os.Remove(RuntimePath())
-}
-
-// ListAllRuntimes lists every runtime file in the namespace dir.
-// Corrupt files are removed; unreadable files are skipped.
-func ListAllRuntimes() ([]*RuntimeInfo, error) {
-	dir := config.RuntimeDir()
+// ListRuntimeFiles returns RuntimeRecords for each daemon.*.json in dir.
+// Garbage / parse-failed files are skipped silently.
+func ListRuntimeFiles(dir string) ([]RuntimeRecord, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read dir: %w", err)
 	}
-	var out []*RuntimeInfo
+	var out []RuntimeRecord
 	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
 		name := e.Name()
 		if !strings.HasPrefix(name, "daemon.") || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		path := filepath.Join(dir, name)
-		data, err := os.ReadFile(path)
+		// must parse the pid out of the filename to filter .tmp etc.
+		mid := strings.TrimSuffix(strings.TrimPrefix(name, "daemon."), ".json")
+		if _, err := strconv.Atoi(mid); err != nil {
+			continue
+		}
+		rec, err := ReadRuntimeFile(filepath.Join(dir, name))
 		if err != nil {
 			continue
 		}
-		var info RuntimeInfo
-		if err := json.Unmarshal(data, &info); err != nil {
-			_ = os.Remove(path)
-			continue
-		}
-		info.SourcePath = path
-		out = append(out, &info)
+		out = append(out, rec)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
 	return out, nil
 }
 
-// ProbePing performs a /api/v1/ping against the runtime's endpoint.
-// Returns the PingInfo if the daemon answers, or an error.
-func ProbePing(info *RuntimeInfo, timeout time.Duration) (*PingInfo, error) {
-	ep := info.Endpoint()
-	client := ep.HTTPClient(timeout)
-	resp, err := client.Get(ep.BaseURL() + "/api/v1/ping")
+// ProcessAlive returns true if a kill(0, pid) succeeds. Best-effort signal
+// probe; doesn't distinguish "not ours" vs "alive".
+func ProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
 	if err != nil {
-		return nil, err
+		return false
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ping: status %d", resp.StatusCode)
+	if err := p.Signal(syscall.Signal(0)); err != nil {
+		return false
 	}
-	var p PingInfo
-	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
-		return nil, err
+	return true
+}
+
+// CleanupStaleFiles removes any daemon.<pid>.json whose PID is dead.
+func CleanupStaleFiles(dir string) error {
+	recs, err := ListRuntimeFiles(dir)
+	if err != nil {
+		return err
 	}
-	return &p, nil
+	for _, r := range recs {
+		if !ProcessAlive(r.PID) {
+			_ = os.Remove(filepath.Join(dir, fmt.Sprintf("daemon.%d.json", r.PID)))
+		}
+	}
+	return nil
 }
 ```
 
-- [ ] **Step 4: Run tests to confirm they pass**
+- [ ] **Step 4: Run test (expect pass)**
 
-Run: `go test -shuffle=on ./internal/daemon/...`
+Run: `go test ./internal/daemon/...`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
-```
+```bash
+make lint
 git add internal/daemon/runtime.go internal/daemon/runtime_test.go
-git commit -m "Add daemon runtime files with atomic write and ping probe"
+git commit -m "feat(daemon): runtime file write/read/list/cleanup"
 ```
 
 ---
 
-## Task 12: `internal/api/types.go` and `internal/api/errors.go`
+### Task 10: `internal/daemon/endpoint.go` — `DaemonEndpoint` (Unix socket / TCP loopback)
+
+Spec refs: §2.2. `DaemonEndpoint.Listen()` returns a `net.Listener`. `DaemonEndpoint.Dial(ctx)` returns a connected `net.Conn`. The `Address()` string serializes as `unix:///path` or `127.0.0.1:7474`.
+
+**Files:**
+- Create: `internal/daemon/endpoint.go`
+- Test: `internal/daemon/endpoint_test.go`
+
+- [ ] **Step 1: Write failing test**
+
+```go
+// internal/daemon/endpoint_test.go
+package daemon_test
+
+import (
+	"context"
+	"net"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/daemon"
+)
+
+func TestUnixEndpoint_RoundTrip(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets unsupported on windows")
+	}
+	sock := filepath.Join(t.TempDir(), "daemon.sock")
+	ep := daemon.UnixEndpoint(sock)
+
+	l, err := ep.Listen()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+
+	go func() {
+		c, _ := l.Accept()
+		if c != nil {
+			_, _ = c.Write([]byte("ok"))
+			_ = c.Close()
+		}
+	}()
+
+	conn, err := ep.Dial(context.Background())
+	require.NoError(t, err)
+	defer conn.Close()
+	buf := make([]byte, 2)
+	_, err = conn.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", string(buf))
+	assert.Equal(t, "unix://"+sock, ep.Address())
+}
+
+func TestTCPEndpoint_RoundTrip(t *testing.T) {
+	ep := daemon.TCPEndpoint("127.0.0.1:0")
+	l, err := ep.Listen()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+
+	// Hand the actually-bound address back into a fresh endpoint for Dial.
+	addr := l.Addr().(*net.TCPAddr).String()
+	dialEP := daemon.TCPEndpoint(addr)
+	go func() {
+		c, _ := l.Accept()
+		if c != nil {
+			_, _ = c.Write([]byte("ok"))
+			_ = c.Close()
+		}
+	}()
+
+	conn, err := dialEP.Dial(context.Background())
+	require.NoError(t, err)
+	defer conn.Close()
+	buf := make([]byte, 2)
+	_, err = conn.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", string(buf))
+}
+
+func TestTCPEndpoint_RejectsNonLoopback(t *testing.T) {
+	ep := daemon.TCPEndpoint("8.8.8.8:7474")
+	_, err := ep.Listen()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loopback")
+}
+
+func TestParseAddress(t *testing.T) {
+	cases := []struct {
+		in   string
+		kind string
+	}{
+		{"unix:///tmp/foo.sock", "unix"},
+		{"127.0.0.1:7474", "tcp"},
+		{"localhost:7474", "tcp"},
+	}
+	for _, tc := range cases {
+		ep, err := daemon.ParseAddress(tc.in)
+		require.NoError(t, err, tc.in)
+		assert.Equal(t, tc.kind, ep.Kind(), tc.in)
+	}
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./internal/daemon/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// internal/daemon/endpoint.go
+package daemon
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"strings"
+)
+
+// DaemonEndpoint abstracts the listen / dial pair for either a Unix socket or
+// TCP loopback. Address() returns a stable string representation.
+type DaemonEndpoint interface {
+	Listen() (net.Listener, error)
+	Dial(ctx context.Context) (net.Conn, error)
+	Address() string
+	Kind() string // "unix" | "tcp"
+}
+
+type unixEndpoint struct{ path string }
+
+func (u unixEndpoint) Listen() (net.Listener, error) {
+	return net.Listen("unix", u.path)
+}
+
+func (u unixEndpoint) Dial(ctx context.Context) (net.Conn, error) {
+	d := net.Dialer{}
+	return d.DialContext(ctx, "unix", u.path)
+}
+
+func (u unixEndpoint) Address() string { return "unix://" + u.path }
+func (u unixEndpoint) Kind() string    { return "unix" }
+
+// UnixEndpoint constructs a Unix-socket endpoint at the given path.
+func UnixEndpoint(path string) DaemonEndpoint { return unixEndpoint{path: path} }
+
+type tcpEndpoint struct{ addr string }
+
+func (t tcpEndpoint) Listen() (net.Listener, error) {
+	if err := requireLoopback(t.addr); err != nil {
+		return nil, err
+	}
+	return net.Listen("tcp", t.addr)
+}
+
+func (t tcpEndpoint) Dial(ctx context.Context) (net.Conn, error) {
+	if err := requireLoopback(t.addr); err != nil {
+		return nil, err
+	}
+	d := net.Dialer{}
+	return d.DialContext(ctx, "tcp", t.addr)
+}
+
+func (t tcpEndpoint) Address() string { return t.addr }
+func (t tcpEndpoint) Kind() string    { return "tcp" }
+
+// TCPEndpoint constructs a TCP-loopback endpoint at the given host:port.
+func TCPEndpoint(addr string) DaemonEndpoint { return tcpEndpoint{addr: addr} }
+
+func requireLoopback(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("parse host:port: %w", err)
+	}
+	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("address %q is not loopback", addr)
+}
+
+// ParseAddress decodes a serialized form (unix:///path or host:port).
+func ParseAddress(s string) (DaemonEndpoint, error) {
+	if strings.HasPrefix(s, "unix://") {
+		return UnixEndpoint(strings.TrimPrefix(s, "unix://")), nil
+	}
+	if strings.Contains(s, ":") {
+		return TCPEndpoint(s), nil
+	}
+	return nil, fmt.Errorf("unrecognized address: %q", s)
+}
+```
+
+- [ ] **Step 4: Run test (expect pass)**
+
+Run: `go test ./internal/daemon/...`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+make lint
+git add internal/daemon/endpoint.go internal/daemon/endpoint_test.go
+git commit -m "feat(daemon): unix-socket + tcp-loopback DaemonEndpoint"
+```
+
+---
+
+### Task 11: `internal/api/types.go` — request/response DTOs (Plan 1 subset)
+
+Spec refs: §4.1, §4.2, §4.5. Plan 1 needs DTOs for: `/ping` & `/health`; `POST /projects` (init), `POST /projects/resolve`, `GET /projects`, `GET /projects/{id}`; `POST/GET /projects/{id}/issues`, `GET /projects/{id}/issues/{number}`, `PATCH /projects/{id}/issues/{number}`; `POST /projects/{id}/issues/{number}/comments`; `POST /projects/{id}/issues/{number}/actions/close|reopen`.
+
+Use Huma struct tags. Keep wire types in `internal/api`; CLI imports them so the client stays type-safe.
 
 **Files:**
 - Create: `internal/api/types.go`
-- Create: `internal/api/errors.go`
-- Test: `internal/api/errors_test.go`
 
-DTOs and the structured error envelope. Plan 1 covers the subset of types needed for repos, issues, comments, actions, and health.
+- [ ] **Step 1: Add Huma dep**
 
-- [ ] **Step 1: Implement `types.go`**
+```bash
+go get github.com/danielgtaylor/huma/v2@v2.37.3
+```
 
-Create `/Users/wesm/code/vibekata/internal/api/types.go`:
+- [ ] **Step 2: Implement (no test — the types are compile-checked, exercised by handler tests later)**
 
 ```go
-// Package api defines kata's HTTP request/response DTOs and Huma route registration.
+// internal/api/types.go
 package api
 
 import (
 	"time"
+
+	"github.com/wesm/kata/internal/db"
 )
 
-// APIVersion is the kata_api_version emitted on every JSON response envelope.
-const APIVersion = 1
-
-// IssueDTO is the wire shape for an issue.
-type IssueDTO struct {
-	Number       int64      `json:"number"`
-	RepoID       int64      `json:"repo_id"`
-	RepoIdentity string     `json:"repo_identity"`
-	Title        string     `json:"title"`
-	Body         string     `json:"body"`
-	Status       string     `json:"status"`
-	ClosedReason *string    `json:"closed_reason"`
-	Owner        *string    `json:"owner"`
-	Author       string     `json:"author"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	ClosedAt     *time.Time `json:"closed_at"`
+// PingResponse mirrors the cheapest liveness response.
+type PingResponse struct {
+	Body struct {
+		OK bool `json:"ok"`
+	}
 }
 
-// CommentDTO is the wire shape for a comment.
-type CommentDTO struct {
-	ID        int64     `json:"id"`
-	Author    string    `json:"author"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"created_at"`
+// HealthResponse mirrors /api/v1/health.
+type HealthResponse struct {
+	Body struct {
+		OK            bool      `json:"ok"`
+		DBPath        string    `json:"db_path"`
+		SchemaVersion int       `json:"schema_version"`
+		Uptime        string    `json:"uptime"`
+		StartedAt     time.Time `json:"started_at"`
+	}
 }
 
-// EventBriefDTO is the compact event reference returned in mutation envelopes.
-type EventBriefDTO struct {
-	ID        int64     `json:"id"`
-	Type      string    `json:"type"`
-	CreatedAt time.Time `json:"created_at"`
+// ResolveProjectRequest is POST /api/v1/projects/resolve.
+type ResolveProjectRequest struct {
+	Body struct {
+		StartPath string `json:"start_path" doc:"absolute path to resolve from" required:"true"`
+	}
 }
 
-// MutationEnvelope is the response shape for every mutation endpoint.
-type MutationEnvelope struct {
-	Issue   IssueDTO       `json:"issue"`
-	Event   *EventBriefDTO `json:"event"`
-	Changed bool           `json:"changed"`
+// ProjectResolveBody is the JSON body field of a successful resolve response.
+type ProjectResolveBody struct {
+	Project       db.Project       `json:"project"`
+	Alias         db.ProjectAlias  `json:"alias"`
+	WorkspaceRoot string           `json:"workspace_root,omitempty"`
 }
 
-// CommentMutationEnvelope is returned when posting a comment.
-type CommentMutationEnvelope struct {
-	Issue   IssueDTO       `json:"issue"`
-	Comment CommentDTO     `json:"comment"`
-	Event   *EventBriefDTO `json:"event"`
-	Changed bool           `json:"changed"`
+// ResolveProjectResponse wraps ProjectResolveBody.
+type ResolveProjectResponse struct {
+	Body ProjectResolveBody
 }
 
-// IssueShowDTO is what GET /repos/{id}/issues/{n} returns.
-type IssueShowDTO struct {
-	Issue    IssueDTO     `json:"issue"`
-	Comments []CommentDTO `json:"comments"`
+// InitProjectRequest is POST /api/v1/projects (used by `kata init`).
+type InitProjectRequest struct {
+	Body struct {
+		StartPath       string `json:"start_path" required:"true"`
+		ProjectIdentity string `json:"project_identity,omitempty"`
+		Name            string `json:"name,omitempty"`
+		Replace         bool   `json:"replace,omitempty"`
+		Reassign        bool   `json:"reassign,omitempty"`
+	}
 }
 
-// IssueListEnvelope is what GET /repos/{id}/issues returns.
-type IssueListEnvelope struct {
-	Items []IssueDTO `json:"items"`
+// InitProjectResponse uses ProjectResolveBody plus a "created" flag.
+type InitProjectResponse struct {
+	Body struct {
+		ProjectResolveBody
+		Created bool `json:"created"`
+	}
 }
 
-// RepoDTO is the wire shape for a repo.
-type RepoDTO struct {
-	ID       int64     `json:"id"`
-	Identity string    `json:"identity"`
-	RootPath string    `json:"root_path"`
-	Name     string    `json:"name"`
-	Created  time.Time `json:"created_at"`
+// ListProjectsResponse is GET /api/v1/projects.
+type ListProjectsResponse struct {
+	Body struct {
+		Projects []db.Project `json:"projects"`
+	}
 }
 
-// RepoListEnvelope is what GET /repos returns.
-type RepoListEnvelope struct {
-	Items []RepoDTO `json:"items"`
+// ShowProjectResponse is GET /api/v1/projects/{id}.
+type ShowProjectResponse struct {
+	Body struct {
+		Project db.Project        `json:"project"`
+		Aliases []db.ProjectAlias `json:"aliases"`
+	}
 }
 
-// HealthDTO is what /health returns.
-type HealthDTO struct {
-	Service       string `json:"service"`
-	Version       string `json:"version"`
-	PID           int    `json:"pid"`
-	DBPath        string `json:"db_path"`
-	DBOK          bool   `json:"db_ok"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
-}
-
-// ----- Request shapes -----
-
-type CreateRepoRequest struct {
-	RootPath string `json:"root_path"`
-	Name     string `json:"name,omitempty"`
-}
-
+// CreateIssueRequest is POST /api/v1/projects/{id}/issues.
 type CreateIssueRequest struct {
-	Actor string `json:"actor"`
-	Title string `json:"title"`
-	Body  string `json:"body,omitempty"`
+	ProjectID int64 `path:"project_id" required:"true"`
+	Body      struct {
+		Actor string `json:"actor" required:"true"`
+		Title string `json:"title" required:"true"`
+		Body  string `json:"body,omitempty"`
+	}
 }
 
+// MutationResponse is the standard mutation envelope (§4.5).
+type MutationResponse struct {
+	Body struct {
+		Issue   db.Issue  `json:"issue"`
+		Event   *db.Event `json:"event"`
+		Changed bool      `json:"changed"`
+		Reused  bool      `json:"reused,omitempty"`
+	}
+}
+
+// ListIssuesRequest is GET /api/v1/projects/{id}/issues.
+type ListIssuesRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Status    string `query:"status,omitempty" enum:"open,closed,"`
+	Limit     int    `query:"limit,omitempty"`
+}
+
+// ListIssuesResponse is the list payload.
+type ListIssuesResponse struct {
+	Body struct {
+		Issues []db.Issue `json:"issues"`
+	}
+}
+
+// ShowIssueRequest is GET /api/v1/projects/{id}/issues/{number}.
+type ShowIssueRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+}
+
+// ShowIssueResponse is the per-issue read payload (Plan 1: issue + comments).
+type ShowIssueResponse struct {
+	Body struct {
+		Issue    db.Issue     `json:"issue"`
+		Comments []db.Comment `json:"comments"`
+	}
+}
+
+// EditIssueRequest is PATCH /api/v1/projects/{id}/issues/{number}.
+type EditIssueRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor string  `json:"actor" required:"true"`
+		Title *string `json:"title,omitempty"`
+		Body  *string `json:"body,omitempty"`
+		Owner *string `json:"owner,omitempty"`
+	}
+}
+
+// CommentRequest is POST /api/v1/projects/{id}/issues/{number}/comments.
 type CommentRequest struct {
-	Actor string `json:"actor"`
-	Body  string `json:"body"`
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor string `json:"actor" required:"true"`
+		Body  string `json:"body" required:"true"`
+	}
 }
 
-type CloseRequest struct {
-	Actor  string `json:"actor"`
-	Reason string `json:"reason,omitempty"` // "done" (default), "wontfix", "duplicate"
+// CommentResponse mirrors MutationResponse but adds the new comment row.
+type CommentResponse struct {
+	Body struct {
+		Issue   db.Issue    `json:"issue"`
+		Comment db.Comment  `json:"comment"`
+		Event   *db.Event   `json:"event"`
+		Changed bool        `json:"changed"`
+	}
 }
 
-type ReopenRequest struct {
-	Actor string `json:"actor"`
+// ActionRequest is POST /api/v1/projects/{id}/issues/{number}/actions/close|reopen.
+type ActionRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor  string `json:"actor" required:"true"`
+		Reason string `json:"reason,omitempty"` // close only; "done"|"wontfix"|"duplicate"
+	}
 }
 ```
 
-- [ ] **Step 2: Implement `errors.go` with tests**
+- [ ] **Step 3: Verify compile**
 
-Create `/Users/wesm/code/vibekata/internal/api/errors.go`:
+Run: `go build ./...`
+Expected: compiles cleanly.
+
+- [ ] **Step 4: Commit**
+
+```bash
+go mod tidy
+git add internal/api/ go.mod go.sum
+git commit -m "feat(api): request/response DTOs for Plan 1 endpoints"
+```
+
+---
+
+### Task 12: `internal/api/errors.go` — stable error envelope + Huma wiring
+
+Spec refs: §4.6, §4.7. Define `ErrorEnvelope` and an `APIError` constructor used by handlers. Wire Huma's error formatter so non-2xx returns this envelope.
+
+**Files:**
+- Create: `internal/api/errors.go`
+- Test: `internal/api/errors_test.go`
+
+- [ ] **Step 1: Write failing test**
 
 ```go
+// internal/api/errors_test.go
+package api_test
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/api"
+)
+
+func TestAPIError_StatusAndBodyShape(t *testing.T) {
+	err := api.NewError(404, "issue_not_found", "issue #42 does not exist", "kata search", nil)
+	assert.Equal(t, 404, err.Status)
+
+	body := err.Envelope()
+	assert.Equal(t, "issue_not_found", body.Error.Code)
+	assert.Equal(t, "issue #42 does not exist", body.Error.Message)
+	assert.Equal(t, "kata search", body.Error.Hint)
+
+	js, err2 := json.Marshal(body)
+	require.NoError(t, err2)
+	assert.Contains(t, string(js), `"code":"issue_not_found"`)
+}
+
+func TestAPIError_DataPropagates(t *testing.T) {
+	err := api.NewError(409, "duplicate_candidates", "x", "", map[string]any{
+		"candidates": []int{1, 2},
+	})
+	body := err.Envelope()
+	assert.Equal(t, []int{1, 2}, body.Error.Data["candidates"])
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./internal/api/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// internal/api/errors.go
 package api
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
+	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 )
 
-// ErrorCode is the stable string identifier surfaced in the error envelope.
-type ErrorCode string
-
-// Stable error codes (spec §4.6).
-const (
-	CodeUsage                = "usage"
-	CodeValidation           = "validation"
-	CodeBodySourceConflict   = "body_source_conflict"
-	CodeCursorConflict       = "cursor_conflict"
-	CodeRepoNotFound         = "repo_not_found"
-	CodeIssueNotFound        = "issue_not_found"
-	CodeLinkNotFound         = "link_not_found"
-	CodeLabelNotFound        = "label_not_found"
-	CodeDuplicateCandidates  = "duplicate_candidates"
-	CodeIdempotencyMismatch  = "idempotency_mismatch"
-	CodeIdempotencyDeleted   = "idempotency_deleted"
-	CodeParentAlreadySet     = "parent_already_set"
-	CodeConfirmRequired      = "confirm_required"
-	CodeConfirmMismatch      = "confirm_mismatch"
-	CodeInternal             = "internal"
-)
-
-// ErrorEnvelope is the wire-level error body. Matches spec §4.5.
-type ErrorEnvelope struct {
-	Status int          `json:"status"`
-	Error  ErrorDetails `json:"error"`
-}
-
-// ErrorDetails is the inner structured error.
-type ErrorDetails struct {
+// ErrorBody is the inner payload of an error envelope.
+type ErrorBody struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
 	Hint    string         `json:"hint,omitempty"`
 	Data    map[string]any `json:"data,omitempty"`
 }
 
-// APIError carries a stable code, HTTP status, message, hint, and optional structured data.
-// Returned from handlers and converted to the wire envelope by the registered Huma error hook.
+// ErrorEnvelope is the stable wire shape for non-2xx responses.
+type ErrorEnvelope struct {
+	Status int       `json:"status"`
+	Error  ErrorBody `json:"error"`
+}
+
+// APIError is the Go representation that handlers return; satisfies Huma's
+// HTTPError interface so the framework serializes the envelope verbatim.
 type APIError struct {
 	Status  int
 	Code    string
@@ -2987,65 +2951,24 @@ type APIError struct {
 	Data    map[string]any
 }
 
-// Error implements the error interface.
-func (e *APIError) Error() string {
-	if e == nil {
-		return ""
-	}
-	if e.Hint != "" {
-		return e.Code + ": " + e.Message + " (" + e.Hint + ")"
-	}
-	return e.Code + ": " + e.Message
+// NewError constructs an APIError. Hint and data are optional.
+func NewError(status int, code, message, hint string, data map[string]any) *APIError {
+	return &APIError{Status: status, Code: code, Message: message, Hint: hint, Data: data}
 }
 
-// GetStatus implements huma.StatusError.
+// Error implements the standard error interface.
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%d %s: %s", e.Status, e.Code, e.Message)
+}
+
+// GetStatus implements huma.StatusError so the framework picks the right code.
 func (e *APIError) GetStatus() int { return e.Status }
 
-// NewError is the Huma-compatible factory used to convert validation/route errors.
-func NewError(status int, msg string, errs ...error) huma.StatusError {
-	hint := ""
-	data := map[string]any{}
-	if len(errs) > 0 {
-		var detail []string
-		for _, e := range errs {
-			if e != nil {
-				detail = append(detail, e.Error())
-			}
-		}
-		if len(detail) > 0 {
-			data["details"] = detail
-		}
-	}
-	code := codeForStatus(status)
-	return &APIError{
-		Status:  status,
-		Code:    code,
-		Message: strings.TrimSpace(msg),
-		Hint:    hint,
-		Data:    data,
-	}
-}
-
-func codeForStatus(status int) string {
-	switch status {
-	case http.StatusBadRequest:
-		return CodeValidation
-	case http.StatusNotFound:
-		return CodeIssueNotFound // override at call sites with a more specific code
-	case http.StatusConflict:
-		return CodeDuplicateCandidates
-	case http.StatusPreconditionFailed:
-		return CodeConfirmRequired
-	default:
-		return CodeInternal
-	}
-}
-
-// Envelope returns the wire shape for this error.
+// Envelope returns the JSON body shape used in responses.
 func (e *APIError) Envelope() ErrorEnvelope {
 	return ErrorEnvelope{
 		Status: e.Status,
-		Error: ErrorDetails{
+		Error: ErrorBody{
 			Code:    e.Code,
 			Message: e.Message,
 			Hint:    e.Hint,
@@ -3054,193 +2977,272 @@ func (e *APIError) Envelope() ErrorEnvelope {
 	}
 }
 
-// FromContext is sugar for handlers to surface an APIError early.
-func FromContext(ctx context.Context, status int, code, message, hint string) error {
-	_ = ctx
-	return &APIError{Status: status, Code: code, Message: message, Hint: hint}
+// MarshalJSON serializes the envelope so Huma's default response writer emits
+// our wire shape rather than the framework default.
+func (e *APIError) MarshalJSON() ([]byte, error) {
+	return json.Marshal(e.Envelope())
 }
 
-// IsNotFound is a small predicate used by tests/helpers.
-func IsNotFound(err error) bool {
-	var ae *APIError
-	if errors.As(err, &ae) {
-		return ae.Status == http.StatusNotFound
+// InstallErrorFormatter wires Huma so non-API-typed errors (panics, validation
+// failures) also serialize to ErrorEnvelope. Call once at server startup.
+func InstallErrorFormatter() {
+	huma.NewError = func(status int, message string, _ ...error) huma.StatusError {
+		code := codeForStatus(status)
+		return &APIError{Status: status, Code: code, Message: message}
 	}
-	return false
+}
+
+func codeForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "validation"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusPreconditionFailed:
+		return "confirm_required"
+	case http.StatusInternalServerError:
+		return "internal"
+	default:
+		return "error"
+	}
+}
+
+// EnsureCancelled is a small helper so handlers can early-return when ctx is
+// cancelled without producing a 500 envelope.
+func EnsureCancelled(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return NewError(499, "client_closed", err.Error(), "", nil)
+	}
+	return nil
 }
 ```
 
-- [ ] **Step 3: Tests for errors**
+- [ ] **Step 4: Run test (expect pass)**
 
-Create `/Users/wesm/code/vibekata/internal/api/errors_test.go`:
-
-```go
-package api
-
-import (
-	"net/http"
-	"testing"
-
-	"github.com/stretchr/testify/assert"
-)
-
-func TestAPIError_Error(t *testing.T) {
-	e := &APIError{Status: 404, Code: CodeIssueNotFound, Message: "no", Hint: "try search"}
-	assert.Equal(t, "issue_not_found: no (try search)", e.Error())
-	assert.Equal(t, 404, e.GetStatus())
-}
-
-func TestAPIError_Envelope(t *testing.T) {
-	e := &APIError{Status: 409, Code: CodeDuplicateCandidates, Message: "dup", Hint: "h"}
-	env := e.Envelope()
-	assert.Equal(t, 409, env.Status)
-	assert.Equal(t, CodeDuplicateCandidates, env.Error.Code)
-	assert.Equal(t, "dup", env.Error.Message)
-	assert.Equal(t, "h", env.Error.Hint)
-}
-
-func TestNewError_DefaultsToValidationFor400(t *testing.T) {
-	e := NewError(http.StatusBadRequest, "bad")
-	ae, ok := e.(*APIError)
-	assert.True(t, ok)
-	assert.Equal(t, CodeValidation, ae.Code)
-}
-```
-
-- [ ] **Step 4: Run tests**
-
-Run: `go test -shuffle=on ./internal/api/...`
+Run: `go test ./internal/api/...`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
-```
-git add internal/api/types.go internal/api/errors.go internal/api/errors_test.go
-git commit -m "Add api types and structured error envelope"
+```bash
+make lint
+git add internal/api/errors.go internal/api/errors_test.go
+git commit -m "feat(api): stable error envelope and Huma formatter"
 ```
 
 ---
 
-## Task 13: Health + ping handlers
+### Task 13: `internal/daemon/server.go` — http server lifecycle + signal handling
+
+Spec refs: §2.2, §2.9. Build a `*http.Server` with a Huma adapter mounted on the configured `DaemonEndpoint`. CSRF: reject any non-empty `Origin`; require `Content-Type: application/json` on mutations. Provide `Run(ctx)` that listens until ctx is cancelled, and `WriteRuntimeFile()` integration for handler discovery.
 
 **Files:**
-- Create: `internal/daemon/health.go`
-- Create: `internal/daemon/server.go` (initial scaffolding only — full lifecycle in Task 16)
-- Test: `internal/daemon/health_test.go`
+- Create: `internal/daemon/server.go`
+- Test: `internal/daemon/server_test.go`
 
-We bring up just enough server scaffolding to register a route with Huma and serve `/api/v1/ping` + `/api/v1/health` end-to-end. Subsequent tasks register their handlers through the same `server.go`.
-
-- [ ] **Step 1: Initial server scaffolding**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/server.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
+// internal/daemon/server_test.go
+package daemon_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/daemon"
+)
+
+func TestServer_PingReturnsOK(t *testing.T) {
+	d, _ := openTestDB(t).(testDBHandle)
+	srv := daemon.NewServer(daemon.ServerConfig{
+		DB:        d.db,
+		StartedAt: d.now,
+	})
+	t.Cleanup(func() { _ = srv.Close() })
+
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/api/v1/ping")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), `"ok":true`)
+}
+
+func TestServer_RejectsNonEmptyOrigin(t *testing.T) {
+	d, _ := openTestDB(t).(testDBHandle)
+	srv := daemon.NewServer(daemon.ServerConfig{DB: d.db, StartedAt: d.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/ping", nil)
+	require.NoError(t, err)
+	req.Header.Set("Origin", "https://attacker.example.com")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestServer_MutationRequiresJSON(t *testing.T) {
+	d, _ := openTestDB(t).(testDBHandle)
+	srv := daemon.NewServer(daemon.ServerConfig{DB: d.db, StartedAt: d.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Post(ts.URL+"/api/v1/projects/resolve", "text/plain",
+		strings.NewReader(`{"start_path":"/x"}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusUnsupportedMediaType, resp.StatusCode)
+}
+```
+
+Helper for the daemon-package tests. Add to `internal/daemon/testhelpers_test.go`:
+
+```go
+// internal/daemon/testhelpers_test.go
+package daemon_test
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/db"
+)
+
+type testDBHandle struct {
+	db  *db.DB
+	now time.Time
+}
+
+func openTestDB(t *testing.T) testDBHandle {
+	t.Helper()
+	d, err := db.Open(context.Background(), filepath.Join(t.TempDir(), "kata.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	return testDBHandle{db: d, now: time.Now().UTC()}
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./internal/daemon/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// internal/daemon/server.go
 package daemon
 
 import (
 	"context"
 	"errors"
-	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
-
 	"github.com/wesm/kata/internal/api"
 	"github.com/wesm/kata/internal/db"
 )
 
-// Version is set at link time or by tests; see cmd/kata/main.go.
-var Version = "0.1.0"
-
-// Server bundles the daemon's HTTP server, DB handle, and metadata for handlers.
-type Server struct {
+// ServerConfig wires the daemon's runtime dependencies.
+type ServerConfig struct {
 	DB        *db.DB
-	Endpoint  DaemonEndpoint
 	StartedAt time.Time
-	httpSrv   *http.Server
-	mux       *http.ServeMux
-	api       huma.API
+	Endpoint  DaemonEndpoint // optional; used by Run
 }
 
-// NewServer wires a Huma-on-net/http stack and registers all routes.
-func NewServer(d *db.DB, ep DaemonEndpoint) *Server {
+// Server bundles the http handler and lifecycle.
+type Server struct {
+	cfg     ServerConfig
+	handler http.Handler
+	api     huma.API
+}
+
+// NewServer wires routes onto a fresh http.ServeMux. The returned handler is
+// safe to mount in tests via httptest.NewServer.
+func NewServer(cfg ServerConfig) *Server {
+	api.InstallErrorFormatter()
+
 	mux := http.NewServeMux()
-	cfg := huma.DefaultConfig("kata", Version)
-	cfg.OpenAPIPath = ""
-	cfg.DocsPath = ""
-	humaAPI := humago.New(mux, cfg)
+	humaConfig := huma.DefaultConfig("kata", "0.1.0")
+	humaConfig.OpenAPIPath = "" // Plan 1: no /openapi.json
+	humaAPI := humago.New(mux, humaConfig)
 
-	huma.NewError = api.NewError
-	huma.RegisterErrorHandler(humaAPI, func(api huma.API, ctx huma.Context, err error) {
-		var ae *api2APIError
-		_ = ae
-		writeError(ctx, err)
-	})
+	s := &Server{cfg: cfg, api: humaAPI}
+	registerRoutes(humaAPI, cfg)
 
-	s := &Server{
-		DB:        d,
-		Endpoint:  ep,
-		StartedAt: time.Now(),
-		mux:       mux,
-		api:       humaAPI,
-	}
-	s.registerRoutes()
-	s.httpSrv = &http.Server{Handler: s.middleware(mux)}
+	s.handler = withCSRFGuards(mux)
 	return s
 }
 
-// alias for tests / future use
-type api2APIError = api.APIError
+// Handler returns the http.Handler suitable for httptest.NewServer.
+func (s *Server) Handler() http.Handler { return s.handler }
 
-// Run starts serving until ctx is canceled. Caller is responsible for writing/removing the runtime file.
+// API returns the underlying huma.API for handler registration in tests.
+func (s *Server) API() huma.API { return s.api }
+
+// Close releases server-owned resources. Currently a no-op since the DB is
+// owned by the caller.
+func (s *Server) Close() error { return nil }
+
+// Run listens on the configured endpoint until ctx is cancelled. The caller
+// is responsible for writing the runtime file once Run has started.
 func (s *Server) Run(ctx context.Context) error {
-	listener, err := s.Endpoint.Listener()
+	if s.cfg.Endpoint == nil {
+		return errors.New("server: endpoint is required for Run")
+	}
+	l, err := s.cfg.Endpoint.Listen()
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", s.Endpoint, err)
-	}
-	if s.Endpoint.Network == "unix" {
-		// Tighten perms; Listener returned a 0755-ish socket on some platforms.
-		// Best-effort; ignore errors (the endpoint validator already verified path).
-		_ = chmodSocket(s.Endpoint.Address, 0o600)
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- s.httpSrv.Serve(listener)
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.httpSrv.Shutdown(shutdownCtx)
-		return ctx.Err()
-	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
 		return err
 	}
+	httpSrv := &http.Server{
+		Handler:           s.handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutdownCtx)
+	}()
+	if err := httpSrv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
-// Addr is the actual listen address (after auto-increment, etc.).
-func (s *Server) Addr() string { return s.Endpoint.Address }
-
-// middleware wraps the mux with Origin and Content-Type guards (spec §4.2).
-func (s *Server) middleware(next http.Handler) http.Handler {
+// withCSRFGuards rejects browser-borne requests and enforces JSON content type
+// for state-changing methods.
+func withCSRFGuards(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin != "" {
-			w.WriteHeader(http.StatusForbidden)
+		if origin := r.Header.Get("Origin"); origin != "" {
+			http.Error(w, "Origin header forbidden", http.StatusForbidden)
 			return
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if isMutation(r.Method) {
 			ct := r.Header.Get("Content-Type")
-			if r.ContentLength != 0 && !strings.HasPrefix(ct, "application/json") {
-				w.WriteHeader(http.StatusUnsupportedMediaType)
+			if !strings.HasPrefix(ct, "application/json") && ct != "" {
+				http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 				return
 			}
 		}
@@ -3248,1267 +3250,1458 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) registerRoutes() {
-	registerHealth(s)
-	// Subsequent tasks will register repos, issues, comments, actions here.
-}
-
-// writeError serializes an APIError or generic error to the wire envelope.
-func writeError(ctx huma.Context, err error) {
-	ae, ok := err.(*api.APIError)
-	if !ok {
-		ae = &api.APIError{Status: http.StatusInternalServerError, Code: api.CodeInternal, Message: err.Error()}
+func isMutation(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
 	}
-	ctx.SetStatus(ae.Status)
-	ctx.SetHeader("Content-Type", "application/json; charset=utf-8")
-	body := ae.Envelope()
-	enc := huma.DefaultJSONEncoder()
-	_ = enc.Marshal(ctx.BodyWriter(), body)
+	return false
 }
+
+// registerRoutes is implemented by per-resource handler files (handlers_health,
+// handlers_projects, handlers_issues, handlers_comments). Stub here; concrete
+// registrations land in their own tasks.
+func registerRoutes(humaAPI huma.API, cfg ServerConfig) {
+	registerHealth(humaAPI, cfg)
+	registerProjects(humaAPI, cfg)
+	registerIssues(humaAPI, cfg)
+	registerComments(humaAPI, cfg)
+	registerActions(humaAPI, cfg)
+}
+
+// dummy stubs so this file compiles in isolation; each is replaced when the
+// handler task lands.
+func registerHealth(humaAPI huma.API, cfg ServerConfig)   {}
+func registerProjects(humaAPI huma.API, cfg ServerConfig) {}
+func registerIssues(humaAPI huma.API, cfg ServerConfig)   {}
+func registerComments(humaAPI huma.API, cfg ServerConfig) {}
+func registerActions(humaAPI huma.API, cfg ServerConfig)  {}
+
+// silences unused import warnings until the handler tasks add real consumers.
+var _ = net.IPv4
 ```
 
-…and the small chmod helper (so Windows/Linux differences are isolated):
+- [ ] **Step 4: Run test (expect pass for `Origin` and content-type checks; ping test fails until Task 14 lands handlers_health)**
 
-Create `/Users/wesm/code/vibekata/internal/daemon/socket_unix.go`:
+Run: `go test ./internal/daemon/...`
+Expected: `TestServer_RejectsNonEmptyOrigin` and `TestServer_MutationRequiresJSON` pass; `TestServer_PingReturnsOK` will fail with 404 — that's expected and fixed in Task 14. Comment that test out temporarily (or leave it failing and re-enable in Task 14).
 
-```go
-//go:build !windows
+To keep CI green between tasks, mark the ping test with `t.Skip("registered in Task 14")` for now.
 
-package daemon
+- [ ] **Step 5: Commit**
 
-import "os"
-
-func chmodSocket(path string, mode os.FileMode) error { return os.Chmod(path, mode) }
+```bash
+make lint
+git add internal/daemon/server.go internal/daemon/server_test.go internal/daemon/testhelpers_test.go
+git commit -m "feat(daemon): http server with CSRF + content-type guards"
 ```
 
-Create `/Users/wesm/code/vibekata/internal/daemon/socket_windows.go`:
+---
+
+### Task 14: Handlers — `/ping` and `/health`
+
+Spec refs: §4.1. `/ping` is the cheap liveness probe (no DB touch). `/health` reads `meta.schema_version` and reports uptime.
+
+**Files:**
+- Create: `internal/daemon/handlers_health.go`
+- Modify: `internal/daemon/server_test.go` (un-skip the ping test)
+- Test: `internal/daemon/handlers_health_test.go`
+
+- [ ] **Step 1: Write failing test**
 
 ```go
-//go:build windows
-
-package daemon
-
-import "os"
-
-func chmodSocket(path string, mode os.FileMode) error { _ = path; _ = mode; return nil }
-```
-
-> **Note for the implementing engineer:** Huma v2's exact API for registering an error handler / encoding errors changes between minor versions. The two reference projects (middleman and roborev) both pin v2.37.x. If `huma.RegisterErrorHandler` or `huma.DefaultJSONEncoder` doesn't compile against your local v2.37.3, replace the small `writeError` helper with whatever Huma exposes for "marshal a body and set status code from a `huma.Context`" — the contract is stable: marshal `ae.Envelope()` as JSON with status `ae.Status`. Adapt the call shape to the local SDK; don't change the wire body.
-
-- [ ] **Step 2: Write `health.go`**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/health.go`:
-
-```go
-package daemon
+// internal/daemon/handlers_health_test.go
+package daemon_test
 
 import (
-	"context"
-	"net/http"
-	"time"
-
-	"github.com/danielgtaylor/huma/v2"
-
-	"github.com/wesm/kata/internal/api"
-	"github.com/wesm/kata/internal/config"
-)
-
-// pingOutput wraps the response so Huma writes JSON body.
-type pingOutput struct {
-	Body PingInfo
-}
-
-type healthOutput struct {
-	Body api.HealthDTO
-}
-
-func registerHealth(s *Server) {
-	huma.Register(s.api, huma.Operation{
-		OperationID: "ping",
-		Method:      http.MethodGet,
-		Path:        "/api/v1/ping",
-		Summary:     "Cheap liveness probe",
-	}, func(ctx context.Context, _ *struct{}) (*pingOutput, error) {
-		return &pingOutput{Body: PingInfo{
-			Service:       "kata",
-			Version:       Version,
-			PID:           pid(),
-			UptimeSeconds: int64(time.Since(s.StartedAt).Seconds()),
-		}}, nil
-	})
-
-	huma.Register(s.api, huma.Operation{
-		OperationID: "health",
-		Method:      http.MethodGet,
-		Path:        "/api/v1/health",
-		Summary:     "Deep health probe (touches DB)",
-	}, func(ctx context.Context, _ *struct{}) (*healthOutput, error) {
-		dbOK := true
-		if _, err := s.DB.DB().ExecContext(ctx, `SELECT 1`); err != nil {
-			dbOK = false
-		}
-		return &healthOutput{Body: api.HealthDTO{
-			Service:       "kata",
-			Version:       Version,
-			PID:           pid(),
-			DBPath:        config.DBPath(),
-			DBOK:          dbOK,
-			UptimeSeconds: int64(time.Since(s.StartedAt).Seconds()),
-		}}, nil
-	})
-}
-
-func pid() int { return osGetpid() }
-```
-
-…and create `/Users/wesm/code/vibekata/internal/daemon/pid_unix.go`:
-
-```go
-//go:build !windows
-
-package daemon
-
-import "os"
-
-func osGetpid() int { return os.Getpid() }
-```
-
-…and `/Users/wesm/code/vibekata/internal/daemon/pid_windows.go` (identical body — kept symmetric for future per-OS variations):
-
-```go
-//go:build windows
-
-package daemon
-
-import "os"
-
-func osGetpid() int { return os.Getpid() }
-```
-
-- [ ] **Step 3: Write integration test**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/health_test.go`:
-
-```go
-package daemon
-
-import (
-	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/daemon"
 )
 
-func newTestServer(t *testing.T) (*Server, *httptest.Server) {
-	t.Helper()
-	tmp := t.TempDir()
-	t.Setenv("KATA_DATA_DIR", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
-
-	d, err := db.Open(context.Background(), filepath.Join(tmp, "kata.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
-
-	s := NewServer(d, DaemonEndpoint{Network: "tcp", Address: "127.0.0.1:0"})
-	ts := httptest.NewServer(s.middleware(s.mux))
+func TestHealth_ReportsSchemaAndUptime(t *testing.T) {
+	d := openTestDB(t)
+	srv := daemon.NewServer(daemon.ServerConfig{DB: d.db, StartedAt: d.now})
+	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return s, ts
-}
 
-func TestPing(t *testing.T) {
-	_, ts := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/api/v1/ping")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	var p PingInfo
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&p))
-	assert.Equal(t, "kata", p.Service)
-}
-
-func TestHealth(t *testing.T) {
-	_, ts := newTestServer(t)
 	resp, err := http.Get(ts.URL + "/api/v1/health")
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	body, err := readJSON(resp.Body)
-	require.NoError(t, err)
-	assert.Equal(t, true, body["db_ok"])
-}
+	assert.Equal(t, 200, resp.StatusCode)
 
-func TestRejectsNonEmptyOrigin(t *testing.T) {
-	_, ts := newTestServer(t)
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/ping", nil)
-	req.Header.Set("Origin", "http://example.com")
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-}
-
-func readJSON(r interface{ Read(p []byte) (int, error) }) (map[string]any, error) {
-	out := map[string]any{}
-	dec := json.NewDecoder(r.(interface {
-		Read(p []byte) (int, error)
-	}))
-	err := dec.Decode(&out)
-	return out, err
+	var body struct {
+		OK            bool   `json:"ok"`
+		SchemaVersion int    `json:"schema_version"`
+		Uptime        string `json:"uptime"`
+	}
+	bs, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.True(t, body.OK)
+	assert.Equal(t, 1, body.SchemaVersion)
+	assert.NotEmpty(t, body.Uptime)
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 2: Run test (expect failure)**
 
-Run: `go test -shuffle=on ./internal/daemon/...`
-Expected: PASS.
+Run: `go test ./internal/daemon/...`
+Expected: FAIL — handler not registered.
 
-If the Huma encoder helper (`huma.DefaultJSONEncoder`) does not exist on the pinned version, fall back to writing the envelope manually inside `writeError`:
+- [ ] **Step 3: Implement**
 
 ```go
-ctx.SetStatus(ae.Status)
-ctx.SetHeader("Content-Type", "application/json; charset=utf-8")
-b, _ := json.Marshal(ae.Envelope())
-_, _ = ctx.BodyWriter().Write(b)
-```
-
-(Add `import "encoding/json"` to `server.go`.) Re-run tests.
-
-- [ ] **Step 5: Commit**
-
-```
-git add internal/daemon/server.go internal/daemon/health.go internal/daemon/health_test.go internal/daemon/socket_unix.go internal/daemon/socket_windows.go internal/daemon/pid_unix.go internal/daemon/pid_windows.go
-git commit -m "Wire Huma server with /api/v1/ping and /api/v1/health"
-```
-
----
-
-## Task 14: Repo POST handler
-
-**Files:**
-- Create: `internal/daemon/handlers_repos.go`
-- Test: `internal/daemon/handlers_repos_test.go`
-
-`POST /api/v1/repos` accepts `{ root_path, name? }`, resolves identity daemon-side, upserts the repo row, and returns the result.
-
-- [ ] **Step 1: Implement the handler**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/handlers_repos.go`:
-
-```go
+// internal/daemon/handlers_health.go
 package daemon
 
 import (
 	"context"
-	"net/http"
-	"path/filepath"
-	"strings"
+	"strconv"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
-
 	"github.com/wesm/kata/internal/api"
-	"github.com/wesm/kata/internal/config"
 )
 
-type createRepoIn struct {
-	Body api.CreateRepoRequest
-}
+// installHealthHandlers replaces the registerHealth stub from server.go.
+func init() { /* keeps the package init clean */ }
 
-type createRepoOut struct {
-	Body api.RepoDTO
-}
+// override registerHealth at link time via re-declaration via this file's
+// own helper. Go doesn't permit two `func registerHealth` declarations in
+// the same package, so this file overwrites the stub by being added later.
 
-type listReposOut struct {
-	Body api.RepoListEnvelope
-}
+// Replace the stub by deleting it from server.go before merging this task.
+// (Spec compliance reviewer will catch the duplicate and prompt the
+// implementer to delete the placeholder.)
 
-type getRepoIn struct {
-	RepoID int64 `path:"repo_id"`
-}
-
-type getRepoOut struct {
-	Body api.RepoDTO
-}
-
-func registerRepoHandlers(s *Server) {
-	huma.Register(s.api, huma.Operation{
-		OperationID: "createRepo",
-		Method:      http.MethodPost,
-		Path:        "/api/v1/repos",
-		Summary:     "Upsert a repo by root_path; daemon resolves identity",
-	}, func(ctx context.Context, in *createRepoIn) (*createRepoOut, error) {
-		root := strings.TrimSpace(in.Body.RootPath)
-		if root == "" {
-			return nil, &api.APIError{
-				Status: http.StatusBadRequest, Code: api.CodeValidation,
-				Message: "root_path is required",
-			}
-		}
-		identity, err := config.ResolveRepoIdentity(root)
-		if err != nil {
-			return nil, &api.APIError{
-				Status: http.StatusBadRequest, Code: api.CodeValidation,
-				Message: err.Error(),
-			}
-		}
-		name := strings.TrimSpace(in.Body.Name)
-		if name == "" {
-			name = filepath.Base(root)
-		}
-		r, _, err := s.DB.RepoUpsertByIdentity(ctx, identity, root, name)
-		if err != nil {
-			return nil, err
-		}
-		return &createRepoOut{Body: api.RepoDTO{
-			ID: r.ID, Identity: r.Identity, RootPath: r.RootPath, Name: r.Name, Created: r.CreatedAt,
-		}}, nil
+func registerHealthHandlers(humaAPI huma.API, cfg ServerConfig) {
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "ping",
+		Method:      "GET",
+		Path:        "/api/v1/ping",
+	}, func(ctx context.Context, _ *struct{}) (*api.PingResponse, error) {
+		out := &api.PingResponse{}
+		out.Body.OK = true
+		return out, nil
 	})
 
-	huma.Register(s.api, huma.Operation{
-		OperationID: "listRepos",
-		Method:      http.MethodGet,
-		Path:        "/api/v1/repos",
-		Summary:     "List registered repos",
-	}, func(ctx context.Context, _ *struct{}) (*listReposOut, error) {
-		repos, err := s.DB.RepoList(ctx)
-		if err != nil {
-			return nil, err
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "health",
+		Method:      "GET",
+		Path:        "/api/v1/health",
+	}, func(ctx context.Context, _ *struct{}) (*api.HealthResponse, error) {
+		var v string
+		if err := cfg.DB.QueryRowContext(ctx,
+			`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&v); err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		out := make([]api.RepoDTO, 0, len(repos))
-		for _, r := range repos {
-			out = append(out, api.RepoDTO{
-				ID: r.ID, Identity: r.Identity, RootPath: r.RootPath, Name: r.Name, Created: r.CreatedAt,
-			})
-		}
-		return &listReposOut{Body: api.RepoListEnvelope{Items: out}}, nil
-	})
-
-	huma.Register(s.api, huma.Operation{
-		OperationID: "getRepo",
-		Method:      http.MethodGet,
-		Path:        "/api/v1/repos/{repo_id}",
-		Summary:     "Show a repo by id",
-	}, func(ctx context.Context, in *getRepoIn) (*getRepoOut, error) {
-		r, err := s.DB.RepoGet(ctx, in.RepoID)
-		if err != nil {
-			return nil, &api.APIError{
-				Status: http.StatusNotFound, Code: api.CodeRepoNotFound,
-				Message: "repo not found",
-			}
-		}
-		return &getRepoOut{Body: api.RepoDTO{
-			ID: r.ID, Identity: r.Identity, RootPath: r.RootPath, Name: r.Name, Created: r.CreatedAt,
-		}}, nil
+		schema, _ := strconv.Atoi(v)
+		out := &api.HealthResponse{}
+		out.Body.OK = true
+		out.Body.DBPath = cfg.DB.Path()
+		out.Body.SchemaVersion = schema
+		out.Body.StartedAt = cfg.StartedAt
+		out.Body.Uptime = time.Since(cfg.StartedAt).Round(time.Second).String()
+		return out, nil
 	})
 }
 ```
 
-- [ ] **Step 2: Wire into `registerRoutes`**
-
-Edit `/Users/wesm/code/vibekata/internal/daemon/server.go` — change `registerRoutes`:
+Then in `server.go`, replace the stub:
 
 ```go
-func (s *Server) registerRoutes() {
-	registerHealth(s)
-	registerRepoHandlers(s)
+// internal/daemon/server.go (modify registerHealth)
+func registerHealth(humaAPI huma.API, cfg ServerConfig) {
+	registerHealthHandlers(humaAPI, cfg)
 }
 ```
 
-- [ ] **Step 3: Test**
+Un-skip the ping test in `server_test.go` (delete the `t.Skip` line).
 
-Create `/Users/wesm/code/vibekata/internal/daemon/handlers_repos_test.go`:
+- [ ] **Step 4: Run test (expect pass)**
+
+Run: `go test ./internal/daemon/...`
+Expected: ping + health tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+make lint
+git add internal/daemon/handlers_health.go internal/daemon/server.go internal/daemon/server_test.go internal/daemon/handlers_health_test.go
+git commit -m "feat(daemon): /ping and /health handlers"
+```
+
+---
+
+### Task 15: Handlers — `POST /projects/resolve`, `POST /projects` (init), `GET /projects`, `GET /projects/{id}`
+
+Spec refs: §2.4, §4.1, §4.2. The daemon owns path discovery, alias-identity computation, and `.kata.toml` parsing.
+
+**Files:**
+- Create: `internal/daemon/handlers_projects.go`
+- Test: `internal/daemon/handlers_projects_test.go`
+
+- [ ] **Step 1: Write failing test (ResolveStrictPolicy + InitFromGitRemote + InitFreshClone)**
 
 ```go
-package daemon
+// internal/daemon/handlers_projects_test.go
+package daemon_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/api"
-	"github.com/wesm/kata/internal/testutil"
+	"github.com/wesm/kata/internal/daemon"
 )
 
-func postJSON(t *testing.T, url string, body any) *http.Response {
+func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v: %s", args, out)
+}
+
+func newTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	d := openTestDB(t)
+	srv := daemon.NewServer(daemon.ServerConfig{DB: d.db, StartedAt: d.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func postJSON(t *testing.T, ts *httptest.Server, path string, body any) (*http.Response, []byte) {
+	t.Helper()
+	js, err := json.Marshal(body)
 	require.NoError(t, err)
-	return resp
+	resp, err := http.Post(ts.URL+path, "application/json", bytes.NewReader(js))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	bs, _ := io.ReadAll(resp.Body)
+	return resp, bs
 }
 
-func TestCreateRepo(t *testing.T) {
-	_, ts := newTestServer(t)
-	repoDir := testutil.MakeGitRepo(t)
-	testutil.SetGitRemote(t, repoDir, "origin", "https://github.com/wesm/kata.git")
-
-	resp := postJSON(t, ts.URL+"/api/v1/repos", api.CreateRepoRequest{RootPath: repoDir})
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var dto api.RepoDTO
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&dto))
-	assert.Equal(t, "github.com/wesm/kata", dto.Identity)
-
-	abs, _ := filepath.Abs(repoDir)
-	assert.Equal(t, abs, dto.RootPath)
+func TestResolve_FailsOutsideKataTomlAndWithoutAlias(t *testing.T) {
+	ts := newTestServer(t)
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"start_path": t.TempDir(),
+	})
+	assert.Equal(t, 404, resp.StatusCode)
+	assert.Contains(t, string(bs), "project_not_initialized")
 }
 
-func TestCreateRepo_RejectsEmptyPath(t *testing.T) {
-	_, ts := newTestServer(t)
-	resp := postJSON(t, ts.URL+"/api/v1/repos", api.CreateRepoRequest{})
+func TestInit_FromGitRemoteCreatesProject(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	ts := newTestServer(t)
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"start_path": dir,
+	})
+	assert.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var body struct {
+		Project       struct{ ID int64; Identity, Name string } `json:"project"`
+		Alias         struct{ AliasIdentity, AliasKind string } `json:"alias"`
+		WorkspaceRoot string                                    `json:"workspace_root"`
+		Created       bool                                      `json:"created"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.Equal(t, "github.com/wesm/kata", body.Project.Identity)
+	assert.Equal(t, "kata", body.Project.Name)
+	assert.True(t, body.Created)
+	assert.Equal(t, "github.com/wesm/kata", body.Alias.AliasIdentity)
+
+	// .kata.toml must have been written
+	_, err := os.Stat(filepath.Join(dir, ".kata.toml"))
+	assert.NoError(t, err)
+}
+
+func TestInit_FreshCloneFromExistingKataToml(t *testing.T) {
+	// Simulate "git clone, kata init" on a repo that already had .kata.toml.
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"),
+		[]byte(`version = 1
+
+[project]
+identity = "github.com/wesm/system"
+name     = "system"
+`), 0o644))
+
+	ts := newTestServer(t)
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"start_path": dir,
+	})
+	assert.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var body struct {
+		Project struct{ Identity string } `json:"project"`
+		Created bool                      `json:"created"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.Equal(t, "github.com/wesm/system", body.Project.Identity)
+	assert.True(t, body.Created)
+}
+
+func TestResolve_AfterInitSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+	ts := newTestServer(t)
+
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": dir})
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{"start_path": dir})
+	assert.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"identity":"github.com/wesm/kata"`)
+}
+
+func TestInit_AliasConflictWithoutReassign(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+	ts := newTestServer(t)
+
+	// First init binds the alias to "github.com/wesm/kata".
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": dir})
+
+	// .kata.toml now declares a different identity.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"),
+		[]byte(`version = 1
+
+[project]
+identity = "github.com/wesm/other"
+name     = "other"
+`), 0o644))
+
+	// Re-init without --replace must fail.
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"start_path": dir,
+	})
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	assert.Contains(t, string(bs), "project_alias_conflict")
+
+	// With --reassign + --replace, succeeds and rewrites alias.
+	resp2, bs2 := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"start_path": dir,
+		"replace":    true,
+		"reassign":   true,
+	})
+	require.Equal(t, 200, resp2.StatusCode, string(bs2))
+}
+
+func TestListProjectsAndShow(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/x.git")
+	ts := newTestServer(t)
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": dir})
+
+	resp, err := http.Get(ts.URL + "/api/v1/projects")
+	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	bs, _ := io.ReadAll(resp.Body)
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"identity":"github.com/wesm/x"`)
+
+	// pull project_id from the resolve flow then GET the show endpoint.
+	_, rb := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{"start_path": dir})
+	var rbody struct{ Project struct{ ID int64 } }
+	require.NoError(t, json.Unmarshal(rb, &rbody))
+	resp2, err := http.Get(ts.URL + "/api/v1/projects/" + intToStr(rbody.Project.ID))
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	body2, _ := io.ReadAll(resp2.Body)
+	assert.Equal(t, 200, resp2.StatusCode)
+	assert.Contains(t, string(body2), `"aliases":`)
+}
+
+func intToStr(n int64) string {
+	return string([]byte{byte('0' + n)})
+}
+
+var _ = context.Background // suppress unused import lint when tests evolve
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./internal/daemon/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// internal/daemon/handlers_projects.go
+package daemon
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"path/filepath"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/config"
+	"github.com/wesm/kata/internal/db"
+)
+
+func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "resolveProject",
+		Method:      "POST",
+		Path:        "/api/v1/projects/resolve",
+	}, func(ctx context.Context, in *api.ResolveProjectRequest) (*api.ResolveProjectResponse, error) {
+		out, err := resolveProject(ctx, cfg.DB, in.Body.StartPath)
+		if err != nil {
+			return nil, err
+		}
+		return &api.ResolveProjectResponse{Body: *out}, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "initProject",
+		Method:      "POST",
+		Path:        "/api/v1/projects",
+	}, func(ctx context.Context, in *api.InitProjectRequest) (*api.InitProjectResponse, error) {
+		out, created, err := initProject(ctx, cfg.DB, in)
+		if err != nil {
+			return nil, err
+		}
+		resp := &api.InitProjectResponse{}
+		resp.Body.ProjectResolveBody = *out
+		resp.Body.Created = created
+		return resp, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "listProjects",
+		Method:      "GET",
+		Path:        "/api/v1/projects",
+	}, func(ctx context.Context, _ *struct{}) (*api.ListProjectsResponse, error) {
+		ps, err := cfg.DB.ListProjects(ctx)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.ListProjectsResponse{}
+		out.Body.Projects = ps
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "showProject",
+		Method:      "GET",
+		Path:        "/api/v1/projects/{project_id}",
+	}, func(ctx context.Context, in *struct {
+		ProjectID int64 `path:"project_id"`
+	}) (*api.ShowProjectResponse, error) {
+		p, err := cfg.DB.ProjectByID(ctx, in.ProjectID)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		aliases, err := cfg.DB.ProjectAliases(ctx, p.ID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.ShowProjectResponse{}
+		out.Body.Project = p
+		out.Body.Aliases = aliases
+		return out, nil
+	})
+}
+
+// resolveProject implements the strict resolution flow per spec §2.4.
+func resolveProject(ctx context.Context, store *db.DB, startPath string) (*api.ProjectResolveBody, error) {
+	if startPath == "" {
+		return nil, api.NewError(400, "validation", "start_path required", "", nil)
+	}
+	abs, err := filepath.Abs(startPath)
+	if err != nil {
+		return nil, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	disc, err := config.DiscoverPaths(abs)
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+
+	if disc.WorkspaceRoot != "" {
+		cfg, err := config.ReadProjectConfig(disc.WorkspaceRoot)
+		if err != nil {
+			if !errors.Is(err, config.ErrProjectConfigMissing) {
+				return nil, api.NewError(400, "validation", err.Error(), "", nil)
+			}
+		}
+		if cfg != nil {
+			project, err := store.ProjectByIdentity(ctx, cfg.Project.Identity)
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, api.NewError(404, "project_not_initialized",
+					"project "+cfg.Project.Identity+" is bound by .kata.toml but not registered",
+					`run "kata init" in this workspace`, nil)
+			}
+			if err != nil {
+				return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			}
+			alias, err := upsertAliasFor(ctx, store, project.ID, disc, false)
+			if err != nil {
+				return nil, err
+			}
+			return &api.ProjectResolveBody{Project: project, Alias: alias, WorkspaceRoot: disc.WorkspaceRoot}, nil
+		}
+	}
+
+	if disc.GitRoot != "" {
+		info, err := config.ComputeAliasIdentity(disc)
+		if err != nil {
+			return nil, api.NewError(400, "validation", err.Error(), "", nil)
+		}
+		alias, err := store.AliasByIdentity(ctx, info.Identity)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "project_not_initialized",
+				"no kata project is attached to this workspace",
+				`run "kata init" in this workspace`, nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		_ = store.TouchAlias(ctx, alias.ID, info.RootPath)
+		project, err := store.ProjectByID(ctx, alias.ProjectID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		return &api.ProjectResolveBody{Project: project, Alias: alias, WorkspaceRoot: ""}, nil
+	}
+
+	return nil, api.NewError(404, "project_not_initialized",
+		"no .kata.toml ancestor and no git ancestor",
+		`run "kata init" inside a workspace`, nil)
+}
+
+// initProject implements `kata init` on the daemon side.
+func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
+	if req.Body.StartPath == "" {
+		return nil, false, api.NewError(400, "validation", "start_path required", "", nil)
+	}
+	abs, err := filepath.Abs(req.Body.StartPath)
+	if err != nil {
+		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	disc, err := config.DiscoverPaths(abs)
+	if err != nil {
+		return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+
+	tomlCfg, _ := config.ReadProjectConfig(disc.WorkspaceRoot)
+
+	// Decide identity + name.
+	var identity, name string
+	switch {
+	case tomlCfg != nil && req.Body.ProjectIdentity != "" && tomlCfg.Project.Identity != req.Body.ProjectIdentity:
+		if !req.Body.Replace {
+			return nil, false, api.NewError(http.StatusConflict, "project_binding_conflict",
+				".kata.toml declares a different identity",
+				"pass replace=true to overwrite", nil)
+		}
+		identity = req.Body.ProjectIdentity
+		name = pickName(req.Body.Name, identity)
+	case tomlCfg != nil:
+		identity = tomlCfg.Project.Identity
+		name = pickName(req.Body.Name, tomlCfg.Project.Name)
+		if name == "" {
+			name = pickName("", identity)
+		}
+	case req.Body.ProjectIdentity != "":
+		identity = req.Body.ProjectIdentity
+		name = pickName(req.Body.Name, identity)
+	default:
+		// derive from git remote
+		if disc.GitRoot == "" {
+			return nil, false, api.NewError(400, "validation",
+				"cannot derive project identity outside a git workspace",
+				`pass project_identity or run inside a git repo`, nil)
+		}
+		info, err := config.ComputeAliasIdentity(disc)
+		if err != nil {
+			return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+		}
+		identity = info.Identity
+		name = pickName(req.Body.Name, identity)
+	}
+
+	if err := config.ValidateIdentity(identity); err != nil {
+		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+
+	project, created, err := upsertProject(ctx, store, identity, name)
+	if err != nil {
+		return nil, false, err
+	}
+
+	alias, err := upsertAliasFor(ctx, store, project.ID, disc, req.Body.Reassign)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// Write .kata.toml at workspace root (or git root, or start path).
+	dest := disc.WorkspaceRoot
+	if dest == "" {
+		if disc.GitRoot != "" {
+			dest = disc.GitRoot
+		} else {
+			dest = abs
+		}
+	}
+	if tomlCfg == nil || tomlCfg.Project.Identity != identity {
+		if err := config.WriteProjectConfig(dest, identity, name); err != nil {
+			return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+	}
+
+	return &api.ProjectResolveBody{
+		Project:       project,
+		Alias:         alias,
+		WorkspaceRoot: dest,
+	}, created, nil
+}
+
+func upsertProject(ctx context.Context, store *db.DB, identity, name string) (db.Project, bool, error) {
+	got, err := store.ProjectByIdentity(ctx, identity)
+	if err == nil {
+		return got, false, nil
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	created, err := store.CreateProject(ctx, identity, name)
+	if err != nil {
+		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return created, true, nil
+}
+
+// upsertAliasFor attaches the discovered alias to projectID. If the alias is
+// already attached to a *different* project, returns a 409 unless reassign
+// is true (in which case we move it).
+func upsertAliasFor(ctx context.Context, store *db.DB, projectID int64, disc config.DiscoveredPaths, reassign bool) (db.ProjectAlias, error) {
+	info, err := config.ComputeAliasIdentity(disc)
+	if err != nil {
+		return db.ProjectAlias{}, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	existing, err := store.AliasByIdentity(ctx, info.Identity)
+	if err == nil {
+		if existing.ProjectID == projectID {
+			_ = store.TouchAlias(ctx, existing.ID, info.RootPath)
+			refreshed, _ := store.AliasByIdentity(ctx, info.Identity)
+			return refreshed, nil
+		}
+		if !reassign {
+			return db.ProjectAlias{}, api.NewError(http.StatusConflict, "project_alias_conflict",
+				"alias already attached to a different project",
+				"pass reassign=true to move it", map[string]any{
+					"alias_identity":      info.Identity,
+					"existing_project_id": existing.ProjectID,
+				})
+		}
+		if _, execErr := store.ExecContext(ctx,
+			`UPDATE project_aliases SET project_id = ?, root_path = ?, last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+			projectID, info.RootPath, existing.ID); execErr != nil {
+			return db.ProjectAlias{}, api.NewError(500, "internal", execErr.Error(), "", nil)
+		}
+		refreshed, _ := store.AliasByIdentity(ctx, info.Identity)
+		return refreshed, nil
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		return db.ProjectAlias{}, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	a, err := store.AttachAlias(ctx, projectID, info.Identity, info.Kind, info.RootPath)
+	if err != nil {
+		return db.ProjectAlias{}, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return a, nil
+}
+
+func pickName(explicit, identity string) string {
+	if explicit != "" {
+		return explicit
+	}
+	for i := len(identity) - 1; i >= 0; i-- {
+		if identity[i] == '/' || identity[i] == ':' {
+			return identity[i+1:]
+		}
+	}
+	return identity
 }
 ```
 
-- [ ] **Step 4: Run tests**
+Then in `server.go`, replace `registerProjects` stub with `registerProjectsHandlers(humaAPI, cfg)`.
 
-Run: `go test -shuffle=on ./internal/daemon/...`
-Expected: PASS.
+- [ ] **Step 4: Run test (expect pass)**
+
+Run: `go test ./internal/daemon/...`
+Expected: project resolve/init/list/show tests pass.
 
 - [ ] **Step 5: Commit**
 
-```
-git add internal/daemon/handlers_repos.go internal/daemon/handlers_repos_test.go internal/daemon/server.go
-git commit -m "Add POST/GET /api/v1/repos with daemon-side identity resolution"
+```bash
+make lint
+git add internal/daemon/handlers_projects.go internal/daemon/handlers_projects_test.go internal/daemon/server.go
+git commit -m "feat(daemon): project resolve/init/list/show handlers"
 ```
 
 ---
 
-## Task 15: Issue handlers (create / show / list)
+### Task 16: Handlers — issues (`POST/GET/GET-one/PATCH /projects/{id}/issues`)
+
+Spec refs: §4.1, §4.5, §6.4. Plan 1 doesn't ship idempotency / look-alike — those are Plan 3. So `POST /issues` is just create.
 
 **Files:**
 - Create: `internal/daemon/handlers_issues.go`
 - Test: `internal/daemon/handlers_issues_test.go`
 
-- [ ] **Step 1: Implement handlers**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/handlers_issues.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
+// internal/daemon/handlers_issues_test.go
+package daemon_test
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"strconv"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func bootstrapProject(t *testing.T) (*httptestServerHandle, int64) {
+	t.Helper()
+	h := newServerWithGitWorkspace(t, "https://github.com/wesm/kata.git")
+	_, bs := postJSON(t, h.ts, "/api/v1/projects", map[string]any{"start_path": h.dir})
+	var resp struct{ Project struct{ ID int64 } }
+	require.NoError(t, json.Unmarshal(bs, &resp))
+	return h, resp.Project.ID
+}
+
+type httptestServerHandle struct {
+	ts  any // *httptest.Server, but kept generic to avoid import cycles in helpers
+	dir string
+}
+
+func TestIssues_CreateRoundtrip(t *testing.T) {
+	h, projectID := bootstrapProject(t)
+	resp, bs := postJSON(t, h.ts.(*httptest.Server),
+		"/api/v1/projects/"+strconv.FormatInt(projectID, 10)+"/issues",
+		map[string]any{"actor": "agent-1", "title": "first", "body": "details"})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var body struct {
+		Issue struct {
+			Number int64
+			Title  string
+			Status string
+		}
+		Event struct{ Type string }
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.EqualValues(t, 1, body.Issue.Number)
+	assert.Equal(t, "first", body.Issue.Title)
+	assert.Equal(t, "open", body.Issue.Status)
+	assert.Equal(t, "issue.created", body.Event.Type)
+}
+
+func TestIssues_ListAndShow(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	for _, title := range []string{"a", "b"} {
+		_, _ = postJSON(t, h.ts.(*httptest.Server),
+			"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+			map[string]any{"actor": "x", "title": title})
+	}
+
+	resp, err := http.Get(h.ts.(*httptest.Server).URL +
+		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues?status=open")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	bs, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, string(bs), `"title":"a"`)
+	assert.Contains(t, string(bs), `"title":"b"`)
+
+	resp2, err := http.Get(h.ts.(*httptest.Server).URL +
+		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues/1")
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	bs2, _ := io.ReadAll(resp2.Body)
+	assert.Equal(t, 200, resp2.StatusCode)
+	assert.Contains(t, string(bs2), `"comments":`)
+}
+
+func TestIssues_PatchEditTitleAndBody(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	_, _ = postJSON(t, h.ts.(*httptest.Server),
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "x", "title": "old"})
+
+	resp, bs := patchJSON(t, h.ts.(*httptest.Server),
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1",
+		map[string]any{"actor": "x", "title": "new"})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"title":"new"`)
+}
+```
+
+Add helpers in `testhelpers_test.go`:
+
+```go
+// internal/daemon/testhelpers_test.go (append)
+import (
+	"net/http/httptest"
+)
+
+func newServerWithGitWorkspace(t *testing.T, originURL string) *httptestServerHandle {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	if originURL != "" {
+		runGit(t, dir, "remote", "add", "origin", originURL)
+	}
+	d := openTestDB(t)
+	srv := daemon.NewServer(daemon.ServerConfig{DB: d.db, StartedAt: d.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return &httptestServerHandle{ts: ts, dir: dir}
+}
+
+func patchJSON(t *testing.T, ts *httptest.Server, path string, body any) (*http.Response, []byte) {
+	t.Helper()
+	js, err := json.Marshal(body)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPatch, ts.URL+path, bytes.NewReader(js))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	bs, _ := io.ReadAll(resp.Body)
+	return resp, bs
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./internal/daemon/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// internal/daemon/handlers_issues.go
 package daemon
 
 import (
 	"context"
 	"errors"
-	"net/http"
-	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
-
 	"github.com/wesm/kata/internal/api"
 	"github.com/wesm/kata/internal/db"
 )
 
-type createIssueIn struct {
-	RepoID int64 `path:"repo_id"`
-	Body   api.CreateIssueRequest
-}
-type createIssueOut struct {
-	Body api.MutationEnvelope
-}
-
-type showIssueIn struct {
-	RepoID int64 `path:"repo_id"`
-	Number int64 `path:"number"`
-}
-type showIssueOut struct {
-	Body api.IssueShowDTO
-}
-
-type listIssuesIn struct {
-	RepoID int64  `path:"repo_id"`
-	Status string `query:"status"`
-	Limit  int    `query:"limit"`
-}
-type listIssuesOut struct {
-	Body api.IssueListEnvelope
-}
-
-func registerIssueHandlers(s *Server) {
-	huma.Register(s.api, huma.Operation{
+func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
+	huma.Register(humaAPI, huma.Operation{
 		OperationID: "createIssue",
-		Method:      http.MethodPost,
-		Path:        "/api/v1/repos/{repo_id}/issues",
-		Summary:     "Create an issue in a repo",
-	}, func(ctx context.Context, in *createIssueIn) (*createIssueOut, error) {
-		title := strings.TrimSpace(in.Body.Title)
-		actor := strings.TrimSpace(in.Body.Actor)
-		if title == "" {
-			return nil, &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation, Message: "title is required"}
-		}
-		if actor == "" {
-			return nil, &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation, Message: "actor is required"}
-		}
-		if _, err := s.DB.RepoGet(ctx, in.RepoID); err != nil {
-			return nil, &api.APIError{Status: http.StatusNotFound, Code: api.CodeRepoNotFound, Message: "repo not found"}
-		}
-		issue, ev, err := s.DB.IssueCreate(ctx, db.IssueCreateInput{
-			RepoID: in.RepoID, Title: title, Body: in.Body.Body, Author: actor,
-		})
-		if err != nil {
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/issues",
+	}, func(ctx context.Context, in *api.CreateIssueRequest) (*api.MutationResponse, error) {
+		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
 			if errors.Is(err, db.ErrNotFound) {
-				return nil, &api.APIError{Status: http.StatusNotFound, Code: api.CodeRepoNotFound, Message: "repo not found"}
+				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
 			}
-			return nil, err
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		return &createIssueOut{Body: api.MutationEnvelope{
-			Issue:   issueToDTO(issue),
-			Event:   &api.EventBriefDTO{ID: ev.ID, Type: ev.Type, CreatedAt: ev.CreatedAt},
-			Changed: true,
-		}}, nil
-	})
-
-	huma.Register(s.api, huma.Operation{
-		OperationID: "showIssue",
-		Method:      http.MethodGet,
-		Path:        "/api/v1/repos/{repo_id}/issues/{number}",
-		Summary:     "Show an issue with comments",
-	}, func(ctx context.Context, in *showIssueIn) (*showIssueOut, error) {
-		issue, err := s.DB.IssueGetByNumber(ctx, in.RepoID, in.Number)
-		if err != nil {
-			return nil, &api.APIError{Status: http.StatusNotFound, Code: api.CodeIssueNotFound, Message: "issue not found"}
-		}
-		comments, err := s.DB.CommentListByIssue(ctx, issue.ID)
-		if err != nil {
-			return nil, err
-		}
-		return &showIssueOut{Body: api.IssueShowDTO{
-			Issue: issueToDTO(issue), Comments: commentsToDTO(comments),
-		}}, nil
-	})
-
-	huma.Register(s.api, huma.Operation{
-		OperationID: "listIssues",
-		Method:      http.MethodGet,
-		Path:        "/api/v1/repos/{repo_id}/issues",
-		Summary:     "List issues in a repo",
-	}, func(ctx context.Context, in *listIssuesIn) (*listIssuesOut, error) {
-		if _, err := s.DB.RepoGet(ctx, in.RepoID); err != nil {
-			return nil, &api.APIError{Status: http.StatusNotFound, Code: api.CodeRepoNotFound, Message: "repo not found"}
-		}
-		limit := in.Limit
-		if limit <= 0 {
-			limit = 50
-		}
-		status := in.Status
-		issues, err := s.DB.IssueList(ctx, db.IssueListFilter{
-			RepoID: in.RepoID, Status: status, Limit: limit,
+		issue, evt, err := cfg.DB.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: in.ProjectID,
+			Title:     in.Body.Title,
+			Body:      in.Body.Body,
+			Author:    in.Body.Actor,
 		})
 		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.MutationResponse{}
+		out.Body.Issue = issue
+		out.Body.Event = &evt
+		out.Body.Changed = true
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "listIssues",
+		Method:      "GET",
+		Path:        "/api/v1/projects/{project_id}/issues",
+	}, func(ctx context.Context, in *api.ListIssuesRequest) (*api.ListIssuesResponse, error) {
+		issues, err := cfg.DB.ListIssues(ctx, db.ListIssuesParams{
+			ProjectID: in.ProjectID,
+			Status:    in.Status,
+			Limit:     in.Limit,
+		})
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.ListIssuesResponse{}
+		out.Body.Issues = issues
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "showIssue",
+		Method:      "GET",
+		Path:        "/api/v1/projects/{project_id}/issues/{number}",
+	}, func(ctx context.Context, in *api.ShowIssueRequest) (*api.ShowIssueResponse, error) {
+		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		comments, err := listComments(ctx, cfg.DB, issue.ID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.ShowIssueResponse{}
+		out.Body.Issue = issue
+		out.Body.Comments = comments
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "editIssue",
+		Method:      "PATCH",
+		Path:        "/api/v1/projects/{project_id}/issues/{number}",
+	}, func(ctx context.Context, in *api.EditIssueRequest) (*api.MutationResponse, error) {
+		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		updated, evt, changed, err := cfg.DB.EditIssue(ctx, db.EditIssueParams{
+			IssueID: issue.ID,
+			Title:   in.Body.Title,
+			Body:    in.Body.Body,
+			Owner:   in.Body.Owner,
+			Actor:   in.Body.Actor,
+		})
+		if errors.Is(err, db.ErrNoFields) {
+			return nil, api.NewError(400, "validation", "no fields to update", "pass at least one of title, body, owner", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.MutationResponse{}
+		out.Body.Issue = updated
+		out.Body.Event = evt
+		out.Body.Changed = changed
+		return out, nil
+	})
+}
+
+// listComments is a thin wrapper for the show handler.
+func listComments(ctx context.Context, store *db.DB, issueID int64) ([]db.Comment, error) {
+	rows, err := store.QueryContext(ctx,
+		`SELECT id, issue_id, author, body, created_at FROM comments WHERE issue_id = ? ORDER BY created_at ASC, id ASC`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []db.Comment
+	for rows.Next() {
+		var c db.Comment
+		if err := rows.Scan(&c.ID, &c.IssueID, &c.Author, &c.Body, &c.CreatedAt); err != nil {
 			return nil, err
 		}
-		out := make([]api.IssueDTO, 0, len(issues))
-		for _, i := range issues {
-			out = append(out, issueToDTO(i))
-		}
-		return &listIssuesOut{Body: api.IssueListEnvelope{Items: out}}, nil
-	})
-}
-
-func issueToDTO(i db.Issue) api.IssueDTO {
-	return api.IssueDTO{
-		Number: i.Number, RepoID: i.RepoID, RepoIdentity: i.RepoIdentity,
-		Title: i.Title, Body: i.Body, Status: i.Status,
-		ClosedReason: i.ClosedReason, Owner: i.Owner, Author: i.Author,
-		CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt, ClosedAt: i.ClosedAt,
+		out = append(out, c)
 	}
-}
-
-func commentsToDTO(cs []db.Comment) []api.CommentDTO {
-	out := make([]api.CommentDTO, 0, len(cs))
-	for _, c := range cs {
-		out = append(out, api.CommentDTO{ID: c.ID, Author: c.Author, Body: c.Body, CreatedAt: c.CreatedAt})
-	}
-	return out
+	return out, rows.Err()
 }
 ```
 
-- [ ] **Step 2: Wire into `registerRoutes`**
+Replace `registerIssues` stub in server.go with `registerIssuesHandlers(humaAPI, cfg)`.
 
-Update `/Users/wesm/code/vibekata/internal/daemon/server.go`:
+- [ ] **Step 4: Run test (expect pass)**
 
-```go
-func (s *Server) registerRoutes() {
-	registerHealth(s)
-	registerRepoHandlers(s)
-	registerIssueHandlers(s)
-}
-```
-
-- [ ] **Step 3: Tests**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/handlers_issues_test.go`:
-
-```go
-package daemon
-
-import (
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/api"
-	"github.com/wesm/kata/internal/testutil"
-)
-
-func makeRepoViaAPI(t *testing.T, baseURL string) api.RepoDTO {
-	t.Helper()
-	dir := testutil.MakeGitRepo(t)
-	testutil.SetGitRemote(t, dir, "origin", "https://github.com/wesm/kata.git")
-	resp := postJSON(t, baseURL+"/api/v1/repos", api.CreateRepoRequest{RootPath: dir})
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var dto api.RepoDTO
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&dto))
-	return dto
-}
-
-func TestCreateIssue(t *testing.T) {
-	_, ts := newTestServer(t)
-	repo := makeRepoViaAPI(t, ts.URL)
-
-	resp := postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues", ts.URL, repo.ID), api.CreateIssueRequest{
-		Actor: "alice", Title: "fix login", Body: "details",
-	})
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var env api.MutationEnvelope
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&env))
-	assert.Equal(t, int64(1), env.Issue.Number)
-	assert.True(t, env.Changed)
-	require.NotNil(t, env.Event)
-	assert.Equal(t, "issue.created", env.Event.Type)
-}
-
-func TestCreateIssue_RejectsEmptyTitle(t *testing.T) {
-	_, ts := newTestServer(t)
-	repo := makeRepoViaAPI(t, ts.URL)
-	resp := postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues", ts.URL, repo.ID), api.CreateIssueRequest{Actor: "u", Title: ""})
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-}
-
-func TestShowIssue(t *testing.T) {
-	_, ts := newTestServer(t)
-	repo := makeRepoViaAPI(t, ts.URL)
-	postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues", ts.URL, repo.ID), api.CreateIssueRequest{Actor: "u", Title: "t1"}).Body.Close()
-
-	resp, err := http.Get(fmt.Sprintf("%s/api/v1/repos/%d/issues/1", ts.URL, repo.ID))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var dto api.IssueShowDTO
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&dto))
-	assert.Equal(t, "t1", dto.Issue.Title)
-	assert.Empty(t, dto.Comments)
-}
-
-func TestShowIssue_NotFound(t *testing.T) {
-	_, ts := newTestServer(t)
-	repo := makeRepoViaAPI(t, ts.URL)
-	resp, err := http.Get(fmt.Sprintf("%s/api/v1/repos/%d/issues/999", ts.URL, repo.ID))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-}
-
-func TestListIssues(t *testing.T) {
-	_, ts := newTestServer(t)
-	repo := makeRepoViaAPI(t, ts.URL)
-	for i := 0; i < 3; i++ {
-		postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues", ts.URL, repo.ID), api.CreateIssueRequest{Actor: "u", Title: fmt.Sprintf("t%d", i)}).Body.Close()
-	}
-
-	resp, err := http.Get(fmt.Sprintf("%s/api/v1/repos/%d/issues?status=open&limit=10", ts.URL, repo.ID))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var env api.IssueListEnvelope
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&env))
-	assert.Len(t, env.Items, 3)
-}
-```
-
-- [ ] **Step 4: Run tests**
-
-Run: `go test -shuffle=on ./internal/daemon/...`
-Expected: PASS.
+Run: `go test ./internal/daemon/...`
+Expected: PASS for all issues tests + previous handler tests.
 
 - [ ] **Step 5: Commit**
 
-```
-git add internal/daemon/handlers_issues.go internal/daemon/handlers_issues_test.go internal/daemon/server.go
-git commit -m "Add issue create/show/list handlers"
+```bash
+make lint
+git add internal/daemon/handlers_issues.go internal/daemon/handlers_issues_test.go internal/daemon/testhelpers_test.go internal/daemon/server.go
+git commit -m "feat(daemon): create/list/show/patch issue handlers"
 ```
 
 ---
 
-## Task 16: Comment + close + reopen handlers
+### Task 17: Handlers — comments + actions (close, reopen)
+
+Spec refs: §4.1, §4.5, §3.4.
 
 **Files:**
 - Create: `internal/daemon/handlers_comments.go`
 - Create: `internal/daemon/handlers_actions.go`
-- Test: `internal/daemon/handlers_actions_test.go`
+- Test: `internal/daemon/handlers_comments_test.go`
 
-- [ ] **Step 1: Implement comment handler**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/handlers_comments.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
+// internal/daemon/handlers_comments_test.go
+package daemon_test
+
+import (
+	"net/http/httptest"
+	"strconv"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestCommentEndpoint_AppendsAndEmitsEvent(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "x", "title": "x"})
+
+	resp, bs := postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/comments",
+		map[string]any{"actor": "agent", "body": "first comment"})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"body":"first comment"`)
+	assert.Contains(t, string(bs), `"type":"issue.commented"`)
+}
+
+func TestActionsClose_ReopenRoundtrip(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "x", "title": "x"})
+
+	resp, bs := postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+		map[string]any{"actor": "agent", "reason": "wontfix"})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"status":"closed"`)
+	assert.Contains(t, string(bs), `"closed_reason":"wontfix"`)
+
+	resp2, bs2 := postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/reopen",
+		map[string]any{"actor": "agent"})
+	require.Equal(t, 200, resp2.StatusCode, string(bs2))
+	assert.Contains(t, string(bs2), `"status":"open"`)
+}
+
+func TestActionsClose_AlreadyClosedIsNoOpEnvelope(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "x", "title": "x"})
+	_, _ = postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+		map[string]any{"actor": "agent"})
+
+	resp, bs := postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+		map[string]any{"actor": "agent"})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"changed":false`)
+	assert.Contains(t, string(bs), `"event":null`)
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./internal/daemon/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// internal/daemon/handlers_comments.go
 package daemon
 
 import (
 	"context"
 	"errors"
-	"net/http"
-	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
-
 	"github.com/wesm/kata/internal/api"
 	"github.com/wesm/kata/internal/db"
 )
 
-type commentIn struct {
-	RepoID int64 `path:"repo_id"`
-	Number int64 `path:"number"`
-	Body   api.CommentRequest
-}
-
-type commentOut struct {
-	Body api.CommentMutationEnvelope
-}
-
-func registerCommentHandlers(s *Server) {
-	huma.Register(s.api, huma.Operation{
+func registerCommentsHandlers(humaAPI huma.API, cfg ServerConfig) {
+	huma.Register(humaAPI, huma.Operation{
 		OperationID: "createComment",
-		Method:      http.MethodPost,
-		Path:        "/api/v1/repos/{repo_id}/issues/{number}/comments",
-		Summary:     "Append a comment to an issue",
-	}, func(ctx context.Context, in *commentIn) (*commentOut, error) {
-		actor := strings.TrimSpace(in.Body.Actor)
-		body := strings.TrimSpace(in.Body.Body)
-		if actor == "" {
-			return nil, &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation, Message: "actor is required"}
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/issues/{number}/comments",
+	}, func(ctx context.Context, in *api.CommentRequest) (*api.CommentResponse, error) {
+		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
 		}
-		if body == "" {
-			return nil, &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation, Message: "body is required"}
-		}
-
-		issue, err := s.DB.IssueGetByNumber(ctx, in.RepoID, in.Number)
 		if err != nil {
-			return nil, &api.APIError{Status: http.StatusNotFound, Code: api.CodeIssueNotFound, Message: "issue not found"}
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		c, ev, err := s.DB.CommentCreate(ctx, db.CommentCreateInput{
-			IssueID: issue.ID, Author: actor, Body: body,
+		c, evt, err := cfg.DB.CreateComment(ctx, db.CreateCommentParams{
+			IssueID: issue.ID,
+			Author:  in.Body.Actor,
+			Body:    in.Body.Body,
 		})
 		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, &api.APIError{Status: http.StatusNotFound, Code: api.CodeIssueNotFound, Message: "issue not found"}
-			}
-			return nil, err
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		// Refetch issue so updated_at reflects the bump.
-		issue, err = s.DB.IssueGetByNumber(ctx, in.RepoID, in.Number)
-		if err != nil {
-			return nil, err
-		}
-		return &commentOut{Body: api.CommentMutationEnvelope{
-			Issue:   issueToDTO(issue),
-			Comment: api.CommentDTO{ID: c.ID, Author: c.Author, Body: c.Body, CreatedAt: c.CreatedAt},
-			Event:   &api.EventBriefDTO{ID: ev.ID, Type: ev.Type, CreatedAt: ev.CreatedAt},
-			Changed: true,
-		}}, nil
+		updated, _ := cfg.DB.IssueByID(ctx, issue.ID)
+		out := &api.CommentResponse{}
+		out.Body.Issue = updated
+		out.Body.Comment = c
+		out.Body.Event = &evt
+		out.Body.Changed = true
+		return out, nil
 	})
 }
 ```
 
-- [ ] **Step 2: Implement actions handler**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/handlers_actions.go`:
-
 ```go
+// internal/daemon/handlers_actions.go
 package daemon
 
 import (
 	"context"
-	"net/http"
-	"strings"
+	"errors"
 
 	"github.com/danielgtaylor/huma/v2"
-
 	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/db"
 )
 
-type closeIn struct {
-	RepoID int64 `path:"repo_id"`
-	Number int64 `path:"number"`
-	Body   api.CloseRequest
-}
-type reopenIn struct {
-	RepoID int64 `path:"repo_id"`
-	Number int64 `path:"number"`
-	Body   api.ReopenRequest
-}
-
-func registerActionHandlers(s *Server) {
-	huma.Register(s.api, huma.Operation{
+func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
+	huma.Register(humaAPI, huma.Operation{
 		OperationID: "closeIssue",
-		Method:      http.MethodPost,
-		Path:        "/api/v1/repos/{repo_id}/issues/{number}/actions/close",
-		Summary:     "Close an issue",
-	}, func(ctx context.Context, in *closeIn) (*createIssueOut, error) {
-		actor := strings.TrimSpace(in.Body.Actor)
-		if actor == "" {
-			return nil, &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation, Message: "actor is required"}
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/close",
+	}, func(ctx context.Context, in *api.ActionRequest) (*api.MutationResponse, error) {
+		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
 		}
-		issue, err := s.DB.IssueGetByNumber(ctx, in.RepoID, in.Number)
 		if err != nil {
-			return nil, &api.APIError{Status: http.StatusNotFound, Code: api.CodeIssueNotFound, Message: "issue not found"}
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		got, ev, changed, err := s.DB.IssueClose(ctx, issue.ID, actor, in.Body.Reason)
+		updated, evt, changed, err := cfg.DB.CloseIssue(ctx, issue.ID, in.Body.Reason, in.Body.Actor)
 		if err != nil {
-			return nil, &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation, Message: err.Error()}
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		var brief *api.EventBriefDTO
-		if ev != nil {
-			brief = &api.EventBriefDTO{ID: ev.ID, Type: ev.Type, CreatedAt: ev.CreatedAt}
-		}
-		return &createIssueOut{Body: api.MutationEnvelope{
-			Issue: issueToDTO(got), Event: brief, Changed: changed,
-		}}, nil
+		out := &api.MutationResponse{}
+		out.Body.Issue = updated
+		out.Body.Event = evt
+		out.Body.Changed = changed
+		return out, nil
 	})
 
-	huma.Register(s.api, huma.Operation{
+	huma.Register(humaAPI, huma.Operation{
 		OperationID: "reopenIssue",
-		Method:      http.MethodPost,
-		Path:        "/api/v1/repos/{repo_id}/issues/{number}/actions/reopen",
-		Summary:     "Reopen a closed issue",
-	}, func(ctx context.Context, in *reopenIn) (*createIssueOut, error) {
-		actor := strings.TrimSpace(in.Body.Actor)
-		if actor == "" {
-			return nil, &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation, Message: "actor is required"}
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/reopen",
+	}, func(ctx context.Context, in *api.ActionRequest) (*api.MutationResponse, error) {
+		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
 		}
-		issue, err := s.DB.IssueGetByNumber(ctx, in.RepoID, in.Number)
 		if err != nil {
-			return nil, &api.APIError{Status: http.StatusNotFound, Code: api.CodeIssueNotFound, Message: "issue not found"}
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		got, ev, changed, err := s.DB.IssueReopen(ctx, issue.ID, actor)
+		updated, evt, changed, err := cfg.DB.ReopenIssue(ctx, issue.ID, in.Body.Actor)
 		if err != nil {
-			return nil, err
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		var brief *api.EventBriefDTO
-		if ev != nil {
-			brief = &api.EventBriefDTO{ID: ev.ID, Type: ev.Type, CreatedAt: ev.CreatedAt}
-		}
-		return &createIssueOut{Body: api.MutationEnvelope{
-			Issue: issueToDTO(got), Event: brief, Changed: changed,
-		}}, nil
+		out := &api.MutationResponse{}
+		out.Body.Issue = updated
+		out.Body.Event = evt
+		out.Body.Changed = changed
+		return out, nil
 	})
 }
 ```
 
-- [ ] **Step 3: Wire into `registerRoutes`**
+Replace stubs in server.go: `registerComments(humaAPI, cfg)` → `registerCommentsHandlers(humaAPI, cfg)` and `registerActions(humaAPI, cfg)` → `registerActionsHandlers(humaAPI, cfg)`.
 
-Update `/Users/wesm/code/vibekata/internal/daemon/server.go`:
+- [ ] **Step 4: Run test (expect pass)**
 
-```go
-func (s *Server) registerRoutes() {
-	registerHealth(s)
-	registerRepoHandlers(s)
-	registerIssueHandlers(s)
-	registerCommentHandlers(s)
-	registerActionHandlers(s)
-}
+Run: `go test ./internal/daemon/...`
+Expected: PASS for comments, close, reopen, including the "already closed" no-op envelope.
+
+- [ ] **Step 5: Commit**
+
+```bash
+make lint
+git add internal/daemon/handlers_comments.go internal/daemon/handlers_actions.go internal/daemon/handlers_comments_test.go internal/daemon/server.go
+git commit -m "feat(daemon): comment + close/reopen action handlers"
 ```
 
-- [ ] **Step 4: Tests**
+---
 
-Create `/Users/wesm/code/vibekata/internal/daemon/handlers_actions_test.go`:
+### Task 18: `internal/testenv/testenv.go` — spawn daemon for integration tests
+
+Spec refs: §9.2 (`internal/testenv/testenv.go`). Builds a fresh per-test environment: temp `KATA_HOME`, fresh DB, daemon listening on a per-test loopback port (using TCP loopback for portability — it's harder to leak Unix sockets across test cleanup on macOS). Returns a thin HTTP client tied to the daemon's address.
+
+**Files:**
+- Create: `internal/testenv/testenv.go`
+- Test: `internal/testenv/testenv_test.go`
+
+- [ ] **Step 1: Write failing test**
 
 ```go
-package daemon
+// internal/testenv/testenv_test.go
+package testenv_test
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/http"
+	"context"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/testenv"
 )
 
-func TestComment(t *testing.T) {
-	_, ts := newTestServer(t)
-	repo := makeRepoViaAPI(t, ts.URL)
-	postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues", ts.URL, repo.ID), api.CreateIssueRequest{Actor: "u", Title: "t"}).Body.Close()
-
-	resp := postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues/1/comments", ts.URL, repo.ID),
-		api.CommentRequest{Actor: "alice", Body: "looking at it"})
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var env api.CommentMutationEnvelope
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&env))
-	assert.True(t, env.Changed)
-	assert.NotNil(t, env.Event)
-	assert.Equal(t, "issue.commented", env.Event.Type)
-
-	resp2, err := http.Get(fmt.Sprintf("%s/api/v1/repos/%d/issues/1", ts.URL, repo.ID))
+func TestEnv_BootsDaemonAndAnswersPing(t *testing.T) {
+	env := testenv.New(t)
+	resp, err := env.HTTP.Get(env.URL + "/api/v1/ping")
 	require.NoError(t, err)
-	defer resp2.Body.Close()
-	var show api.IssueShowDTO
-	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&show))
-	assert.Len(t, show.Comments, 1)
-}
-
-func TestCloseAndReopen(t *testing.T) {
-	_, ts := newTestServer(t)
-	repo := makeRepoViaAPI(t, ts.URL)
-	postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues", ts.URL, repo.ID), api.CreateIssueRequest{Actor: "u", Title: "t"}).Body.Close()
-
-	resp := postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues/1/actions/close", ts.URL, repo.ID),
-		api.CloseRequest{Actor: "u"})
 	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var env api.MutationEnvelope
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&env))
-	assert.True(t, env.Changed)
-	assert.Equal(t, "closed", env.Issue.Status)
-
-	// no-op close
-	resp2 := postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues/1/actions/close", ts.URL, repo.ID),
-		api.CloseRequest{Actor: "u"})
-	defer resp2.Body.Close()
-	var env2 api.MutationEnvelope
-	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&env2))
-	assert.False(t, env2.Changed)
-	assert.Nil(t, env2.Event)
-
-	// reopen
-	resp3 := postJSON(t, fmt.Sprintf("%s/api/v1/repos/%d/issues/1/actions/reopen", ts.URL, repo.ID),
-		api.ReopenRequest{Actor: "u"})
-	defer resp3.Body.Close()
-	var env3 api.MutationEnvelope
-	require.NoError(t, json.NewDecoder(resp3.Body).Decode(&env3))
-	assert.True(t, env3.Changed)
-	assert.Equal(t, "open", env3.Issue.Status)
+	bs, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, string(bs), `"ok":true`)
+	_ = context.Background
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 2: Run test (expect failure)**
 
-Run: `go test -shuffle=on ./internal/daemon/...`
-Expected: PASS.
+Run: `go test ./internal/testenv/...`
+Expected: FAIL.
 
-- [ ] **Step 6: Commit**
-
-```
-git add internal/daemon/handlers_comments.go internal/daemon/handlers_actions.go internal/daemon/handlers_actions_test.go internal/daemon/server.go
-git commit -m "Add comment, close, and reopen handlers"
-```
-
----
-
-## Task 17: `testenv` helper for in-process daemon
-
-**Files:**
-- Create: `internal/testenv/testenv.go`
-
-A reusable test fixture that boots a real daemon (in-process via httptest), used by CLI tests in later tasks.
-
-- [ ] **Step 1: Implement**
-
-Create `/Users/wesm/code/vibekata/internal/testenv/testenv.go`:
+- [ ] **Step 3: Implement**
 
 ```go
-// Package testenv provides a reusable in-process kata daemon for tests.
+// internal/testenv/testenv.go
 package testenv
 
 import (
 	"context"
-	"net/http/httptest"
-	"path/filepath"
-	"testing"
-
-	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/daemon"
-	"github.com/wesm/kata/internal/db"
-)
-
-// Env is a fully-wired daemon backed by a fresh DB and HTTP test server.
-type Env struct {
-	BaseURL string
-	DB      *db.DB
-	Server  *daemon.Server
-	HTTP    *httptest.Server
-	DataDir string
-	DBPath  string
-}
-
-// NewEnv creates a fresh data dir + DB, registers all handlers, and exposes
-// the HTTP base URL. Caller does not need to clean up.
-func NewEnv(t *testing.T) *Env {
-	t.Helper()
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "kata.db")
-	t.Setenv("KATA_DATA_DIR", tmp)
-	t.Setenv("KATA_DB", dbPath)
-
-	d, err := db.Open(context.Background(), dbPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
-
-	s := daemon.NewServer(d, daemon.DaemonEndpoint{Network: "tcp", Address: "127.0.0.1:0"})
-	ts := httptest.NewServer(s.Handler())
-	t.Cleanup(ts.Close)
-
-	return &Env{
-		BaseURL: ts.URL, DB: d, Server: s, HTTP: ts, DataDir: tmp, DBPath: dbPath,
-	}
-}
-```
-
-- [ ] **Step 2: Expose `Server.Handler()` for tests**
-
-`testenv.NewEnv` calls `s.Handler()`. Add it to `/Users/wesm/code/vibekata/internal/daemon/server.go`:
-
-```go
-// Handler returns the wrapped HTTP handler (for tests; httptest.NewServer wants this).
-func (s *Server) Handler() http.Handler { return s.middleware(s.mux) }
-```
-
-- [ ] **Step 3: Verify build**
-
-Run: `go build ./...`
-Expected: silent.
-
-- [ ] **Step 4: Commit**
-
-```
-git add internal/testenv/testenv.go internal/daemon/server.go
-git commit -m "Add testenv.NewEnv for in-process daemon fixtures"
-```
-
----
-
-## Task 18: Daemon process lifecycle (start/stop/status)
-
-**Files:**
-- Modify: `internal/daemon/server.go` to expose `RunWithRuntime`
-- Test: `internal/daemon/server_lifecycle_test.go`
-
-The CLI's `kata daemon start` will call `RunWithRuntime`, which:
-1. Picks an endpoint (defaulting to TCP loopback for v1; Unix socket support is tested separately).
-2. Listens, writes a runtime file, serves until canceled, removes the runtime file.
-
-For Plan 1, default to TCP loopback. Unix socket default-on-Unix lands in a later plan once we have a config-loading layer to pick the transport. (TCP loopback satisfies the spec's "TCP loopback fallback" branch and works on every platform.)
-
-- [ ] **Step 1: Implement `RunWithRuntime`**
-
-Append to `/Users/wesm/code/vibekata/internal/daemon/server.go`:
-
-```go
-// RunWithRuntime listens on an auto-selected loopback port (or the configured
-// endpoint), writes a runtime file under $KATA_DATA_DIR/runtime/<dbhash>/,
-// serves until ctx is canceled, and removes the runtime file on shutdown.
-func RunWithRuntime(ctx context.Context, d *db.DB, ep DaemonEndpoint) error {
-	// If the configured port is busy, retry with port 0 (kernel-assigned).
-	listener, actualEP, err := listenWithFallback(ep)
-	if err != nil {
-		return fmt.Errorf("listen: %w", err)
-	}
-
-	if actualEP.Network == "unix" {
-		_ = chmodSocket(actualEP.Address, 0o600)
-	}
-
-	if err := WriteRuntime(actualEP, Version); err != nil {
-		_ = listener.Close()
-		return fmt.Errorf("write runtime: %w", err)
-	}
-	defer RemoveRuntime()
-
-	mux := http.NewServeMux()
-	cfg := huma.DefaultConfig("kata", Version)
-	cfg.OpenAPIPath = ""
-	cfg.DocsPath = ""
-	humaAPI := humago.New(mux, cfg)
-	huma.NewError = api.NewError
-
-	s := &Server{
-		DB:        d,
-		Endpoint:  actualEP,
-		StartedAt: time.Now(),
-		mux:       mux,
-		api:       humaAPI,
-	}
-	s.registerRoutes()
-
-	srv := &http.Server{Handler: s.middleware(mux)}
-	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve(listener) }()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-		return nil
-	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
-	}
-}
-
-func listenWithFallback(ep DaemonEndpoint) (l net.Listener, actual DaemonEndpoint, err error) {
-	l, err = ep.Listener()
-	if err == nil {
-		actual = ep
-		// For TCP, surface the actual port (matters when the caller asked for :0).
-		if ep.Network == "tcp" {
-			actual.Address = l.Addr().String()
-		}
-		return l, actual, nil
-	}
-	// Retry with kernel-assigned port (TCP only).
-	if ep.Network == "tcp" {
-		fallback := DaemonEndpoint{Network: "tcp", Address: "127.0.0.1:0"}
-		l2, err2 := fallback.Listener()
-		if err2 == nil {
-			fallback.Address = l2.Addr().String()
-			return l2, fallback, nil
-		}
-	}
-	return nil, DaemonEndpoint{}, err
-}
-```
-
-Add the missing import:
-
-```go
-import (
 	"net"
-	// ...existing imports
-)
-```
-
-- [ ] **Step 2: Test**
-
-Create `/Users/wesm/code/vibekata/internal/daemon/server_lifecycle_test.go`:
-
-```go
-package daemon
-
-import (
-	"context"
 	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
+	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/db"
 )
 
-func TestRunWithRuntime_WritesAndRemovesRuntimeFile(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("KATA_DATA_DIR", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+// Env is a per-test daemon + DB + HTTP client bundle.
+type Env struct {
+	URL  string
+	HTTP *http.Client
+	DB   *db.DB
+	Home string
+}
 
-	d, err := db.Open(context.Background(), filepath.Join(tmp, "kata.db"))
+// New launches a daemon listening on a free loopback port. The DB lives under
+// a temp KATA_HOME. Cleanup is wired via t.Cleanup.
+func New(t *testing.T) *Env {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	t.Setenv("KATA_DB", filepath.Join(home, "kata.db"))
+
+	d, err := db.Open(context.Background(), filepath.Join(home, "kata.db"))
 	require.NoError(t, err)
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
+
+	// Pick a free port up front so we have a stable URL.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := l.Addr().(*net.TCPAddr).String()
+	require.NoError(t, l.Close())
+
+	srv := daemon.NewServer(daemon.ServerConfig{
+		DB:        d,
+		StartedAt: time.Now().UTC(),
+		Endpoint:  daemon.TCPEndpoint(addr),
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- RunWithRuntime(ctx, d, DaemonEndpoint{Network: "tcp", Address: "127.0.0.1:0"})
-	}()
+	go func() { _ = srv.Run(ctx) }()
+	t.Cleanup(cancel)
 
-	// Poll for the runtime file to appear.
+	// Wait briefly for /ping to answer.
+	url := "http://" + addr
 	deadline := time.Now().Add(2 * time.Second)
-	var info *RuntimeInfo
-	for {
-		i, err := ReadRuntime()
+	client := &http.Client{Timeout: 2 * time.Second}
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url + "/api/v1/ping")
 		if err == nil {
-			info = i
+			_ = resp.Body.Close()
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("runtime file never appeared: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Hit /ping over the runtime endpoint.
-	resp, err := http.Get(info.Endpoint().BaseURL() + "/api/v1/ping")
-	require.NoError(t, err)
-	resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-	cancel()
-	require.NoError(t, <-done)
-
-	// Runtime file should be gone.
-	_, err = ReadRuntime()
-	assert.Error(t, err)
+	return &Env{URL: url, HTTP: client, DB: d, Home: home}
 }
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **Step 4: Run test (expect pass)**
 
-Run: `go test -shuffle=on ./internal/daemon/...`
+Run: `go test ./internal/testenv/...`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
-```
-git add internal/daemon/server.go internal/daemon/server_lifecycle_test.go
-git commit -m "Add RunWithRuntime for daemon lifecycle and runtime file management"
+```bash
+make lint
+git add internal/testenv/ go.mod go.sum
+git commit -m "feat(testenv): boot daemon over TCP loopback for tests"
 ```
 
 ---
 
-## Task 19: CLI helpers — body source, JSON output, exit codes, daemon discovery
+### Task 19: `cmd/kata/helpers.go` — body sources, JSON output, exit codes
+
+Spec refs: §4.7, §5.1. Body source resolution (`--body`/`--body-file`/`--body-stdin`), JSON formatter that emits `kata_api_version=1`, exit code constants, daemon address discovery, HTTP client helpers.
 
 **Files:**
 - Create: `cmd/kata/helpers.go`
 - Test: `cmd/kata/helpers_test.go`
 
-The CLI helpers do four things every command needs: (a) resolve the actor identity (`--as` > `KATA_AUTHOR` > `git config user.name` > `anonymous`), (b) resolve the body source (mutually exclusive `--body`, `--body-file`, `--body-stdin`), (c) format JSON / text output and exit codes, (d) discover the daemon and auto-start it if needed.
+- [ ] **Step 1: Add Cobra dependency**
 
-- [ ] **Step 1: Implement `helpers.go`**
+```bash
+go get github.com/spf13/cobra@v1.10.2
+```
 
-Create `/Users/wesm/code/vibekata/cmd/kata/helpers.go`:
+- [ ] **Step 2: Write failing test**
 
 ```go
+// cmd/kata/helpers_test.go
+package main
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestResolveBody_FlagWins(t *testing.T) {
+	got, err := resolveBody(BodySources{Body: "hello"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", got)
+}
+
+func TestResolveBody_FromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/b.txt"
+	require.NoError(t, writeStringFile(path, "from file"))
+	got, err := resolveBody(BodySources{File: path}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "from file", got)
+}
+
+func TestResolveBody_FromStdin(t *testing.T) {
+	in := bytes.NewBufferString("from stdin")
+	got, err := resolveBody(BodySources{Stdin: true}, in)
+	require.NoError(t, err)
+	assert.Equal(t, "from stdin", got)
+}
+
+func TestResolveBody_TwoSourcesIsError(t *testing.T) {
+	_, err := resolveBody(BodySources{Body: "x", Stdin: true}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one")
+}
+
+func TestResolveActor_Precedence(t *testing.T) {
+	t.Setenv("KATA_AUTHOR", "")
+	got, src := resolveActor("flag-actor", nil)
+	assert.Equal(t, "flag-actor", got)
+	assert.Equal(t, "flag", src)
+
+	t.Setenv("KATA_AUTHOR", "env-actor")
+	got, src = resolveActor("", nil)
+	assert.Equal(t, "env-actor", got)
+	assert.Equal(t, "env", src)
+
+	t.Setenv("KATA_AUTHOR", "")
+	got, src = resolveActor("", func() (string, error) { return "git-user", nil })
+	assert.Equal(t, "git-user", got)
+	assert.Equal(t, "git", src)
+
+	got, src = resolveActor("", func() (string, error) { return "", nil })
+	assert.Equal(t, "anonymous", got)
+	assert.Equal(t, "fallback", src)
+}
+
+func TestEmitJSON_AddsAPIVersion(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, emitJSON(&buf, map[string]string{"x": "y"}))
+	out := buf.String()
+	assert.Contains(t, out, `"kata_api_version":1`)
+	assert.Contains(t, out, `"x":"y"`)
+	assert.True(t, strings.HasSuffix(out, "\n"))
+}
+```
+
+- [ ] **Step 3: Run test (expect failure)**
+
+Run: `go test ./cmd/kata/...`
+Expected: FAIL.
+
+- [ ] **Step 4: Implement**
+
+```go
+// cmd/kata/helpers.go
 package main
 
 import (
@@ -4521,976 +4714,1257 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
-	"time"
-
-	"github.com/spf13/cobra"
-
-	"github.com/wesm/kata/internal/api"
-	"github.com/wesm/kata/internal/config"
-	"github.com/wesm/kata/internal/daemon"
 )
 
-// Exit codes (spec §4.6).
+// Exit codes per spec §4.7.
 const (
-	ExitOK                = 0
-	ExitGeneric           = 1
-	ExitUsage             = 2
-	ExitValidation        = 3
-	ExitNotFound          = 4
-	ExitConflict          = 5
-	ExitConfirmation      = 6
-	ExitDaemonUnavailable = 7
+	ExitOK              = 0
+	ExitInternal        = 1
+	ExitUsage           = 2
+	ExitValidation      = 3
+	ExitNotFound        = 4
+	ExitConflict        = 5
+	ExitConfirm         = 6
+	ExitDaemonUnavail   = 7
 )
 
-// Globals shared by all commands.
-type globalFlags struct {
-	JSON     bool
-	Quiet    bool
-	As       string
-	RepoPath string
-	RepoID   int64
+// BodySources is the parsed --body / --body-file / --body-stdin trio.
+type BodySources struct {
+	Body  string
+	File  string
+	Stdin bool
 }
 
-var gFlags globalFlags
+// gitUserFn is a function signature for resolveActor's git fallback so tests
+// can inject a stub instead of touching the real `git config user.name`.
+type gitUserFn func() (string, error)
 
-func registerGlobalFlags(cmd *cobra.Command) {
-	pf := cmd.PersistentFlags()
-	pf.BoolVar(&gFlags.JSON, "json", false, "machine-readable JSON output")
-	pf.BoolVarP(&gFlags.Quiet, "quiet", "q", false, "suppress non-essential output")
-	pf.StringVar(&gFlags.As, "as", "", "actor identity (overrides KATA_AUTHOR / git config user.name)")
-	pf.StringVar(&gFlags.RepoPath, "repo", "", "repo path (defaults to walking up from cwd)")
-	pf.Int64Var(&gFlags.RepoID, "repo-id", 0, "repo id (defaults to resolving from --repo or cwd)")
-}
-
-// ResolveActor returns the actor identity per the documented precedence.
-func ResolveActor() (actor, source string) {
-	if gFlags.As != "" {
-		return gFlags.As, "flag"
-	}
-	if v := os.Getenv("KATA_AUTHOR"); v != "" {
-		return v, "env"
-	}
-	if v := strings.TrimSpace(gitUserName()); v != "" {
-		return v, "git"
-	}
-	return "anonymous", "fallback"
-}
-
-func gitUserName() string {
-	out, err := exec.Command("git", "config", "user.name").Output()
-	if err != nil {
-		return ""
-	}
-	return string(out)
-}
-
-// ResolveRepoRoot finds the repo root from --repo or cwd.
-func ResolveRepoRoot() (string, error) {
-	if gFlags.RepoPath != "" {
-		abs, err := filepath.Abs(gFlags.RepoPath)
-		return abs, err
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	root, err := config.DiscoverRepoFromCwd(cwd)
-	if err != nil {
-		return "", err
-	}
-	return root, nil
-}
-
-// BodySource handles the mutually exclusive --body / --body-file / --body-stdin flags.
-type BodySource struct {
-	Inline   string
-	FilePath string
-	Stdin    bool
-}
-
-// AddTo registers the three flags on cmd.
-func (b *BodySource) AddTo(cmd *cobra.Command) {
-	f := cmd.Flags()
-	f.StringVar(&b.Inline, "body", "", "issue body (inline)")
-	f.StringVar(&b.FilePath, "body-file", "", "issue body from file")
-	f.BoolVar(&b.Stdin, "body-stdin", false, "read issue body from stdin")
-}
-
-// Resolve returns the resolved body string. Returns an APIError-shaped error on conflict.
-// `allowEmpty` controls whether returning an empty string is valid (true for create, false for comment).
-func (b *BodySource) Resolve(allowEmpty bool) (string, error) {
+// resolveBody returns the resolved body text. Mutually exclusive sources;
+// returns error otherwise. Empty result allowed when no source set.
+func resolveBody(b BodySources, stdin io.Reader) (string, error) {
 	count := 0
-	if b.Inline != "" {
+	if b.Body != "" {
 		count++
 	}
-	if b.FilePath != "" {
+	if b.File != "" {
 		count++
 	}
 	if b.Stdin {
 		count++
 	}
 	if count > 1 {
-		return "", &api.APIError{Status: http.StatusBadRequest, Code: api.CodeBodySourceConflict,
-			Message: "--body, --body-file, and --body-stdin are mutually exclusive"}
+		return "", errors.New("must pass exactly one of --body, --body-file, --body-stdin")
 	}
 	switch {
-	case b.Inline != "":
-		return b.Inline, nil
-	case b.FilePath != "":
-		data, err := os.ReadFile(b.FilePath)
+	case b.Body != "":
+		return b.Body, nil
+	case b.File != "":
+		bs, err := os.ReadFile(b.File)
 		if err != nil {
-			return "", &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation,
-				Message: fmt.Sprintf("read body file: %v", err)}
+			return "", fmt.Errorf("read %s: %w", b.File, err)
 		}
-		return string(data), nil
+		return strings.TrimRight(string(bs), "\n"), nil
 	case b.Stdin:
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return "", &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation,
-				Message: fmt.Sprintf("read stdin: %v", err)}
+		if stdin == nil {
+			stdin = os.Stdin
 		}
-		return string(data), nil
+		var buf bytes.Buffer
+		if _, err := io.Copy(&buf, stdin); err != nil {
+			return "", fmt.Errorf("read stdin: %w", err)
+		}
+		return strings.TrimRight(buf.String(), "\n"), nil
 	default:
-		if allowEmpty {
-			return "", nil
-		}
-		return "", &api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation,
-			Message: "body is required (use --body, --body-file, or --body-stdin)"}
+		return "", nil
 	}
 }
 
-// PrintJSON encodes v to stdout with no trailing newline-after-newline cruft.
-func PrintJSON(v any) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+// resolveActor implements precedence flag > env > git > "anonymous". Returns
+// (actor, source) where source is one of "flag"|"env"|"git"|"fallback".
+func resolveActor(flag string, gitUser gitUserFn) (string, string) {
+	if flag != "" {
+		return flag, "flag"
+	}
+	if v := os.Getenv("KATA_AUTHOR"); v != "" {
+		return v, "env"
+	}
+	if gitUser == nil {
+		gitUser = readGitUserName
+	}
+	if name, _ := gitUser(); name != "" {
+		return name, "git"
+	}
+	return "anonymous", "fallback"
 }
 
-// EmitError writes the error to stderr (text) or stdout (json) and exits.
-func EmitError(err error) {
-	var ae *api.APIError
-	if errors.As(err, &ae) {
-		if gFlags.JSON {
-			_ = PrintJSON(ae.Envelope())
-		} else {
-			fmt.Fprintf(os.Stderr, "error: %s\n", ae.Message)
-			if ae.Hint != "" {
-				fmt.Fprintf(os.Stderr, "hint: %s\n", ae.Hint)
-			}
-		}
-		os.Exit(exitCodeFor(ae))
-	}
-	if gFlags.JSON {
-		_ = PrintJSON(map[string]any{"error": map[string]any{"code": api.CodeInternal, "message": err.Error()}})
-	} else {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-	}
-	os.Exit(ExitGeneric)
-}
-
-func exitCodeFor(e *api.APIError) int {
-	switch e.Status {
-	case http.StatusBadRequest:
-		switch e.Code {
-		case api.CodeUsage:
-			return ExitUsage
-		default:
-			return ExitValidation
-		}
-	case http.StatusNotFound:
-		return ExitNotFound
-	case http.StatusConflict:
-		return ExitConflict
-	case http.StatusPreconditionFailed:
-		return ExitConfirmation
-	default:
-		return ExitGeneric
-	}
-}
-
-// ----- Daemon discovery / autostart -----
-
-// DiscoverDaemon returns a live daemon endpoint, autostarting one if none responds.
-func DiscoverDaemon(ctx context.Context) (daemon.DaemonEndpoint, error) {
-	if ep, ok := probeExistingDaemon(); ok {
-		return ep, nil
-	}
-	if err := autostartDaemon(); err != nil {
-		return daemon.DaemonEndpoint{}, err
-	}
-	// Wait briefly for the runtime file to appear.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if ep, ok := probeExistingDaemon(); ok {
-			return ep, nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return daemon.DaemonEndpoint{}, &api.APIError{Status: 0, Code: "daemon_unavailable", Message: "daemon did not start in time"}
-}
-
-func probeExistingDaemon() (daemon.DaemonEndpoint, bool) {
-	all, err := daemon.ListAllRuntimes()
+func readGitUserName() (string, error) {
+	cmd := exec.Command("git", "config", "user.name")
+	out, err := cmd.Output()
 	if err != nil {
-		return daemon.DaemonEndpoint{}, false
+		return "", err
 	}
-	for _, info := range all {
-		if _, err := daemon.ProbePing(info, 500*time.Millisecond); err == nil {
-			return info.Endpoint(), true
-		}
-		// Stale runtime file (no live daemon) — clean it up.
-		_ = os.Remove(info.SourcePath)
-	}
-	return daemon.DaemonEndpoint{}, false
+	return strings.TrimSpace(string(out)), nil
 }
 
-func autostartDaemon() error {
-	exe, err := os.Executable()
+// emitJSON marshals v with a "kata_api_version":1 wrapper and a trailing
+// newline.
+func emitJSON(w io.Writer, v any) error {
+	wrapped := map[string]any{"kata_api_version": 1}
+	for k, val := range structToMap(v) {
+		wrapped[k] = val
+	}
+	bs, err := json.Marshal(wrapped)
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "daemon", "start", "--detach")
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	cmd.Stdin = nil
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("autostart daemon: %w", err)
+	bs = append(bs, '\n')
+	_, err = w.Write(bs)
+	return err
+}
+
+func structToMap(v any) map[string]any {
+	bs, _ := json.Marshal(v)
+	var m map[string]any
+	_ = json.Unmarshal(bs, &m)
+	if m == nil {
+		m = map[string]any{"value": v}
 	}
-	return nil
+	return m
 }
 
-// HTTPClient builds a context-aware client for a given endpoint.
-func HTTPClient(ep daemon.DaemonEndpoint) *http.Client {
-	return ep.HTTPClient(15 * time.Second)
+// writeStringFile is a tiny wrapper used by tests.
+func writeStringFile(path, body string) error {
+	return os.WriteFile(path, []byte(body), 0o644)
 }
 
-// PostJSON sends a JSON request and decodes a JSON response. On non-2xx, returns an APIError.
-func PostJSON(ctx context.Context, ep daemon.DaemonEndpoint, path string, body, out any) error {
-	return doJSON(ctx, ep, http.MethodPost, path, body, out)
-}
-
-// GetJSON does a GET and decodes a JSON response.
-func GetJSON(ctx context.Context, ep daemon.DaemonEndpoint, path string, out any) error {
-	return doJSON(ctx, ep, http.MethodGet, path, nil, out)
-}
-
-func doJSON(ctx context.Context, ep daemon.DaemonEndpoint, method, path string, body, out any) error {
-	var reader io.Reader
+// httpDoJSON sends a request body, returns (status, response body bytes).
+func httpDoJSON(ctx context.Context, client *http.Client, method, url string, body any) (int, []byte, error) {
+	var rdr io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
+		bs, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return 0, nil, err
 		}
-		reader = bytes.NewReader(b)
+		rdr = bytes.NewReader(bs)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, ep.BaseURL()+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, url, rdr)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := HTTPClient(ep).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return &api.APIError{Code: "daemon_unavailable", Message: err.Error()}
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return decodeError(resp)
-	}
-	if out == nil {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
-}
-
-func decodeError(resp *http.Response) error {
-	var env api.ErrorEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return &api.APIError{Status: resp.StatusCode, Code: api.CodeInternal, Message: resp.Status}
-	}
-	return &api.APIError{
-		Status:  env.Status,
-		Code:    env.Error.Code,
-		Message: env.Error.Message,
-		Hint:    env.Error.Hint,
-		Data:    env.Error.Data,
-	}
-}
-
-// ResolveRepoForCommand discovers the repo, registers it with the daemon, and returns the RepoDTO.
-func ResolveRepoForCommand(ctx context.Context, ep daemon.DaemonEndpoint) (api.RepoDTO, error) {
-	if gFlags.RepoID != 0 {
-		var dto api.RepoDTO
-		err := GetJSON(ctx, ep, fmt.Sprintf("/api/v1/repos/%d", gFlags.RepoID), &dto)
-		return dto, err
-	}
-	root, err := ResolveRepoRoot()
+	bs, err := io.ReadAll(resp.Body)
 	if err != nil {
-		if errors.Is(err, config.ErrNoRepo) {
-			return api.RepoDTO{}, &api.APIError{Status: http.StatusNotFound, Code: api.CodeRepoNotFound,
-				Message: "not in a git repo", Hint: "cd into a repo, or pass --repo <path>"}
-		}
-		return api.RepoDTO{}, err
+		return 0, nil, err
 	}
-	var dto api.RepoDTO
-	if err := PostJSON(ctx, ep, "/api/v1/repos", api.CreateRepoRequest{RootPath: root}, &dto); err != nil {
-		return api.RepoDTO{}, err
-	}
-	return dto, nil
+	return resp.StatusCode, bs, nil
 }
 ```
 
-- [ ] **Step 2: Test the body source resolver and exit-code mapping**
+- [ ] **Step 5: Run test (expect pass)**
 
-Create `/Users/wesm/code/vibekata/cmd/kata/helpers_test.go`:
-
-```go
-package main
-
-import (
-	"net/http"
-	"os"
-	"path/filepath"
-	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/api"
-)
-
-func TestBodySource_Inline(t *testing.T) {
-	bs := BodySource{Inline: "hello"}
-	got, err := bs.Resolve(false)
-	require.NoError(t, err)
-	assert.Equal(t, "hello", got)
-}
-
-func TestBodySource_File(t *testing.T) {
-	tmp := t.TempDir()
-	p := filepath.Join(tmp, "b.txt")
-	require.NoError(t, os.WriteFile(p, []byte("from-file"), 0o644))
-	bs := BodySource{FilePath: p}
-	got, err := bs.Resolve(false)
-	require.NoError(t, err)
-	assert.Equal(t, "from-file", got)
-}
-
-func TestBodySource_Conflict(t *testing.T) {
-	bs := BodySource{Inline: "a", FilePath: "b"}
-	_, err := bs.Resolve(false)
-	require.Error(t, err)
-	ae, ok := err.(*api.APIError)
-	require.True(t, ok)
-	assert.Equal(t, api.CodeBodySourceConflict, ae.Code)
-}
-
-func TestBodySource_RequiredWhenNotAllowEmpty(t *testing.T) {
-	bs := BodySource{}
-	_, err := bs.Resolve(false)
-	require.Error(t, err)
-	ae, ok := err.(*api.APIError)
-	require.True(t, ok)
-	assert.Equal(t, api.CodeValidation, ae.Code)
-}
-
-func TestExitCodeFor(t *testing.T) {
-	cases := []struct {
-		err  *api.APIError
-		want int
-	}{
-		{&api.APIError{Status: http.StatusBadRequest, Code: api.CodeValidation}, ExitValidation},
-		{&api.APIError{Status: http.StatusBadRequest, Code: api.CodeUsage}, ExitUsage},
-		{&api.APIError{Status: http.StatusNotFound, Code: api.CodeRepoNotFound}, ExitNotFound},
-		{&api.APIError{Status: http.StatusConflict, Code: api.CodeDuplicateCandidates}, ExitConflict},
-		{&api.APIError{Status: http.StatusPreconditionFailed, Code: api.CodeConfirmRequired}, ExitConfirmation},
-	}
-	for _, c := range cases {
-		assert.Equalf(t, c.want, exitCodeFor(c.err), "%+v", c.err)
-	}
-}
-```
-
-- [ ] **Step 3: Run tests**
-
-Run: `go test -shuffle=on ./cmd/kata/...`
+Run: `go test ./cmd/kata/...`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
-```
-git add cmd/kata/helpers.go cmd/kata/helpers_test.go
-git commit -m "Add CLI helpers: actor, body source, exit codes, daemon discovery"
+```bash
+go mod tidy
+make lint
+git add cmd/kata/ go.mod go.sum
+git commit -m "feat(cli): body sources, actor precedence, exit codes, JSON emit"
 ```
 
 ---
 
-## Task 20: `cmd/kata/main.go` and `kata daemon`
+### Task 20: `cmd/kata/main.go` — root cobra command + universal flags
+
+Spec refs: §6 (universal flags `--json`, `--quiet`, `--as`, `--workspace`). Wire each subcommand as a stub returning ExitNotImplemented for now; concrete commands land in subsequent tasks.
 
 **Files:**
 - Create: `cmd/kata/main.go`
-- Create: `cmd/kata/daemon_cmd.go`
-- Test: `cmd/kata/daemon_cmd_test.go`
+- Test: `cmd/kata/main_test.go`
 
-The Cobra root command, persistent flags, and the `kata daemon {start,stop,status}` subcommands.
-
-- [ ] **Step 1: Implement `main.go`**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/main.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
-// Package main is the kata CLI entry point.
+// cmd/kata/main_test.go
 package main
 
 import (
+	"bytes"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestRoot_HelpListsUniversalFlags(t *testing.T) {
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--help"})
+	require.NoError(t, cmd.Execute())
+	out := buf.String()
+	assert.Contains(t, out, "--json")
+	assert.Contains(t, out, "--quiet")
+	assert.Contains(t, out, "--as")
+	assert.Contains(t, out, "--workspace")
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./cmd/kata/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// cmd/kata/main.go
+package main
+
+import (
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 )
 
-var rootCmd = &cobra.Command{
-	Use:   "kata",
-	Short: "Lightweight local issue tracker for AI agents",
+// globalFlags carries the universal flags applied on every command.
+type globalFlags struct {
+	JSON      bool
+	Quiet     bool
+	As        string
+	Workspace string
+}
+
+var flags globalFlags
+
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "kata",
+		Short:         "kata — lightweight issue tracker for agents",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	cmd.PersistentFlags().BoolVar(&flags.JSON, "json", false, "emit machine-readable JSON")
+	cmd.PersistentFlags().BoolVarP(&flags.Quiet, "quiet", "q", false, "suppress non-essential output")
+	cmd.PersistentFlags().StringVar(&flags.As, "as", "", "override actor (default: $KATA_AUTHOR > git > anonymous)")
+	cmd.PersistentFlags().StringVar(&flags.Workspace, "workspace", "", "path used for project resolution (default: cwd)")
+
+	cmd.AddCommand(
+		newDaemonCmd(),
+		newInitCmd(),
+		newCreateCmd(),
+		newShowCmd(),
+		newListCmd(),
+		newEditCmd(),
+		newCommentCmd(),
+		newCloseCmd(),
+		newReopenCmd(),
+		newWhoamiCmd(),
+		newHealthCmd(),
+		newProjectsCmd(),
+	)
+	return cmd
 }
 
 func main() {
-	registerGlobalFlags(rootCmd)
-	rootCmd.AddCommand(newDaemonCmd())
-	rootCmd.AddCommand(newInitCmd())
-	rootCmd.AddCommand(newCreateCmd())
-	rootCmd.AddCommand(newShowCmd())
-	rootCmd.AddCommand(newListCmd())
-	rootCmd.AddCommand(newCommentCmd())
-	rootCmd.AddCommand(newCloseCmd())
-	rootCmd.AddCommand(newReopenCmd())
-	rootCmd.AddCommand(newWhoamiCmd())
-	rootCmd.AddCommand(newHealthCmd())
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(ExitGeneric)
+	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "kata:", err)
+		os.Exit(ExitInternal)
 	}
 }
 ```
 
-- [ ] **Step 2: Implement `daemon_cmd.go`**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/daemon_cmd.go`:
+Stub the new command constructors (they return placeholder cobra commands so the build compiles; concrete implementations land in their own tasks):
 
 ```go
+// cmd/kata/stubs.go
+package main
+
+import "github.com/spf13/cobra"
+
+func newDaemonCmd() *cobra.Command  { return &cobra.Command{Use: "daemon", Short: "manage the kata daemon"} }
+func newInitCmd() *cobra.Command    { return &cobra.Command{Use: "init", Short: "bind workspace to a project"} }
+func newCreateCmd() *cobra.Command  { return &cobra.Command{Use: "create <title>", Short: "create issue"} }
+func newShowCmd() *cobra.Command    { return &cobra.Command{Use: "show <number>", Short: "show issue"} }
+func newListCmd() *cobra.Command    { return &cobra.Command{Use: "list", Short: "list issues"} }
+func newEditCmd() *cobra.Command    { return &cobra.Command{Use: "edit <number>", Short: "edit issue"} }
+func newCommentCmd() *cobra.Command { return &cobra.Command{Use: "comment <number>", Short: "comment on issue"} }
+func newCloseCmd() *cobra.Command   { return &cobra.Command{Use: "close <number>", Short: "close issue"} }
+func newReopenCmd() *cobra.Command  { return &cobra.Command{Use: "reopen <number>", Short: "reopen issue"} }
+func newWhoamiCmd() *cobra.Command  { return &cobra.Command{Use: "whoami", Short: "show resolved actor"} }
+func newHealthCmd() *cobra.Command  { return &cobra.Command{Use: "health", Short: "daemon health"} }
+func newProjectsCmd() *cobra.Command {
+	c := &cobra.Command{Use: "projects", Short: "list projects"}
+	c.AddCommand(&cobra.Command{Use: "list"}, &cobra.Command{Use: "show"})
+	return c
+}
+```
+
+- [ ] **Step 4: Run test (expect pass)**
+
+Run: `go test ./cmd/kata/...`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+go mod tidy
+make lint
+git add cmd/kata/ go.mod go.sum
+git commit -m "feat(cli): cobra root and universal flags"
+```
+
+---
+
+### Task 21: `cmd/kata/daemon_cmd.go` — `daemon start|stop|status|logs`
+
+Spec refs: §6.1 ("Daemon" row). For Plan 1 we only need `daemon start` (foreground) + `daemon status` + auto-start helper used by other commands. `daemon stop` sends SIGTERM to the PID from `daemon.<pid>.json`. `daemon logs` is deferred to Plan 5 (hooks).
+
+Auto-start helper used by every CLI command: discover an existing daemon via `runtime/<dbhash>/daemon.*.json`, probe `/ping`, on miss spawn a child `kata daemon start` and wait for liveness.
+
+**Files:**
+- Replace stub: `cmd/kata/daemon_cmd.go`
+- Create: `cmd/kata/client.go` (auto-start logic + ApiClient)
+- Test: `cmd/kata/daemon_cmd_test.go`
+
+- [ ] **Step 1: Write failing test**
+
+```go
+// cmd/kata/daemon_cmd_test.go
+package main
+
+import (
+	"bytes"
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestDaemonStatus_NoDaemonReportsAbsent(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+
+	cmd := newDaemonCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"status"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "no daemon")
+}
+
+func TestEnsureDaemon_ReturnsExistingURL(t *testing.T) {
+	// Use the testenv harness to stand a daemon up, then ask ensureDaemon to
+	// discover it. Skip in -short.
+	if testing.Short() {
+		t.Skip()
+	}
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+
+	// Pretend a daemon is running by writing a runtime file pointing at a real
+	// listener. (This avoids spawning a child binary in unit tests.)
+	addr, cleanup := pipeServer(t)
+	t.Cleanup(cleanup)
+	require.NoError(t, writeRuntimeFor(tmp, addr))
+
+	url, err := ensureDaemon(context.Background())
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(url, "http://"))
+}
+```
+
+`pipeServer` and `writeRuntimeFor` are tiny test helpers that construct a TCP server answering `/api/v1/ping` with `{"ok":true}` and write the matching `daemon.<pid>.json`. Place them in a `cmd/kata/testhelpers_test.go` file.
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./cmd/kata/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `daemon_cmd.go`**
+
+Delete the stub `newDaemonCmd` from `stubs.go`. Implement here:
+
+```go
+// cmd/kata/daemon_cmd.go
 package main
 
 import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
-
 	"github.com/wesm/kata/internal/config"
 	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/db"
 )
 
 func newDaemonCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "daemon", Short: "Manage the kata daemon"}
-	cmd.AddCommand(newDaemonStartCmd())
-	cmd.AddCommand(newDaemonStopCmd())
-	cmd.AddCommand(newDaemonStatusCmd())
+	cmd := &cobra.Command{Use: "daemon", Short: "manage the kata daemon"}
+	cmd.AddCommand(daemonStartCmd(), daemonStatusCmd(), daemonStopCmd())
 	return cmd
 }
 
-func newDaemonStartCmd() *cobra.Command {
-	var detach bool
-	var addr string
-	cmd := &cobra.Command{
-		Use:   "start",
-		Short: "Start the kata daemon (in foreground unless --detach)",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if detach {
-				return relaunchDetached()
-			}
-			return runDaemon(cmd.Context(), addr)
-		},
-	}
-	cmd.Flags().BoolVar(&detach, "detach", false, "fork into background and return immediately")
-	cmd.Flags().StringVar(&addr, "addr", "", "listen address (default: 127.0.0.1:7474; auto-port-fallback)")
-	return cmd
-}
-
-func newDaemonStopCmd() *cobra.Command {
+func daemonStartCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "stop",
-		Short: "Stop running daemons by sending SIGTERM",
+		Use:   "start",
+		Short: "start the daemon in foreground",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			runtimes, err := daemon.ListAllRuntimes()
-			if err != nil {
-				return err
-			}
-			if len(runtimes) == 0 {
-				fmt.Fprintln(os.Stderr, "no daemon running")
-				return nil
-			}
-			for _, info := range runtimes {
-				if err := signalPID(info.PID, syscall.SIGTERM); err != nil {
-					fmt.Fprintf(os.Stderr, "stop pid=%d: %v\n", info.PID, err)
-				} else {
-					fmt.Fprintf(os.Stderr, "stopped pid=%d\n", info.PID)
-				}
-			}
-			return nil
+			ctx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+			return runDaemon(ctx)
 		},
 	}
 }
 
-func newDaemonStatusCmd() *cobra.Command {
+func daemonStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Print status of running daemons",
+		Short: "report whether a daemon is running",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			runtimes, err := daemon.ListAllRuntimes()
+			ns, err := daemon.NewNamespace()
 			if err != nil {
 				return err
 			}
-			if len(runtimes) == 0 {
-				fmt.Println("no daemon running")
-				return nil
+			recs, err := daemon.ListRuntimeFiles(ns.DataDir)
+			if err != nil {
+				return err
 			}
-			for _, info := range runtimes {
-				ping, err := daemon.ProbePing(info, 500*time.Millisecond)
-				if err != nil {
-					fmt.Printf("pid=%d  %s  unreachable (%v)\n", info.PID, info.Endpoint(), err)
-					continue
+			alive := 0
+			for _, r := range recs {
+				if daemon.ProcessAlive(r.PID) {
+					fmt.Fprintf(cmd.OutOrStdout(), "daemon pid=%d address=%s db=%s started_at=%s\n",
+						r.PID, r.Address, r.DBPath, r.StartedAt.Format(time.RFC3339))
+					alive++
 				}
-				fmt.Printf("pid=%d  %s  uptime=%ds  version=%s\n", info.PID, info.Endpoint(), ping.UptimeSeconds, ping.Version)
+			}
+			if alive == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no daemon running")
 			}
 			return nil
 		},
 	}
 }
 
-func runDaemon(ctx context.Context, addr string) error {
-	dbPath := config.DBPath()
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
-		return err
+func daemonStopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "send SIGTERM to a running daemon",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ns, err := daemon.NewNamespace()
+			if err != nil {
+				return err
+			}
+			recs, err := daemon.ListRuntimeFiles(ns.DataDir)
+			if err != nil {
+				return err
+			}
+			for _, r := range recs {
+				if daemon.ProcessAlive(r.PID) {
+					p, _ := os.FindProcess(r.PID)
+					_ = p.Signal(syscall.SIGTERM)
+					fmt.Fprintf(cmd.OutOrStdout(), "stopped pid=%d\n", r.PID)
+				}
+			}
+			return nil
+		},
 	}
+}
 
-	d, err := db.Open(ctx, dbPath)
+// runDaemon is the foreground daemon entry. Used by `kata daemon start` and
+// also by the auto-start child process spawned by ensureDaemon.
+func runDaemon(ctx context.Context) error {
+	ns, err := daemon.NewNamespace()
 	if err != nil {
 		return err
 	}
-	defer d.Close()
-
-	ep, err := daemon.ParseEndpoint(addr)
+	if err := ns.EnsureDirs(); err != nil {
+		return err
+	}
+	dbPath, err := config.KataDB()
 	if err != nil {
 		return err
 	}
+	store, err := db.Open(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
 
-	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-	return daemon.RunWithRuntime(ctx, d, ep)
+	socketPath := filepath.Join(ns.SocketDir, "daemon.sock")
+	endpoint := daemon.UnixEndpoint(socketPath)
+
+	srv := daemon.NewServer(daemon.ServerConfig{
+		DB:        store,
+		StartedAt: time.Now().UTC(),
+		Endpoint:  endpoint,
+	})
+	defer srv.Close()
+
+	rec := daemon.RuntimeRecord{
+		PID:       os.Getpid(),
+		Address:   endpoint.Address(),
+		DBPath:    dbPath,
+		StartedAt: time.Now().UTC(),
+	}
+	if _, err := daemon.WriteRuntimeFile(ns.DataDir, rec); err != nil {
+		return err
+	}
+	defer os.Remove(filepath.Join(ns.DataDir, fmt.Sprintf("daemon.%d.json", os.Getpid())))
+
+	return srv.Run(ctx)
 }
 ```
 
-- [ ] **Step 3: PID-signaling helper (per-OS)**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/daemon_signal_unix.go`:
+- [ ] **Step 4: Implement `client.go` (ensureDaemon + ApiClient)**
 
 ```go
-//go:build !windows
-
+// cmd/kata/client.go
 package main
 
 import (
-	"os"
-	"syscall"
-)
-
-func signalPID(pid int, sig syscall.Signal) error {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	return p.Signal(sig)
-}
-```
-
-Create `/Users/wesm/code/vibekata/cmd/kata/daemon_signal_windows.go`:
-
-```go
-//go:build windows
-
-package main
-
-import (
-	"os"
-	"syscall"
-)
-
-func signalPID(pid int, sig syscall.Signal) error {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	// On Windows, Kill is the closest analogue.
-	return p.Kill()
-}
-```
-
-- [ ] **Step 4: Detach helper**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/daemon_detach.go`:
-
-```go
-package main
-
-import (
-	"io"
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/wesm/kata/internal/daemon"
 )
 
-// relaunchDetached re-execs `kata daemon start` in a detached child process and exits 0.
-func relaunchDetached() error {
+// ensureDaemon discovers a live daemon's HTTP base URL, auto-starting one if
+// none is found. Returns "http://127.0.0.1:PORT" or "http+unix://<sock>".
+func ensureDaemon(ctx context.Context) (string, error) {
+	ns, err := daemon.NewNamespace()
+	if err != nil {
+		return "", err
+	}
+	if url, ok := tryDiscover(ns.DataDir); ok {
+		return url, nil
+	}
+	// Spawn child: kata daemon start (foreground, detached).
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		return "", err
 	}
 	cmd := exec.Command(exe, "daemon", "start")
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("auto-start daemon: %w", err)
+	}
+	// Don't wait — let the child outlive us.
+	go func() { _ = cmd.Wait() }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if url, ok := tryDiscover(ns.DataDir); ok {
+			return url, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return "", errors.New("daemon failed to start within 5s")
+}
+
+func tryDiscover(dataDir string) (string, bool) {
+	recs, err := daemon.ListRuntimeFiles(dataDir)
+	if err != nil {
+		return "", false
+	}
+	for _, r := range recs {
+		if !daemon.ProcessAlive(r.PID) {
+			continue
+		}
+		url, ok := pingAddress(r.Address)
+		if ok {
+			return url, true
+		}
+	}
+	return "", false
+}
+
+func pingAddress(address string) (string, bool) {
+	if strings.HasPrefix(address, "unix://") {
+		path := strings.TrimPrefix(address, "unix://")
+		client := &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "unix", path)
+				},
+			},
+			Timeout: 1 * time.Second,
+		}
+		// Unix sockets don't have a host, but http.Get needs one.
+		const base = "http://kata"
+		resp, err := client.Get(base + "/api/v1/ping")
+		if err != nil {
+			return "", false
+		}
+		_ = resp.Body.Close()
+		return base, true // caller must reuse this same transport via httpClientFor()
+	}
+	url := "http://" + address
+	resp, err := http.Get(url + "/api/v1/ping")
+	if err != nil {
+		return "", false
+	}
+	_ = resp.Body.Close()
+	return url, true
+}
+
+// httpClientFor returns an *http.Client whose transport understands unix://
+// addresses. The base url returned by ensureDaemon is paired with this client.
+func httpClientFor(baseURL string) (*http.Client, error) {
+	if !strings.HasPrefix(baseURL, "http://kata") {
+		return &http.Client{Timeout: 5 * time.Second}, nil
+	}
+	ns, err := daemon.NewNamespace()
+	if err != nil {
+		return nil, err
+	}
+	recs, err := daemon.ListRuntimeFiles(ns.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range recs {
+		if strings.HasPrefix(r.Address, "unix://") {
+			path := strings.TrimPrefix(r.Address, "unix://")
+			return &http.Client{
+				Transport: &http.Transport{
+					DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+						return (&net.Dialer{}).DialContext(ctx, "unix", path)
+					},
+				},
+				Timeout: 5 * time.Second,
+			}, nil
+		}
+	}
+	return nil, errors.New("no unix-socket daemon found")
+}
+```
+
+- [ ] **Step 5: Run test (expect pass)**
+
+Run: `go test ./cmd/kata/...`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+make lint
+git add cmd/kata/ internal/daemon/ go.mod go.sum
+git commit -m "feat(cli): daemon start/status/stop and auto-discovery"
+```
+
+---
+
+### Task 22: `cmd/kata/init.go` — `kata init` command
+
+Spec refs: §2.4, §6.1. Walks the user's `--workspace`/cwd through `POST /api/v1/projects` and prints the resolved binding. Supports `--project`, `--name`, `--replace`, `--reassign`. Exit 5 on `project_alias_conflict`/`project_binding_conflict`.
+
+**Files:**
+- Replace stub: `cmd/kata/init.go`
+- Test: `cmd/kata/init_test.go`
+
+- [ ] **Step 1: Write failing test**
+
+```go
+// cmd/kata/init_test.go
+package main
+
+import (
+	"context"
+	"os/exec"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/testenv"
+)
+
+func TestInit_FreshGitRepoBindsViaRemote(t *testing.T) {
+	env := testenv.New(t)
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	ctx := context.Background()
+	out, err := callInit(ctx, env.URL, dir, callInitOpts{})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"identity":"github.com/wesm/kata"`)
+	assert.FileExists(t, filepath.Join(dir, ".kata.toml"))
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v: %s", args, out)
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./cmd/kata/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+Remove `newInitCmd` from `stubs.go`. Add:
+
+```go
+// cmd/kata/init.go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+type initOptions struct {
+	Project  string
+	Name     string
+	Replace  bool
+	Reassign bool
+}
+
+func newInitCmd() *cobra.Command {
+	var opts initOptions
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "bind the current workspace to a kata project",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			start, err := resolveStartPath(flags.Workspace)
+			if err != nil {
+				return err
+			}
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			out, err := callInit(ctx, baseURL, start, callInitOpts{
+				Project:  opts.Project,
+				Name:     opts.Name,
+				Replace:  opts.Replace,
+				Reassign: opts.Reassign,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&opts.Project, "project", "", "project identity (default: derive from .kata.toml or git remote)")
+	cmd.Flags().StringVar(&opts.Name, "name", "", "display name (default: last segment of identity)")
+	cmd.Flags().BoolVar(&opts.Replace, "replace", false, "overwrite a conflicting .kata.toml binding")
+	cmd.Flags().BoolVar(&opts.Reassign, "reassign", false, "move an existing alias to this project")
+	return cmd
+}
+
+type callInitOpts struct {
+	Project  string
+	Name     string
+	Replace  bool
+	Reassign bool
+}
+
+func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts) (string, error) {
+	client, err := httpClientFor(baseURL)
+	if err != nil {
+		return "", err
+	}
+	body := map[string]any{"start_path": startPath}
+	if opts.Project != "" {
+		body["project_identity"] = opts.Project
+	}
+	if opts.Name != "" {
+		body["name"] = opts.Name
+	}
+	if opts.Replace {
+		body["replace"] = true
+	}
+	if opts.Reassign {
+		body["reassign"] = true
+	}
+	status, bs, err := httpDoJSON(ctx, client, http.MethodPost, baseURL+"/api/v1/projects", body)
+	if err != nil {
+		return "", err
+	}
+	if status >= 400 {
+		return "", apiErrFromBody(status, bs)
+	}
+	if flags.JSON {
+		return string(bs), nil
+	}
+	var b struct {
+		Project struct{ Identity, Name string }
+		Created bool
+	}
+	if err := json.Unmarshal(bs, &b); err != nil {
+		return "", err
+	}
+	verb := "bound"
+	if b.Created {
+		verb = "created and bound"
+	}
+	return fmt.Sprintf("%s project %s (%s)", verb, b.Project.Identity, b.Project.Name), nil
+}
+
+func resolveStartPath(workspace string) (string, error) {
+	if workspace != "" {
+		return workspace, nil
+	}
+	return os.Getwd()
+}
+
+// apiErrFromBody decodes the standard error envelope and exits with the right code.
+func apiErrFromBody(status int, bs []byte) error {
+	var env struct {
+		Error struct {
+			Code    string
+			Message string
+			Hint    string
+		}
+	}
+	if err := json.Unmarshal(bs, &env); err != nil {
+		return errors.New(string(bs))
+	}
+	msg := env.Error.Message
+	if env.Error.Hint != "" {
+		msg += "; hint: " + env.Error.Hint
+	}
+	exitCode := mapStatusToExit(status, env.Error.Code)
+	return &cliError{Message: msg, ExitCode: exitCode, Code: env.Error.Code}
+}
+
+type cliError struct {
+	Message  string
+	Code     string
+	ExitCode int
+}
+
+func (e *cliError) Error() string { return e.Message }
+
+func mapStatusToExit(status int, code string) int {
+	switch status {
+	case 400:
+		return ExitValidation
+	case 404:
+		return ExitNotFound
+	case 409:
+		return ExitConflict
+	case 412:
+		return ExitConfirm
+	}
+	_ = code
+	return ExitInternal
+}
+```
+
+Add error-aware exit handling at the top of `main.go`:
+
+```go
+// in main.go's main()
+func main() {
+	cmd := newRootCmd()
+	if err := cmd.Execute(); err != nil {
+		var cli *cliError
+		if errors.As(err, &cli) {
+			fmt.Fprintln(os.Stderr, "kata:", cli.Message)
+			os.Exit(cli.ExitCode)
+		}
+		fmt.Fprintln(os.Stderr, "kata:", err)
+		os.Exit(ExitInternal)
+	}
+}
+```
+
+- [ ] **Step 4: Run test (expect pass)**
+
+Run: `go test ./cmd/kata/...`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+make lint
+git add cmd/kata/ go.mod go.sum
+git commit -m "feat(cli): kata init binds workspace via fresh-clone or --project"
+```
+
+---
+
+### Task 23: `cmd/kata/create.go` — `kata create <title>`
+
+Spec refs: §6.1, §6.4. Resolve project via `/projects/resolve`, then `POST /projects/{id}/issues`. Body sources: `--body` / `--body-file` / `--body-stdin`. `--quiet` without `--json` prints just the issue number.
+
+**Files:**
+- Replace stub: `cmd/kata/create.go`
+- Test: `cmd/kata/create_test.go`
+
+- [ ] **Step 1: Write failing test (e2e against testenv)**
+
+```go
+// cmd/kata/create_test.go
+package main
+
+import (
+	"bytes"
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/testenv"
+)
+
+func TestCreate_PrintsIssueNumberInQuietMode(t *testing.T) {
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--workspace", dir, "--quiet", "create", "first issue", "--body", "details"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, "1", strings.TrimSpace(buf.String()))
+}
+```
+
+`initBoundWorkspace` is a helper that creates a temp git repo with the named origin and runs `kata init` once. `contextWithBaseURL` injects the testenv URL into a context the CLI's `ensureDaemon` consults; in production this is a no-op and the discovery code runs unchanged.
+
+Add to `cmd/kata/testhelpers_test.go`:
+
+```go
+// cmd/kata/testhelpers_test.go
+package main
+
+import (
+	"context"
+	"net/http"
+	"os/exec"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+type baseURLKey struct{}
+
+func contextWithBaseURL(ctx context.Context, url string) context.Context {
+	return context.WithValue(ctx, baseURLKey{}, url)
+}
+
+func baseURLFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(baseURLKey{}).(string)
+	return v
+}
+
+func initBoundWorkspace(t *testing.T, baseURL, origin string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", "--quiet")
+	cmd.Dir = dir
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "remote", "add", "origin", origin)
+	cmd.Dir = dir
+	require.NoError(t, cmd.Run())
+
+	body := []byte(`{"start_path":"` + filepath.ToSlash(dir) + `"}`)
+	resp, err := http.Post(baseURL+"/api/v1/projects", "application/json", bytesNewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+	return dir
+}
+
+// bytesNewReader avoids importing bytes from yet another file.
+func bytesNewReader(b []byte) *bytesReader { return &bytesReader{b: b} }
+
+type bytesReader struct {
+	b []byte
+	i int
+}
+
+func (r *bytesReader) Read(p []byte) (int, error) {
+	if r.i >= len(r.b) {
+		return 0, errEOF
+	}
+	n := copy(p, r.b[r.i:])
+	r.i += n
+	return n, nil
+}
+
+var errEOF = ioEOF()
+
+func ioEOF() error {
+	type eofErr struct{}
+	return &eofImpl{}
+}
+
+type eofImpl struct{}
+
+func (e *eofImpl) Error() string { return "EOF" }
+```
+
+(For implementer simplicity: just import `bytes` and use `bytes.NewReader` rather than this elaborate workaround. The above is illustrative — replace with `bytes.NewReader(body)` + `import "bytes"`.)
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./cmd/kata/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+Wire `ensureDaemon` to consult the context-injected URL (so tests can override). Update `client.go`:
+
+```go
+// in client.go: ensureDaemon
+func ensureDaemon(ctx context.Context) (string, error) {
+	if v, ok := ctx.Value(baseURLKey{}).(string); ok && v != "" {
+		return v, nil
+	}
+	// ... existing discovery logic ...
+}
+```
+
+(Move the `baseURLKey{}` type into `client.go` so it's accessible from tests.)
+
+Replace stub `newCreateCmd`:
+
+```go
+// cmd/kata/create.go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+
+	"github.com/spf13/cobra"
+)
+
+func newCreateCmd() *cobra.Command {
+	var src BodySources
+	cmd := &cobra.Command{
+		Use:   "create <title>",
+		Short: "create a new issue",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			start, err := resolveStartPath(flags.Workspace)
+			if err != nil {
+				return err
+			}
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			projectID, err := resolveProjectID(ctx, baseURL, start)
+			if err != nil {
+				return err
+			}
+			body, err := resolveBody(src, cmd.InOrStdin())
+			if err != nil {
+				return &cliError{Message: err.Error(), ExitCode: ExitValidation}
+			}
+			actor, _ := resolveActor(flags.As, nil)
+			client, err := httpClientFor(baseURL)
+			if err != nil {
+				return err
+			}
+			status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
+				fmt.Sprintf("%s/api/v1/projects/%d/issues", baseURL, projectID),
+				map[string]any{"actor": actor, "title": args[0], "body": body})
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			return printMutation(cmd, bs)
+		},
+	}
+	cmd.Flags().StringVar(&src.Body, "body", "", "issue body")
+	cmd.Flags().StringVar(&src.File, "body-file", "", "read body from file")
+	cmd.Flags().BoolVar(&src.Stdin, "body-stdin", false, "read body from stdin")
+	return cmd
+}
+
+// resolveProjectID hits POST /projects/resolve and returns the project id.
+func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, error) {
+	client, err := httpClientFor(baseURL)
+	if err != nil {
+		return 0, err
+	}
+	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
+		baseURL+"/api/v1/projects/resolve",
+		map[string]any{"start_path": startPath})
+	if err != nil {
+		return 0, err
+	}
+	if status >= 400 {
+		return 0, apiErrFromBody(status, bs)
+	}
+	var b struct {
+		Project struct{ ID int64 } `json:"project"`
+	}
+	if err := json.Unmarshal(bs, &b); err != nil {
+		return 0, err
+	}
+	return b.Project.ID, nil
+}
+
+// printMutation emits either the JSON envelope or a human-readable summary.
+func printMutation(cmd *cobra.Command, bs []byte) error {
+	var b struct {
+		Issue struct {
+			Number int64
+			Title  string
+			Status string
+		}
+		Changed bool
+	}
+	if err := json.Unmarshal(bs, &b); err != nil {
 		return err
 	}
+	if flags.JSON {
+		fmt.Fprintln(cmd.OutOrStdout(), string(bs))
+		return nil
+	}
+	if flags.Quiet {
+		fmt.Fprintln(cmd.OutOrStdout(), b.Issue.Number)
+		return nil
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "#%d %s [%s]\n", b.Issue.Number, b.Issue.Title, b.Issue.Status)
 	return nil
 }
 ```
 
-- [ ] **Step 5: Test daemon stop / status**
+- [ ] **Step 4: Run test (expect pass)**
 
-Create `/Users/wesm/code/vibekata/cmd/kata/daemon_cmd_test.go`:
+Run: `go test ./cmd/kata/...`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+make lint
+git add cmd/kata/ go.mod go.sum
+git commit -m "feat(cli): kata create with body sources and quiet mode"
+```
+
+---
+
+### Task 24: `cmd/kata/show.go` + `cmd/kata/list.go`
+
+Spec refs: §6.1. Both commands resolve the project then call the daemon. Default list filters to `status=open`, sort `updated_at DESC`, limit 50.
+
+**Files:**
+- Replace stubs: `cmd/kata/show.go`, `cmd/kata/list.go`
+- Test: `cmd/kata/list_test.go`
+
+- [ ] **Step 1: Write failing test**
 
 ```go
+// cmd/kata/list_test.go
 package main
 
 import (
+	"bytes"
 	"context"
-	"path/filepath"
+	"net/http"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/daemon"
-	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/testenv"
 )
 
-// Smoke test: bring up an in-process daemon via RunWithRuntime, verify status sees it.
-func TestDaemonStatus_FindsRunning(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("KATA_DATA_DIR", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+func TestList_DefaultsToOpenIssuesInProject(t *testing.T) {
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
 
-	d, err := db.Open(context.Background(), filepath.Join(tmp, "kata.db"))
-	require.NoError(t, err)
-	defer d.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- daemon.RunWithRuntime(ctx, d, daemon.DaemonEndpoint{Network: "tcp", Address: "127.0.0.1:0"})
-	}()
-
-	// Wait for runtime file.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := daemon.ReadRuntime(); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Create two issues via direct HTTP for speed.
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	for _, title := range []string{"alpha", "beta"} {
+		body := []byte(`{"actor":"x","title":"` + title + `"}`)
+		resp, err := http.Post(env.URL+"/api/v1/projects/"+itoa(pid)+"/issues", "application/json", bytesNewReader(body))
+		require.NoError(t, err)
+		require.Equal(t, 200, resp.StatusCode)
+		_ = resp.Body.Close()
 	}
 
-	infos, err := daemon.ListAllRuntimes()
-	require.NoError(t, err)
-	require.Len(t, infos, 1)
-
-	ping, err := daemon.ProbePing(infos[0], 500*time.Millisecond)
-	require.NoError(t, err)
-	assert.Equal(t, "kata", ping.Service)
-
-	cancel()
-	require.NoError(t, <-done)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--workspace", dir, "list"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	out := buf.String()
+	assert.True(t, strings.Contains(out, "alpha"))
+	assert.True(t, strings.Contains(out, "beta"))
 }
+
+// resolvePIDViaHTTP and itoa are helpers; place in testhelpers_test.go alongside the others.
 ```
 
-- [ ] **Step 6: Verify build, run tests**
+- [ ] **Step 2: Run test (expect failure)**
 
-Run:
-```
-go build ./...
-go test -shuffle=on ./cmd/kata/...
-```
-Expected: PASS.
+Run: `go test ./cmd/kata/...`
+Expected: FAIL.
 
-- [ ] **Step 7: Commit**
-
-```
-git add cmd/kata/main.go cmd/kata/daemon_cmd.go cmd/kata/daemon_signal_unix.go cmd/kata/daemon_signal_windows.go cmd/kata/daemon_detach.go cmd/kata/daemon_cmd_test.go
-git commit -m "Add kata main and kata daemon {start,stop,status}"
-```
-
----
-
-## Task 21: `kata init`
-
-**Files:**
-- Create: `cmd/kata/init.go`
-
-`kata init` registers the cwd repo with the daemon (auto-starting it if needed) and prints `{repo_id, identity}`.
-
-- [ ] **Step 1: Implement**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/init.go`:
+- [ ] **Step 3: Implement `list.go` and `show.go`**
 
 ```go
+// cmd/kata/list.go
 package main
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/spf13/cobra"
-
-	"github.com/wesm/kata/internal/api"
-)
-
-func newInitCmd() *cobra.Command {
-	var name string
-	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Register the current repo with kata",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := context.Background()
-			ep, err := DiscoverDaemon(ctx)
-			if err != nil {
-				EmitError(err)
-			}
-			root, err := ResolveRepoRoot()
-			if err != nil {
-				EmitError(err)
-			}
-			var dto api.RepoDTO
-			if err := PostJSON(ctx, ep, "/api/v1/repos", api.CreateRepoRequest{RootPath: root, Name: name}, &dto); err != nil {
-				EmitError(err)
-			}
-			if gFlags.JSON {
-				return PrintJSON(dto)
-			}
-			fmt.Printf("registered %s as #%d (%s)\n", dto.Name, dto.ID, dto.Identity)
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&name, "name", "", "override the auto-derived repo name")
-	return cmd
-}
-```
-
-- [ ] **Step 2: Run build**
-
-Run: `go build ./...`
-Expected: silent.
-
-- [ ] **Step 3: Commit**
-
-```
-git add cmd/kata/init.go
-git commit -m "Add kata init command"
-```
-
----
-
-## Task 22: `kata create`
-
-**Files:**
-- Create: `cmd/kata/create.go`
-
-- [ ] **Step 1: Implement**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/create.go`:
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-
-	"github.com/spf13/cobra"
-
-	"github.com/wesm/kata/internal/api"
-)
-
-func newCreateCmd() *cobra.Command {
-	var bs BodySource
-	cmd := &cobra.Command{
-		Use:   "create <title>",
-		Short: "Create a new issue",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			body, err := bs.Resolve(true)
-			if err != nil {
-				EmitError(err)
-			}
-			ep, err := DiscoverDaemon(ctx)
-			if err != nil {
-				EmitError(err)
-			}
-			repo, err := ResolveRepoForCommand(ctx, ep)
-			if err != nil {
-				EmitError(err)
-			}
-			actor, _ := ResolveActor()
-			var env api.MutationEnvelope
-			if err := PostJSON(ctx, ep, fmt.Sprintf("/api/v1/repos/%d/issues", repo.ID),
-				api.CreateIssueRequest{Actor: actor, Title: args[0], Body: body}, &env); err != nil {
-				EmitError(err)
-			}
-			if gFlags.JSON {
-				return PrintJSON(env)
-			}
-			if gFlags.Quiet {
-				fmt.Printf("%d\n", env.Issue.Number)
-				return nil
-			}
-			fmt.Printf("#%d  %s  (%s)\n", env.Issue.Number, env.Issue.Title, repo.Identity)
-			return nil
-		},
-	}
-	bs.AddTo(cmd)
-	return cmd
-}
-```
-
-- [ ] **Step 2: Build, commit**
-
-Run: `go build ./...` (silent)
-
-```
-git add cmd/kata/create.go
-git commit -m "Add kata create command"
-```
-
----
-
-## Task 23: `kata show`
-
-**Files:**
-- Create: `cmd/kata/show.go`
-
-- [ ] **Step 1: Implement**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/show.go`:
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"strconv"
-
-	"github.com/spf13/cobra"
-
-	"github.com/wesm/kata/internal/api"
-)
-
-func newShowCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "show <number>",
-		Short: "Show an issue with comments",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			number, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				EmitError(&api.APIError{Code: api.CodeUsage, Message: "issue number must be an integer"})
-			}
-			ep, err := DiscoverDaemon(ctx)
-			if err != nil {
-				EmitError(err)
-			}
-			repo, err := ResolveRepoForCommand(ctx, ep)
-			if err != nil {
-				EmitError(err)
-			}
-			var dto api.IssueShowDTO
-			if err := GetJSON(ctx, ep, fmt.Sprintf("/api/v1/repos/%d/issues/%d", repo.ID, number), &dto); err != nil {
-				EmitError(err)
-			}
-			if gFlags.JSON {
-				return PrintJSON(dto)
-			}
-			fmt.Printf("#%d  %s\n", dto.Issue.Number, dto.Issue.Title)
-			fmt.Printf("status: %s   author: %s   updated: %s\n",
-				dto.Issue.Status, dto.Issue.Author, dto.Issue.UpdatedAt.Format("2006-01-02 15:04 MST"))
-			if dto.Issue.Body != "" {
-				fmt.Println()
-				fmt.Println(dto.Issue.Body)
-			}
-			if len(dto.Comments) > 0 {
-				fmt.Println()
-				fmt.Printf("comments (%d):\n", len(dto.Comments))
-				for _, c := range dto.Comments {
-					fmt.Printf("  - %s @ %s\n    %s\n", c.Author, c.CreatedAt.Format("2006-01-02 15:04 MST"), c.Body)
-				}
-			}
-			return nil
-		},
-	}
-}
-```
-
-- [ ] **Step 2: Build, commit**
-
-Run: `go build ./...` (silent)
-
-```
-git add cmd/kata/show.go
-git commit -m "Add kata show command"
-```
-
----
-
-## Task 24: `kata list`
-
-**Files:**
-- Create: `cmd/kata/list.go`
-
-- [ ] **Step 1: Implement**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/list.go`:
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"net/url"
-	"strings"
-	"time"
-
-	"github.com/spf13/cobra"
-
-	"github.com/wesm/kata/internal/api"
 )
 
 func newListCmd() *cobra.Command {
@@ -5498,300 +5972,610 @@ func newListCmd() *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List issues in this repo",
+		Short: "list issues in this project",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := context.Background()
-			ep, err := DiscoverDaemon(ctx)
+			ctx := cmd.Context()
+			start, err := resolveStartPath(flags.Workspace)
 			if err != nil {
-				EmitError(err)
+				return err
 			}
-			repo, err := ResolveRepoForCommand(ctx, ep)
+			baseURL, err := ensureDaemon(ctx)
 			if err != nil {
-				EmitError(err)
+				return err
 			}
-			q := url.Values{}
-			if status != "" {
-				q.Set("status", status)
+			pid, err := resolveProjectID(ctx, baseURL, start)
+			if err != nil {
+				return err
 			}
-			if limit > 0 {
-				q.Set("limit", fmt.Sprintf("%d", limit))
+			client, err := httpClientFor(baseURL)
+			if err != nil {
+				return err
 			}
-			path := fmt.Sprintf("/api/v1/repos/%d/issues", repo.ID)
-			if encoded := q.Encode(); encoded != "" {
-				path += "?" + encoded
+			url := fmt.Sprintf("%s/api/v1/projects/%d/issues?status=%s&limit=%d", baseURL, pid, status, limit)
+			status2, bs, err := httpDoJSON(ctx, client, http.MethodGet, url, nil)
+			if err != nil {
+				return err
 			}
-			var env api.IssueListEnvelope
-			if err := GetJSON(ctx, ep, path, &env); err != nil {
-				EmitError(err)
+			if status2 >= 400 {
+				return apiErrFromBody(status2, bs)
 			}
-			if gFlags.JSON {
-				return PrintJSON(env)
-			}
-			if len(env.Items) == 0 {
-				fmt.Println("(no issues)")
+			if flags.JSON {
+				fmt.Fprintln(cmd.OutOrStdout(), string(bs))
 				return nil
 			}
-			for _, i := range env.Items {
-				owner := "—"
-				if i.Owner != nil {
-					owner = *i.Owner
+			var b struct {
+				Issues []struct {
+					Number int64
+					Title  string
+					Status string
+					Author string
 				}
-				fmt.Printf("#%-5d %-7s %-12s %s   %s\n",
-					i.Number,
-					i.Status,
-					owner,
-					relativeAge(i.UpdatedAt),
-					strings.TrimSpace(i.Title),
-				)
+			}
+			if err := json.Unmarshal(bs, &b); err != nil {
+				return err
+			}
+			for _, i := range b.Issues {
+				fmt.Fprintf(cmd.OutOrStdout(), "#%-4d  %-8s  %s  (%s)\n", i.Number, i.Status, i.Title, i.Author)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&status, "status", "open", "filter by status: open|closed|all (default open)")
+	cmd.Flags().StringVar(&status, "status", "open", "filter by status: open|closed|all")
 	cmd.Flags().IntVar(&limit, "limit", 50, "max rows")
 	return cmd
 }
-
-func relativeAge(t time.Time) string {
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
-}
 ```
-
-> **Note:** `--status all` should pass an empty `status` to the API. Adjust before sending:
 
 ```go
-if status != "" && status != "all" {
-    q.Set("status", status)
+// cmd/kata/show.go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+
+	"github.com/spf13/cobra"
+)
+
+func newShowCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "show <number>",
+		Short: "show issue + comments",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			n, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+			}
+			start, err := resolveStartPath(flags.Workspace)
+			if err != nil {
+				return err
+			}
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			pid, err := resolveProjectID(ctx, baseURL, start)
+			if err != nil {
+				return err
+			}
+			client, err := httpClientFor(baseURL)
+			if err != nil {
+				return err
+			}
+			status, bs, err := httpDoJSON(ctx, client, http.MethodGet,
+				fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, n), nil)
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			if flags.JSON {
+				fmt.Fprintln(cmd.OutOrStdout(), string(bs))
+				return nil
+			}
+			var b struct {
+				Issue struct {
+					Number int64
+					Title  string
+					Body   string
+					Status string
+					Author string
+				}
+				Comments []struct {
+					Author string
+					Body   string
+				}
+			}
+			if err := json.Unmarshal(bs, &b); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "#%d  %s  [%s]  by %s\n", b.Issue.Number, b.Issue.Title, b.Issue.Status, b.Issue.Author)
+			if b.Issue.Body != "" {
+				fmt.Fprintln(cmd.OutOrStdout())
+				fmt.Fprintln(cmd.OutOrStdout(), b.Issue.Body)
+			}
+			if len(b.Comments) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "\n--- comments ---")
+				for _, c := range b.Comments {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", c.Author, c.Body)
+				}
+			}
+			return nil
+		},
+	}
+	return cmd
 }
 ```
 
-- [ ] **Step 2: Build, commit**
+- [ ] **Step 4: Run test (expect pass)**
 
-Run: `go build ./...`
+Run: `go test ./cmd/kata/...`
+Expected: PASS.
 
-```
-git add cmd/kata/list.go
-git commit -m "Add kata list command"
+- [ ] **Step 5: Commit**
+
+```bash
+make lint
+git add cmd/kata/show.go cmd/kata/list.go cmd/kata/list_test.go cmd/kata/testhelpers_test.go
+git commit -m "feat(cli): kata show + kata list"
 ```
 
 ---
 
-## Task 25: `kata comment`, `kata close`, `kata reopen`
+### Task 25: `cmd/kata/edit.go` + `cmd/kata/comment.go`
+
+Spec refs: §6.1. Both follow the same shape: resolve project → resolve issue number → PATCH/POST → emit response.
 
 **Files:**
-- Create: `cmd/kata/comment.go`
-- Create: `cmd/kata/close.go`
-- Create: `cmd/kata/reopen.go`
+- Replace stubs: `cmd/kata/edit.go`, `cmd/kata/comment.go`
+- Test: `cmd/kata/comment_test.go`
 
-- [ ] **Step 1: `comment.go`**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/comment.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
+// cmd/kata/comment_test.go
 package main
 
 import (
+	"bytes"
 	"context"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/testenv"
+)
+
+func TestComment_AppendsToIssue(t *testing.T) {
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	body := []byte(`{"actor":"x","title":"x"}`)
+	resp, err := http.Post(env.URL+"/api/v1/projects/"+itoa(pid)+"/issues", "application/json", bytesNewReader(body))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--workspace", dir, "comment", "1", "--body", "looks good"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	assert.True(t, strings.Contains(buf.String(), "looks good") || strings.Contains(buf.String(), "comment"))
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./cmd/kata/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// cmd/kata/comment.go
+package main
+
+import (
 	"fmt"
+	"net/http"
 	"strconv"
 
 	"github.com/spf13/cobra"
-
-	"github.com/wesm/kata/internal/api"
 )
 
 func newCommentCmd() *cobra.Command {
-	var bs BodySource
+	var src BodySources
 	cmd := &cobra.Command{
 		Use:   "comment <number>",
-		Short: "Add a comment to an issue",
+		Short: "append a comment to an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			body, err := bs.Resolve(false)
+			ctx := cmd.Context()
+			n, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				EmitError(err)
+				return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
 			}
-			number, err := strconv.ParseInt(args[0], 10, 64)
+			body, err := resolveBody(src, cmd.InOrStdin())
 			if err != nil {
-				EmitError(&api.APIError{Code: api.CodeUsage, Message: "issue number must be an integer"})
+				return &cliError{Message: err.Error(), ExitCode: ExitValidation}
 			}
-			ep, err := DiscoverDaemon(ctx)
+			if body == "" {
+				return &cliError{Message: "comment body is required (--body, --body-file, --body-stdin)", ExitCode: ExitValidation}
+			}
+			start, err := resolveStartPath(flags.Workspace)
 			if err != nil {
-				EmitError(err)
+				return err
 			}
-			repo, err := ResolveRepoForCommand(ctx, ep)
+			baseURL, err := ensureDaemon(ctx)
 			if err != nil {
-				EmitError(err)
+				return err
 			}
-			actor, _ := ResolveActor()
-			var env api.CommentMutationEnvelope
-			path := fmt.Sprintf("/api/v1/repos/%d/issues/%d/comments", repo.ID, number)
-			if err := PostJSON(ctx, ep, path, api.CommentRequest{Actor: actor, Body: body}, &env); err != nil {
-				EmitError(err)
+			pid, err := resolveProjectID(ctx, baseURL, start)
+			if err != nil {
+				return err
 			}
-			if gFlags.JSON {
-				return PrintJSON(env)
+			actor, _ := resolveActor(flags.As, nil)
+			client, err := httpClientFor(baseURL)
+			if err != nil {
+				return err
 			}
-			fmt.Printf("commented on #%d (comment id %d)\n", env.Issue.Number, env.Comment.ID)
+			status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
+				fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/comments", baseURL, pid, n),
+				map[string]any{"actor": actor, "body": body})
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			if flags.JSON {
+				fmt.Fprintln(cmd.OutOrStdout(), string(bs))
+				return nil
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "comment appended")
 			return nil
 		},
 	}
-	bs.AddTo(cmd)
+	cmd.Flags().StringVar(&src.Body, "body", "", "comment body")
+	cmd.Flags().StringVar(&src.File, "body-file", "", "read body from file")
+	cmd.Flags().BoolVar(&src.Stdin, "body-stdin", false, "read body from stdin")
 	return cmd
 }
 ```
 
-- [ ] **Step 2: `close.go`**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/close.go`:
-
 ```go
+// cmd/kata/edit.go
 package main
 
 import (
-	"context"
 	"fmt"
+	"net/http"
 	"strconv"
 
 	"github.com/spf13/cobra"
+)
 
-	"github.com/wesm/kata/internal/api"
+func newEditCmd() *cobra.Command {
+	var (
+		title string
+		body  string
+		owner string
+	)
+	cmd := &cobra.Command{
+		Use:   "edit <number>",
+		Short: "edit issue title/body/owner",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			n, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+			}
+			payload := map[string]any{"actor": ""}
+			if title != "" {
+				payload["title"] = title
+			}
+			if body != "" {
+				payload["body"] = body
+			}
+			if owner != "" {
+				payload["owner"] = owner
+			}
+			if len(payload) == 1 {
+				return &cliError{Message: "pass at least one of --title, --body, --owner", ExitCode: ExitValidation}
+			}
+			actor, _ := resolveActor(flags.As, nil)
+			payload["actor"] = actor
+
+			start, err := resolveStartPath(flags.Workspace)
+			if err != nil {
+				return err
+			}
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			pid, err := resolveProjectID(ctx, baseURL, start)
+			if err != nil {
+				return err
+			}
+			client, err := httpClientFor(baseURL)
+			if err != nil {
+				return err
+			}
+			status, bs, err := httpDoJSON(ctx, client, http.MethodPatch,
+				fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, n),
+				payload)
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			return printMutation(cmd, bs)
+		},
+	}
+	cmd.Flags().StringVar(&title, "title", "", "new title")
+	cmd.Flags().StringVar(&body, "body", "", "new body")
+	cmd.Flags().StringVar(&owner, "owner", "", "new owner")
+	return cmd
+}
+```
+
+- [ ] **Step 4: Run test (expect pass)**
+
+Run: `go test ./cmd/kata/...`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+make lint
+git add cmd/kata/edit.go cmd/kata/comment.go cmd/kata/comment_test.go
+git commit -m "feat(cli): kata edit + kata comment"
+```
+
+---
+
+### Task 26: `cmd/kata/close.go` + `cmd/kata/reopen.go`
+
+Spec refs: §3.4, §6.1. Both call the corresponding `actions/{close,reopen}` endpoint with `{actor, reason?}`.
+
+**Files:**
+- Replace stubs: `cmd/kata/close.go`, `cmd/kata/reopen.go`
+- Test: `cmd/kata/close_reopen_test.go`
+
+- [ ] **Step 1: Write failing test**
+
+```go
+// cmd/kata/close_reopen_test.go
+package main
+
+import (
+	"bytes"
+	"context"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/testenv"
+)
+
+func TestCloseReopen_RoundTrip(t *testing.T) {
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	resp, err := http.Post(env.URL+"/api/v1/projects/"+itoa(pid)+"/issues",
+		"application/json", bytesNewReader([]byte(`{"actor":"x","title":"x"}`)))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	close := newRootCmd()
+	var bclose bytes.Buffer
+	close.SetOut(&bclose)
+	close.SetArgs([]string{"--workspace", dir, "close", "1", "--reason", "wontfix"})
+	close.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, close.Execute())
+	assert.True(t, strings.Contains(bclose.String(), "closed"))
+
+	reopen := newRootCmd()
+	var bo bytes.Buffer
+	reopen.SetOut(&bo)
+	reopen.SetArgs([]string{"--workspace", dir, "reopen", "1"})
+	reopen.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, reopen.Execute())
+	assert.True(t, strings.Contains(bo.String(), "open"))
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./cmd/kata/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// cmd/kata/close.go
+package main
+
+import (
+	"fmt"
+	"net/http"
+	"strconv"
+
+	"github.com/spf13/cobra"
 )
 
 func newCloseCmd() *cobra.Command {
 	var reason string
 	cmd := &cobra.Command{
 		Use:   "close <number>",
-		Short: "Close an issue",
+		Short: "close an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			number, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				EmitError(&api.APIError{Code: api.CodeUsage, Message: "issue number must be an integer"})
-			}
-			ep, err := DiscoverDaemon(ctx)
-			if err != nil {
-				EmitError(err)
-			}
-			repo, err := ResolveRepoForCommand(ctx, ep)
-			if err != nil {
-				EmitError(err)
-			}
-			actor, _ := ResolveActor()
-			var env api.MutationEnvelope
-			path := fmt.Sprintf("/api/v1/repos/%d/issues/%d/actions/close", repo.ID, number)
-			if err := PostJSON(ctx, ep, path, api.CloseRequest{Actor: actor, Reason: reason}, &env); err != nil {
-				EmitError(err)
-			}
-			if gFlags.JSON {
-				return PrintJSON(env)
-			}
-			if !env.Changed {
-				fmt.Printf("#%d already closed\n", env.Issue.Number)
-				return nil
-			}
-			fmt.Printf("closed #%d\n", env.Issue.Number)
-			return nil
+			return runAction(cmd, args[0], "close", map[string]any{"reason": reason})
 		},
 	}
-	cmd.Flags().StringVar(&reason, "reason", "", "close reason: done (default), wontfix, duplicate")
+	cmd.Flags().StringVar(&reason, "reason", "done", "done|wontfix|duplicate")
 	return cmd
 }
-```
 
-- [ ] **Step 3: `reopen.go`**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/reopen.go`:
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"strconv"
-
-	"github.com/spf13/cobra"
-
-	"github.com/wesm/kata/internal/api"
-)
-
+// reopen.go
 func newReopenCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "reopen <number>",
-		Short: "Reopen a closed issue",
+		Short: "reopen an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			number, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				EmitError(&api.APIError{Code: api.CodeUsage, Message: "issue number must be an integer"})
-			}
-			ep, err := DiscoverDaemon(ctx)
-			if err != nil {
-				EmitError(err)
-			}
-			repo, err := ResolveRepoForCommand(ctx, ep)
-			if err != nil {
-				EmitError(err)
-			}
-			actor, _ := ResolveActor()
-			var env api.MutationEnvelope
-			path := fmt.Sprintf("/api/v1/repos/%d/issues/%d/actions/reopen", repo.ID, number)
-			if err := PostJSON(ctx, ep, path, api.ReopenRequest{Actor: actor}, &env); err != nil {
-				EmitError(err)
-			}
-			if gFlags.JSON {
-				return PrintJSON(env)
-			}
-			if !env.Changed {
-				fmt.Printf("#%d already open\n", env.Issue.Number)
-				return nil
-			}
-			fmt.Printf("reopened #%d\n", env.Issue.Number)
-			return nil
+			return runAction(cmd, args[0], "reopen", nil)
 		},
 	}
+	return cmd
+}
+
+func runAction(cmd *cobra.Command, raw, action string, extra map[string]any) error {
+	ctx := cmd.Context()
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+	}
+	start, err := resolveStartPath(flags.Workspace)
+	if err != nil {
+		return err
+	}
+	baseURL, err := ensureDaemon(ctx)
+	if err != nil {
+		return err
+	}
+	pid, err := resolveProjectID(ctx, baseURL, start)
+	if err != nil {
+		return err
+	}
+	actor, _ := resolveActor(flags.As, nil)
+	body := map[string]any{"actor": actor}
+	for k, v := range extra {
+		body[k] = v
+	}
+	client, err := httpClientFor(baseURL)
+	if err != nil {
+		return err
+	}
+	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/%s", baseURL, pid, n, action),
+		body)
+	if err != nil {
+		return err
+	}
+	if status >= 400 {
+		return apiErrFromBody(status, bs)
+	}
+	return printMutation(cmd, bs)
 }
 ```
 
-- [ ] **Step 4: Build, commit**
+`close.go` and `reopen.go` may share `runAction` — declare it once in `close.go` or pull into `helpers.go` if you prefer. Don't duplicate.
 
-Run: `go build ./...`
+- [ ] **Step 4: Run test (expect pass)**
 
-```
-git add cmd/kata/comment.go cmd/kata/close.go cmd/kata/reopen.go
-git commit -m "Add kata comment, close, and reopen commands"
+Run: `go test ./cmd/kata/...`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+make lint
+git add cmd/kata/close.go cmd/kata/reopen.go cmd/kata/close_reopen_test.go
+git commit -m "feat(cli): kata close + reopen"
 ```
 
 ---
 
-## Task 26: `kata whoami` and `kata health`
+### Task 27: `cmd/kata/whoami.go` + `cmd/kata/health.go` + `cmd/kata/projects.go`
+
+Spec refs: §5.2 (whoami), §6.1 (health, projects).
 
 **Files:**
-- Create: `cmd/kata/whoami.go`
-- Create: `cmd/kata/health.go`
+- Replace stubs: `cmd/kata/whoami.go`, `cmd/kata/health.go`, `cmd/kata/projects.go`
+- Test: `cmd/kata/diagnostic_test.go`
 
-- [ ] **Step 1: `whoami.go`**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/whoami.go`:
+- [ ] **Step 1: Write failing test**
 
 ```go
+// cmd/kata/diagnostic_test.go
 package main
 
 import (
+	"bytes"
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/testenv"
+)
+
+func TestWhoami_FlagOverride(t *testing.T) {
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"whoami", "--as", "claude-4.7"})
+	require.NoError(t, cmd.Execute())
+	out := buf.String()
+	assert.Contains(t, out, "claude-4.7")
+	assert.Contains(t, out, "flag")
+}
+
+func TestHealth_PrintsSchemaVersion(t *testing.T) {
+	env := testenv.New(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"health"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, buf.String(), "schema_version=1")
+}
+
+func TestProjectsList_PrintsKnown(t *testing.T) {
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	_ = dir
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"projects", "list"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	assert.True(t, strings.Contains(buf.String(), "github.com/wesm/kata"))
+}
+```
+
+- [ ] **Step 2: Run test (expect failure)**
+
+Run: `go test ./cmd/kata/...`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+```go
+// cmd/kata/whoami.go
+package main
+
+import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -5800,302 +6584,453 @@ import (
 func newWhoamiCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "whoami",
-		Short: "Print the resolved actor identity",
+		Short: "show resolved actor and source",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			actor, source := ResolveActor()
-			if gFlags.JSON {
-				return PrintJSON(map[string]string{"actor": actor, "source": source})
+			actor, source := resolveActor(flags.As, nil)
+			if flags.JSON {
+				bs, _ := json.Marshal(map[string]string{"actor": actor, "source": source})
+				fmt.Fprintln(cmd.OutOrStdout(), string(bs))
+				return nil
 			}
-			fmt.Printf("%s  (source: %s)\n", actor, source)
+			fmt.Fprintf(cmd.OutOrStdout(), "actor=%s source=%s\n", actor, source)
 			return nil
 		},
 	}
 }
-```
 
-- [ ] **Step 2: `health.go`**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/health.go`:
-
-```go
+// health.go
 package main
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/spf13/cobra"
-
-	"github.com/wesm/kata/internal/api"
 )
 
 func newHealthCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "health",
-		Short: "Probe daemon health",
+		Short: "report daemon health",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := context.Background()
-			ep, err := DiscoverDaemon(ctx)
+			ctx := cmd.Context()
+			baseURL, err := ensureDaemon(ctx)
 			if err != nil {
-				EmitError(err)
+				return err
 			}
-			var dto api.HealthDTO
-			if err := GetJSON(ctx, ep, "/api/v1/health", &dto); err != nil {
-				EmitError(err)
+			client, err := httpClientFor(baseURL)
+			if err != nil {
+				return err
 			}
-			if gFlags.JSON {
-				return PrintJSON(dto)
+			status, bs, err := httpDoJSON(ctx, client, http.MethodGet, baseURL+"/api/v1/health", nil)
+			if err != nil {
+				return err
 			}
-			ok := "ok"
-			if !dto.DBOK {
-				ok = "DB ERROR"
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
 			}
-			fmt.Printf("%s  pid=%d  uptime=%ds  db=%s\n", ok, dto.PID, dto.UptimeSeconds, dto.DBPath)
+			if flags.JSON {
+				fmt.Fprintln(cmd.OutOrStdout(), string(bs))
+				return nil
+			}
+			var b struct {
+				OK            bool
+				SchemaVersion int    `json:"schema_version"`
+				Uptime        string `json:"uptime"`
+				DBPath        string `json:"db_path"`
+			}
+			if err := json.Unmarshal(bs, &b); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "ok=%v schema_version=%d uptime=%s db=%s\n",
+				b.OK, b.SchemaVersion, b.Uptime, b.DBPath)
+			return nil
+		},
+	}
+}
+
+// projects.go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+
+	"github.com/spf13/cobra"
+)
+
+func newProjectsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "projects", Short: "list and inspect kata projects"}
+	cmd.AddCommand(projectsListCmd(), projectsShowCmd())
+	return cmd
+}
+
+func projectsListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "list known projects",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			client, err := httpClientFor(baseURL)
+			if err != nil {
+				return err
+			}
+			status, bs, err := httpDoJSON(ctx, client, http.MethodGet, baseURL+"/api/v1/projects", nil)
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			if flags.JSON {
+				fmt.Fprintln(cmd.OutOrStdout(), string(bs))
+				return nil
+			}
+			var b struct {
+				Projects []struct {
+					ID              int64
+					Identity, Name  string
+					NextIssueNumber int64 `json:"next_issue_number"`
+				}
+			}
+			if err := json.Unmarshal(bs, &b); err != nil {
+				return err
+			}
+			for _, p := range b.Projects {
+				fmt.Fprintf(cmd.OutOrStdout(), "%d  %s  (%s, next #%d)\n",
+					p.ID, p.Identity, p.Name, p.NextIssueNumber)
+			}
+			return nil
+		},
+	}
+}
+
+func projectsShowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <id>",
+		Short: "show project details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return &cliError{Message: "project id must be an integer", ExitCode: ExitValidation}
+			}
+			ctx := cmd.Context()
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			client, err := httpClientFor(baseURL)
+			if err != nil {
+				return err
+			}
+			status, bs, err := httpDoJSON(ctx, client, http.MethodGet,
+				fmt.Sprintf("%s/api/v1/projects/%d", baseURL, id), nil)
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(bs))
 			return nil
 		},
 	}
 }
 ```
 
-- [ ] **Step 3: Build, commit**
+- [ ] **Step 4: Run test (expect pass)**
 
-Run: `go build ./...`
+Run: `go test ./cmd/kata/...`
+Expected: PASS.
 
-```
-git add cmd/kata/whoami.go cmd/kata/health.go
-git commit -m "Add kata whoami and kata health commands"
+- [ ] **Step 5: Commit**
+
+```bash
+make lint
+git add cmd/kata/whoami.go cmd/kata/health.go cmd/kata/projects.go cmd/kata/diagnostic_test.go
+git commit -m "feat(cli): kata whoami + health + projects list/show"
 ```
 
 ---
 
-## Task 27: End-to-end smoke test
+### Task 28: End-to-end smoke test
+
+Spec refs: all of Plan 1. One test exercising the full lifecycle: bootstrap → init → create → list → show → comment → close → reopen → projects list.
 
 **Files:**
-- Create: `cmd/kata/main_e2e_test.go`
+- Create: `e2e/e2e_test.go`
 
-Drives the binary against an in-process `testenv` daemon by exercising the same helper functions the CLI uses (no `os/exec` round-trip needed for this layer of testing — the CLI's HTTP path is the contract).
-
-- [ ] **Step 1: Implement**
-
-Create `/Users/wesm/code/vibekata/cmd/kata/main_e2e_test.go`:
+- [ ] **Step 1: Write the failing test**
 
 ```go
-package main
+// e2e/e2e_test.go
+package e2e_test
 
 import (
+	"bytes"
 	"context"
-	"fmt"
-	"net/url"
-	"os"
+	"net/http"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/api"
-	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/testenv"
-	"github.com/wesm/kata/internal/testutil"
 )
 
-// e2eEndpoint adapts a testenv server to a DaemonEndpoint by parsing the test server URL.
-func e2eEndpoint(t *testing.T, env *testenv.Env) daemon.DaemonEndpoint {
-	t.Helper()
-	u, err := url.Parse(env.BaseURL)
+func TestSmoke_FullLifecycle(t *testing.T) {
+	env := testenv.New(t)
+	dir := initRepo(t, "https://github.com/wesm/system.git")
+
+	// 1. init via HTTP (instead of spawning the kata binary).
+	requireOK(t, postJSON(t, env.URL+"/api/v1/projects",
+		map[string]any{"start_path": dir}))
+
+	// 2. resolve to learn project id.
+	pid := resolvePID(t, env.URL, dir)
+
+	// 3. create issue.
+	resp := postJSON(t, env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "agent", "title": "first", "body": "details"})
+	requireOK(t, resp)
+
+	// 4. list.
+	listResp, err := http.Get(env.URL + "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues")
 	require.NoError(t, err)
-	return daemon.DaemonEndpoint{Network: "tcp", Address: u.Host}
+	defer listResp.Body.Close()
+	listBody := readAll(t, listResp.Body)
+	assert.Contains(t, listBody, `"title":"first"`)
+
+	// 5. comment.
+	requireOK(t, postJSON(t, env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/comments",
+		map[string]any{"actor": "agent", "body": "looks good"}))
+
+	// 6. close.
+	requireOK(t, postJSON(t, env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+		map[string]any{"actor": "agent", "reason": "done"}))
+
+	// 7. reopen.
+	requireOK(t, postJSON(t, env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/reopen",
+		map[string]any{"actor": "agent"}))
+
+	// 8. show with comments.
+	showResp, err := http.Get(env.URL + "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues/1")
+	require.NoError(t, err)
+	defer showResp.Body.Close()
+	showBody := readAll(t, showResp.Body)
+	assert.Contains(t, showBody, `"body":"looks good"`)
+	assert.Contains(t, showBody, `"status":"open"`)
+
+	_ = filepath.Base(dir) // silence unused if path utilities trim
+	_ = strings.Contains   // ditto
+	_ = context.Background
 }
 
-func TestE2E_FullIssueLifecycle(t *testing.T) {
-	env := testenv.NewEnv(t)
-	ep := e2eEndpoint(t, env)
-	ctx := context.Background()
+// helpers
 
-	repoDir := testutil.MakeGitRepo(t)
-	testutil.SetGitRemote(t, repoDir, "origin", "https://github.com/wesm/kata.git")
-	require.NoError(t, os.Chdir(repoDir))
-
-	// 1. Init / register
-	var repo api.RepoDTO
-	require.NoError(t, PostJSON(ctx, ep, "/api/v1/repos", api.CreateRepoRequest{RootPath: repoDir}, &repo))
-	assert.Equal(t, "github.com/wesm/kata", repo.Identity)
-
-	// 2. Create
-	var c1 api.MutationEnvelope
-	require.NoError(t, PostJSON(ctx, ep,
-		fmt.Sprintf("/api/v1/repos/%d/issues", repo.ID),
-		api.CreateIssueRequest{Actor: "claude-test", Title: "first issue", Body: "from e2e"},
-		&c1))
-	require.Equal(t, int64(1), c1.Issue.Number)
-
-	// 3. Show
-	var show api.IssueShowDTO
-	require.NoError(t, GetJSON(ctx, ep, fmt.Sprintf("/api/v1/repos/%d/issues/1", repo.ID), &show))
-	assert.Equal(t, "first issue", show.Issue.Title)
-
-	// 4. Comment
-	var cm api.CommentMutationEnvelope
-	require.NoError(t, PostJSON(ctx, ep,
-		fmt.Sprintf("/api/v1/repos/%d/issues/1/comments", repo.ID),
-		api.CommentRequest{Actor: "claude-test", Body: "looking at it"}, &cm))
-	require.NotNil(t, cm.Event)
-
-	// 5. Close
-	var cl api.MutationEnvelope
-	require.NoError(t, PostJSON(ctx, ep,
-		fmt.Sprintf("/api/v1/repos/%d/issues/1/actions/close", repo.ID),
-		api.CloseRequest{Actor: "claude-test"}, &cl))
-	assert.True(t, cl.Changed)
-	assert.Equal(t, "closed", cl.Issue.Status)
-
-	// 6. List shows nothing under default open filter
-	var open api.IssueListEnvelope
-	require.NoError(t, GetJSON(ctx, ep,
-		fmt.Sprintf("/api/v1/repos/%d/issues?status=open", repo.ID), &open))
-	assert.Empty(t, open.Items)
-
-	// 7. Reopen
-	var ro api.MutationEnvelope
-	require.NoError(t, PostJSON(ctx, ep,
-		fmt.Sprintf("/api/v1/repos/%d/issues/1/actions/reopen", repo.ID),
-		api.ReopenRequest{Actor: "claude-test"}, &ro))
-	assert.True(t, ro.Changed)
-	assert.Equal(t, "open", ro.Issue.Status)
-
-	// 8. Health
-	var h api.HealthDTO
-	require.NoError(t, GetJSON(ctx, ep, "/api/v1/health", &h))
-	assert.True(t, h.DBOK)
-	assert.True(t, strings.HasPrefix(h.DBPath, env.DataDir))
+func initRepo(t *testing.T, origin string) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, exec.Command("git", "-C", dir, "init", "--quiet").Run())
+	require.NoError(t, exec.Command("git", "-C", dir, "remote", "add", "origin", origin).Run())
+	return dir
 }
 
-func TestE2E_NotInARepo_RepoCreateRejects(t *testing.T) {
-	env := testenv.NewEnv(t)
-	ep := e2eEndpoint(t, env)
-	ctx := context.Background()
+func postJSON(t *testing.T, url string, body any) *http.Response {
+	t.Helper()
+	bs := mustJSON(t, body)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(bs))
+	require.NoError(t, err)
+	return resp
+}
 
-	tmp := t.TempDir()
-	err := PostJSON(ctx, ep, "/api/v1/repos", api.CreateRepoRequest{RootPath: tmp}, &api.RepoDTO{})
-	require.Error(t, err)
-	ae, ok := err.(*api.APIError)
-	require.True(t, ok)
-	// .kata-id missing + no .git → identity falls through to local://, which still resolves.
-	// But since RootPath is valid and .git is absent, ResolveRepoIdentity will pick local://;
-	// we accept either an OK from the repo upsert or a validation error.
-	_ = ae
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	bs, err := jsonMarshal(v)
+	require.NoError(t, err)
+	return bs
+}
+
+func jsonMarshal(v any) ([]byte, error) { return jsonMarshaller(v) }
+
+var jsonMarshaller = func(v any) ([]byte, error) {
+	// inline import-free wrapper around encoding/json to keep imports in one place.
+	type m = any
+	return jsonInner(v)
+}
+
+// stub; implementer should just `import "encoding/json"` and use json.Marshal directly.
+func jsonInner(v any) ([]byte, error) { panic("replace with json.Marshal") }
+
+func requireOK(t *testing.T, resp *http.Response) {
+	t.Helper()
+	defer resp.Body.Close()
+	require.Equalf(t, 200, resp.StatusCode, "body: %s", readAll(t, resp.Body))
+}
+
+func resolvePID(t *testing.T, baseURL, dir string) int64 {
+	t.Helper()
+	resp := postJSON(t, baseURL+"/api/v1/projects/resolve", map[string]any{"start_path": dir})
+	defer resp.Body.Close()
+	bs := readAll(t, resp.Body)
+	idx := strings.Index(bs, `"id":`)
+	require.NotEqual(t, -1, idx, bs)
+	rest := bs[idx+len(`"id":`):]
+	end := strings.IndexAny(rest, ",}")
+	require.NotEqual(t, -1, end)
+	pid, err := strconv.ParseInt(strings.TrimSpace(rest[:end]), 10, 64)
+	require.NoError(t, err)
+	return pid
+}
+
+func readAll(t *testing.T, r interface{ Read(p []byte) (int, error) }) string {
+	t.Helper()
+	var sb strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			sb.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	return sb.String()
 }
 ```
 
-> **Note:** The second test checks that bare directory-with-no-`.git` doesn't blow up — the daemon should still upsert with a `local://` identity. Adjust the assertion to expect success (repo created with `local://`) once you observe the actual behavior.
+The implementer should clean this up using `encoding/json` and `io.ReadAll`; the stubs above are illustrative because the plan can't import these at planning time. The implementer should drop the stubs and use the standard library directly.
 
-- [ ] **Step 2: Run**
+- [ ] **Step 2: Run test (expect failure if symbols missing, otherwise pass)**
 
-Run: `go test -shuffle=on ./...`
-Expected: PASS for everything (db, daemon, api, config, cmd/kata).
+Run: `go test ./e2e/...`
+Expected: PASS once the test compiles cleanly.
 
 - [ ] **Step 3: Commit**
 
-```
-git add cmd/kata/main_e2e_test.go
-git commit -m "Add end-to-end smoke test for the issue lifecycle"
+```bash
+make lint
+make test
+git add e2e/
+git commit -m "test(e2e): full lifecycle smoke test"
 ```
 
 ---
 
-## Task 28: Manual install + sanity check
+### Task 29: Final self-review and tidy
 
-**Files:**
-- (none)
+Spec refs: writing-plans skill self-review checklist.
 
-- [ ] **Step 1: Build and install**
+- [ ] **Step 1: Run the full suite**
 
-Run: `make install`
-Expected: kata installed to `~/.local/bin/kata`.
-
-- [ ] **Step 2: Drive it manually in a temp repo**
-
-```
-export KATA_DATA_DIR="$(mktemp -d)"
-mkdir -p /tmp/kata-demo && cd /tmp/kata-demo
-git init -q && git commit --allow-empty -m init -q
-
-kata daemon start --detach
-sleep 0.5
-kata daemon status
-kata init
-kata create "first issue" --body "looks good so far" --as claude-manual
-kata list
-kata show 1
-kata comment 1 --body "actually, also need a follow-up"
-kata close 1 --reason done
-kata list --status all
-kata reopen 1
-kata health
-kata whoami --as alice
-kata daemon stop
+```bash
+make lint
+make test
 ```
 
-Expected: each step succeeds with sensible output. The CLI auto-starts the daemon on first call if you skip `daemon start`.
+Expected: green.
 
-- [ ] **Step 3: Verify cleanup**
+- [ ] **Step 2: Verify deferred work didn't bit-rot**
 
-After `kata daemon stop`, run `ls "$KATA_DATA_DIR/runtime/"*/`. Expected: no `daemon.*.json` files remain.
+The schema in 0001_init.sql contains tables (`links`, `issue_labels`, `purge_log`, `issues_fts`) and triggers that Plan 1 doesn't exercise. Smoke them with a trivial sanity check that they exist and accept their declared columns. Add a single test:
+
+```go
+// internal/db/schema_completeness_test.go
+package db_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestAllSchemaTablesExist(t *testing.T) {
+	d := openTestDB(t)
+	wanted := []string{"projects", "project_aliases", "issues", "comments", "links", "issue_labels", "events", "purge_log", "meta", "issues_fts"}
+	for _, name := range wanted {
+		var n int
+		err := d.QueryRowContext(context.Background(),
+			`SELECT 1 FROM sqlite_master WHERE name = ?`, name).Scan(&n)
+		require.NoError(t, err, name)
+		assert.Equal(t, 1, n, name)
+	}
+}
+```
+
+Run: `go test ./internal/db/...`
+Expected: PASS.
+
+- [ ] **Step 3: Smoke-test the binary directly**
+
+```bash
+make build
+./kata daemon status
+./kata --help
+```
+
+Expected: clean exit, no usage errors. Daemon-status should report "no daemon" (we didn't start one).
+
+- [ ] **Step 4: Verify go.mod has no `// indirect` for deps Plan 1 actively uses**
+
+```bash
+go mod tidy
+git diff go.mod go.sum
+```
+
+`testify`, `cobra`, `huma/v2`, `BurntSushi/toml`, `modernc.org/sqlite`, `mattn/go-isatty` (from CSRF guard if we ended up needing it; otherwise still indirect — that's fine) should all be **direct** at this point.
+
+- [ ] **Step 5: Commit any tidy changes**
+
+```bash
+git add go.mod go.sum internal/db/schema_completeness_test.go
+git commit -m "chore: tidy module file and verify schema completeness" || true
+```
+
+If there's nothing to commit, skip.
 
 ---
 
-## Task 29: Self-review against spec Plan 1 scope
+## Self-review checklist
 
-This is a checklist done in-place — no code, no commits.
+Before declaring Plan 1 complete:
 
-- [ ] **Spec coverage** for Plan 1 scope:
-  - DB schema baseline (full §3.2): Task 4 ships the entire baseline. ✓
-  - PRAGMAs (`foreign_keys`, WAL, NORMAL, busy_timeout): Task 4. ✓
-  - Repo identity resolution (`.kata-id`, origin → any → `local://`): Task 3. ✓
-  - DB-namespaced runtime: Tasks 2, 11. ✓
-  - DaemonEndpoint with loopback validation: Task 10. ✓
-  - Per-PID runtime files with atomic write: Task 11. ✓
-  - Huma server with structured error envelope: Tasks 12–13. ✓
-  - Origin / Content-Type guards: Task 13 middleware. ✓
-  - `/ping` (cheap), `/health` (DB touch): Task 13. ✓
-  - `POST /repos` (root_path → daemon resolves identity): Task 14. ✓
-  - Issue create / show / list: Task 15. ✓
-  - `issue.created`, `issue.commented`, `issue.closed`, `issue.reopened` event types: Tasks 7–9. ✓
-  - No-op semantics for already-closed / already-open: Tasks 9, 16. ✓
-  - CLI helpers: actor precedence, body sources, exit codes, daemon discovery: Task 19. ✓
-  - CLI: init, create, show, list, comment, close, reopen, whoami, health, daemon: Tasks 21–26. ✓
-  - End-to-end smoke test: Task 27. ✓
-
-- [ ] **Out-of-scope verification** — Plan 1 deliberately does NOT implement (deferred to later plans):
-  - Links, labels, ownership, edit (Plan 2)
-  - FTS, idempotency, similarity, soft-delete/purge (Plan 3)
-  - SSE / polling / event invalidation (Plan 4)
-  - Hooks (Plan 5)
-  - TUI (Plan 6)
-  - Skills install, doctor, agent-instructions (Plan 7)
-
-  Confirm none of these crept into Plan 1.
-
-- [ ] **Placeholder scan** — search the plan file for: "TBD", "TODO", "fill in", "implement later". Fix any hits inline.
-
-- [ ] **Type consistency** — verify these names/shapes are identical wherever they appear:
-  - Event types use the `issue.<verb>` form (not bare verbs).
-  - Mutation envelope: `{ "issue": ..., "event": ..., "changed": ... }` plus `comment` for the comment endpoint.
-  - `EventBriefDTO`/`EventBrief` field names: `id`, `type`, `created_at`.
-  - Exit codes: `ExitOK=0, ExitGeneric=1, ExitUsage=2, ExitValidation=3, ExitNotFound=4, ExitConflict=5, ExitConfirmation=6, ExitDaemonUnavailable=7`.
-  - `IssueListFilter` fields: `RepoID`, `Status`, `Limit`.
-
-- [ ] **Verify the engineer can pick up Task N+1 cold** — every code block stands alone with full file paths, complete imports (callouts where wrappers are deliberately omitted for brevity), and tests that compile in isolation.
-
-If anything's wrong, fix it inline, then move on.
+1. **Spec coverage:** every endpoint in §4.1 used by Plan 1 (`/ping`, `/health`, `POST /projects`, `POST /projects/resolve`, `GET /projects`, `GET /projects/{id}`, `POST/GET/PATCH /projects/{id}/issues`, `GET /projects/{id}/issues/{number}`, `POST /projects/{id}/issues/{number}/comments`, `POST /projects/{id}/issues/{number}/actions/close|reopen`) is registered and tested.
+2. **Project resolution:** §2.4's strict-no-auto-create policy is enforced — only `kata init` creates project rows. Verified by `TestResolve_FailsOutsideKataTomlAndWithoutAlias` and `TestInit_FreshCloneFromExistingKataToml`.
+3. **Identity binding:** `.kata.toml` v1 (version=1, [project] identity, name) round-trips through read/write. Alias verification triggers `project_alias_conflict` when `.kata.toml` declares P but the alias already points to Q.
+4. **`KATA_HOME` precedence:** env > `~/.kata` default. `KATA_DB` overrides DB path independently.
+5. **DATETIME columns:** all timestamp columns typed `DATETIME`; the round-trip-into-time.Time test passes.
+6. **CSRF defense:** `Origin` rejection and `Content-Type` enforcement under test.
+7. **CLI error → exit code mapping:** `mapStatusToExit` covers 400/404/409/412 → 3/4/5/6 with the rest as 1.
+8. **Conventions:** all tests use testify (`require`/`assert`); no `t.Fatal`/`t.Error`. `t.TempDir()` everywhere. `make lint` clean.
 
 ---
 
-## Execution handoff
+## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-04-29-kata-1-mvp-daemon-cli.md`. Two execution options:
+Plan complete. Two execution options:
 
-1. **Subagent-Driven (recommended)** — dispatch a fresh subagent per task, review between tasks, fast iteration.
-2. **Inline Execution** — execute tasks in this session using `superpowers:executing-plans`, batch execution with checkpoints.
+**1. Subagent-Driven (recommended).** Dispatch a fresh subagent per task with the implementer/spec-reviewer/code-quality-reviewer loop. After every five completed tasks invoke `/roborev-fix` to clean up post-commit review findings.
 
-Which approach?
+**2. Inline Execution.** Execute tasks in this session using `superpowers:executing-plans` with batch checkpoints.
+
+The user has authorized **option 1** ("perfect, yes, use opus with subagents and invoke roborev fix every 5 tasks for code review fixes"). Begin execution with Task 1 dispatched to a fresh implementer subagent.
+
+
+
+
+
+
