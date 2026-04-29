@@ -128,8 +128,10 @@ func registerHealth(humaAPI huma.API, cfg ServerConfig) {
 	registerHealthHandlers(humaAPI, cfg)
 }
 
-// registerProjects registers project-scoped routes. Stub until Task 15.
-func registerProjects(_ huma.API, _ ServerConfig) {}
+// registerProjects registers project-scoped routes (resolve, init, list, show).
+func registerProjects(humaAPI huma.API, cfg ServerConfig) {
+	registerProjectsHandlers(humaAPI, cfg)
+}
 
 // registerIssues registers issue CRUD routes. Stub until Task 16.
 func registerIssues(_ huma.API, _ ServerConfig) {}
