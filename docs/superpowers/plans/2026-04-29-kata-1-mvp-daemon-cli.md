@@ -1990,8 +1990,9 @@ func joinComma(parts []string) string {
 }
 
 // lookupIssueForEvent fetches the issue + its project's identity for event
-// snapshotting. Used inside transactions. The query is written standalone
-// rather than concatenating issueSelect so the FROM/JOIN clause appears once.
+// snapshotting. Used inside transactions. Soft-deleted issues are excluded so
+// lifecycle mutations (close/reopen/edit/comment) cannot operate on hidden
+// rows; callers see ErrNotFound for both nonexistent and deleted issues.
 func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue, string, error) {
 	const q = `
 		SELECT i.id, i.project_id, i.number, i.title, i.body, i.status,
@@ -1999,7 +2000,7 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 		       i.closed_at, i.deleted_at, p.identity
 		FROM issues i
 		JOIN projects p ON p.id = i.project_id
-		WHERE i.id = ?`
+		WHERE i.id = ? AND i.deleted_at IS NULL`
 	var i Issue
 	var identity string
 	err := tx.QueryRowContext(ctx, q, issueID).

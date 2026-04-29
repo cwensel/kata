@@ -19,22 +19,40 @@ type RuntimeRecord struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
-// WriteRuntimeFile writes <dir>/daemon.<pid>.json atomically (write to .tmp,
-// then rename). Returns the resolved file path.
+// WriteRuntimeFile writes <dir>/daemon.<pid>.json atomically. The temp file
+// uses os.CreateTemp so concurrent same-PID writers don't race on a shared
+// .tmp path; the loser's rename simply replaces the winner's.
 func WriteRuntimeFile(dir string, rec RuntimeRecord) (string, error) {
 	if rec.PID <= 0 {
 		return "", fmt.Errorf("pid must be > 0")
 	}
 	final := filepath.Join(dir, fmt.Sprintf("daemon.%d.json", rec.PID))
-	tmp := final + ".tmp"
 	body, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal: %w", err)
 	}
-	if err := os.WriteFile(tmp, body, 0o644); err != nil { //nolint:gosec // runtime files are world-readable per §2.3
+	tmp, err := os.CreateTemp(dir, fmt.Sprintf("daemon.%d.*.json.tmp", rec.PID))
+	if err != nil {
+		return "", fmt.Errorf("create tmp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		cleanup()
 		return "", fmt.Errorf("write tmp: %w", err)
 	}
-	if err := os.Rename(tmp, final); err != nil {
+	if err := tmp.Chmod(0o644); err != nil { //nolint:gosec // runtime files are world-readable per §2.3
+		_ = tmp.Close()
+		cleanup()
+		return "", fmt.Errorf("chmod tmp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return "", fmt.Errorf("close tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, final); err != nil { //nolint:gosec // tmpPath comes from os.CreateTemp inside dir
+		cleanup()
 		return "", fmt.Errorf("rename: %w", err)
 	}
 	return final, nil
@@ -102,15 +120,39 @@ func ProcessAlive(pid int) bool {
 	return true
 }
 
-// CleanupStaleFiles removes any daemon.<pid>.json whose PID is dead.
+// CleanupStaleFiles removes any daemon.<pid>.json whose pid is dead. It
+// cross-checks the filename's pid against the record's pid so a malformed file
+// reporting a different pid can never delete an unrelated daemon's file: when
+// they disagree we leave the file alone for human inspection.
 func CleanupStaleFiles(dir string) error {
-	recs, err := ListRuntimeFiles(dir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return err
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read dir: %w", err)
 	}
-	for _, r := range recs {
-		if !ProcessAlive(r.PID) {
-			_ = os.Remove(filepath.Join(dir, fmt.Sprintf("daemon.%d.json", r.PID)))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "daemon.") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		mid := strings.TrimSuffix(strings.TrimPrefix(name, "daemon."), ".json")
+		filenamePID, err := strconv.Atoi(mid)
+		if err != nil {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		rec, err := ReadRuntimeFile(path)
+		if err != nil || rec.PID != filenamePID {
+			// Leave malformed or PID-mismatched files for human inspection.
+			continue
+		}
+		if !ProcessAlive(filenamePID) {
+			_ = os.Remove(path)
 		}
 	}
 	return nil

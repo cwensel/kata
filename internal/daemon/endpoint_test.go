@@ -74,6 +74,13 @@ func TestTCPEndpoint_RejectsNonLoopback(t *testing.T) {
 	assert.Contains(t, err.Error(), "loopback")
 }
 
+func TestTCPEndpoint_RejectsLocalhostHostname(t *testing.T) {
+	ep := daemon.TCPEndpoint("localhost:7474")
+	_, err := ep.Listen()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "literal IP")
+}
+
 func TestParseAddress(t *testing.T) {
 	cases := []struct {
 		in   string

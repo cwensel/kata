@@ -86,6 +86,12 @@ func TestTouchAlias_UpdatesLastSeen(t *testing.T) {
 	assert.True(t, !got.LastSeenAt.Before(a.LastSeenAt))
 }
 
+func TestTouchAlias_MissingAliasReturnsErrNotFound(t *testing.T) {
+	d := openTestDB(t)
+	err := d.TouchAlias(context.Background(), 9999, "/tmp/x")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
 func TestListProjects_Empty(t *testing.T) {
 	d := openTestDB(t)
 	got, err := d.ListProjects(context.Background())

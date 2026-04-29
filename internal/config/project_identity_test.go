@@ -57,6 +57,20 @@ func TestDiscoverPaths_StartPathMissingErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "stat")
 }
 
+func TestDiscoverPaths_StartPathIsFileWalksFromParent(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755)) //nolint:gosec // test fixture
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".kata.toml"),  //nolint:gosec // test fixture
+		[]byte("version = 1\n\n[project]\nidentity = \"x\"\nname = \"x\"\n"), 0o644))
+	filePath := filepath.Join(root, "README.md")
+	require.NoError(t, os.WriteFile(filePath, []byte("hi"), 0o644)) //nolint:gosec // test fixture
+
+	d, err := config.DiscoverPaths(filePath)
+	require.NoError(t, err)
+	assert.Equal(t, root, d.WorkspaceRoot)
+	assert.Equal(t, root, d.GitRoot)
+}
+
 func TestNormalizeRemoteURL(t *testing.T) {
 	cases := []struct {
 		in, want string

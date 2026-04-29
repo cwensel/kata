@@ -37,14 +37,21 @@ func DiscoverPaths(startPath string) (DiscoveredPaths, error) {
 	if err != nil {
 		return DiscoveredPaths{}, fmt.Errorf("abs %s: %w", startPath, err)
 	}
-	if _, err := os.Stat(abs); err != nil {
+	info, err := os.Stat(abs)
+	if err != nil {
 		return DiscoveredPaths{}, fmt.Errorf("stat %s: %w", abs, err)
 	}
+	// If the start path is a file, walk from its parent directory so we don't
+	// stat <file>/.kata.toml (which fails with ENOTDIR rather than not-found).
+	walkRoot := abs
+	if !info.IsDir() {
+		walkRoot = filepath.Dir(abs)
+	}
 	d := DiscoveredPaths{}
-	if d.WorkspaceRoot, err = walkUp(abs, ProjectConfigFilename, false); err != nil {
+	if d.WorkspaceRoot, err = walkUp(walkRoot, ProjectConfigFilename, false); err != nil {
 		return DiscoveredPaths{}, fmt.Errorf("discover %s: %w", ProjectConfigFilename, err)
 	}
-	if d.GitRoot, err = walkUp(abs, ".git", true); err != nil {
+	if d.GitRoot, err = walkUp(walkRoot, ".git", true); err != nil {
 		return DiscoveredPaths{}, fmt.Errorf("discover .git: %w", err)
 	}
 	return d, nil

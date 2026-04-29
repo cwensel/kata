@@ -80,15 +80,23 @@ func (d *DB) aliasByID(ctx context.Context, id int64) (ProjectAlias, error) {
 	return scanAlias(row)
 }
 
-// TouchAlias updates last_seen_at to now and rewrites root_path.
+// TouchAlias updates last_seen_at to now and rewrites root_path. Returns
+// ErrNotFound when no alias has the given id.
 func (d *DB) TouchAlias(ctx context.Context, aliasID int64, rootPath string) error {
-	_, err := d.ExecContext(ctx,
+	res, err := d.ExecContext(ctx,
 		`UPDATE project_aliases
 		 SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 		     root_path    = ?
 		 WHERE id = ?`, rootPath, aliasID)
 	if err != nil {
 		return fmt.Errorf("touch alias: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("touch alias rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -509,8 +517,9 @@ func joinComma(parts []string) string {
 }
 
 // lookupIssueForEvent fetches the issue + its project's identity for event
-// snapshotting. Used inside transactions. The query is written standalone
-// rather than concatenating issueSelect so the FROM/JOIN clause appears once.
+// snapshotting. Used inside transactions. Soft-deleted issues are excluded so
+// lifecycle mutations (close/reopen/edit/comment) cannot operate on hidden
+// rows; callers see ErrNotFound for both nonexistent and deleted issues.
 func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue, string, error) {
 	const q = `
 		SELECT i.id, i.project_id, i.number, i.title, i.body, i.status,
@@ -518,7 +527,7 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 		       i.closed_at, i.deleted_at, p.identity
 		FROM issues i
 		JOIN projects p ON p.id = i.project_id
-		WHERE i.id = ?`
+		WHERE i.id = ? AND i.deleted_at IS NULL`
 	var i Issue
 	var identity string
 	err := tx.QueryRowContext(ctx, q, issueID).

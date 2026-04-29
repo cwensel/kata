@@ -58,19 +58,24 @@ func (t tcpEndpoint) Kind() string    { return "tcp" }
 // TCPEndpoint constructs a TCP-loopback endpoint at the given host:port.
 func TCPEndpoint(addr string) DaemonEndpoint { return tcpEndpoint{addr: addr} }
 
+// requireLoopback rejects any host that isn't a literal loopback IP. We do
+// not accept the "localhost" hostname because /etc/hosts can map it to a
+// non-loopback address, which would silently violate the loopback-only
+// contract. Callers that want a hostname must resolve it themselves and pass
+// the resulting literal IP.
 func requireLoopback(addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("parse host:port: %w", err)
 	}
-	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
-		return nil
-	}
 	ip := net.ParseIP(host)
-	if ip != nil && ip.IsLoopback() {
-		return nil
+	if ip == nil {
+		return fmt.Errorf("address %q is not a literal IP (resolve hostnames before calling)", addr)
 	}
-	return fmt.Errorf("address %q is not loopback", addr)
+	if !ip.IsLoopback() {
+		return fmt.Errorf("address %q is not loopback", addr)
+	}
+	return nil
 }
 
 // ParseAddress decodes a serialized form (unix:///path or host:port).
