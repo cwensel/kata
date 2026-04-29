@@ -123,8 +123,10 @@ func registerRoutes(humaAPI huma.API, cfg ServerConfig) {
 	registerActions(humaAPI, cfg)
 }
 
-// registerHealth registers /api/v1/ping and /api/v1/health. Stub until Task 14.
-func registerHealth(_ huma.API, _ ServerConfig) {}
+// registerHealth registers /api/v1/ping and /api/v1/health.
+func registerHealth(humaAPI huma.API, cfg ServerConfig) {
+	registerHealthHandlers(humaAPI, cfg)
+}
 
 // registerProjects registers project-scoped routes. Stub until Task 15.
 func registerProjects(_ huma.API, _ ServerConfig) {}

@@ -13,8 +13,6 @@ import (
 )
 
 func TestServer_PingReturnsOK(t *testing.T) {
-	t.Skip("registered in Task 14")
-
 	d := openTestDB(t)
 	srv := daemon.NewServer(daemon.ServerConfig{
 		DB:        d.db,
