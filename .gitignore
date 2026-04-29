@@ -1,0 +1,20 @@
+# Build artifacts
+/kata
+/kata.exe
+/dist/
+/result
+
+# Test outputs
+*.test
+*.out
+coverage.out
+
+# Local data dir for manual testing
+/.kata/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
