@@ -138,8 +138,12 @@ func registerIssues(humaAPI huma.API, cfg ServerConfig) {
 	registerIssuesHandlers(humaAPI, cfg)
 }
 
-// registerComments registers issue-comment routes. Stub until Task 17.
-func registerComments(_ huma.API, _ ServerConfig) {}
+// registerComments registers issue-comment routes.
+func registerComments(humaAPI huma.API, cfg ServerConfig) {
+	registerCommentsHandlers(humaAPI, cfg)
+}
 
-// registerActions registers close/reopen action routes. Stub until Task 17.
-func registerActions(_ huma.API, _ ServerConfig) {}
+// registerActions registers close/reopen action routes.
+func registerActions(humaAPI huma.API, cfg ServerConfig) {
+	registerActionsHandlers(humaAPI, cfg)
+}
