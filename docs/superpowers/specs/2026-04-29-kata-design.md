@@ -73,43 +73,66 @@ A **project** is the issue namespace. `projects.next_issue_number` owns the issu
 
 A **project alias** maps a workspace location to a project. One project may have many aliases. `project_aliases.alias_identity` is `UNIQUE` (an alias points to exactly one project), but multiple aliases may point to the same project_id.
 
+#### Path discovery
+
+Every CLI invocation passes a **start path** (the value of `--workspace <path>` if given, else the process `cwd`). The daemon resolves a workspace from the start path by walking upward:
+
+1. Find the first ancestor directory containing `.kata.toml` (inclusive of the start path itself). Call this `W` (workspace root).
+2. Find the first ancestor directory containing a `.git` entry. Call this `G` (git root). `G` and `W` may differ when `.kata.toml` lives in a subdirectory of a larger git repo, or coincide when `.kata.toml` is at the repo root.
+
+The CLI never walks up itself — it sends the start path as-is. The daemon owns discovery so all clients (CLI, TUI, future) see identical resolution.
+
 #### Alias identity
 
-Computed from a workspace path:
+`alias_identity` is computed from `G` (the **git root**, not from `W`):
 
-1. Walk up to the git repo root.
-2. If a remote is present:
+1. If `G` exists and a git remote is present:
    - Use `origin` URL if set, else the first remote listed by `git remote`.
    - Strip embedded credentials (`https://user:pass@host/...` → `https://host/...`).
    - Normalize SSH↔HTTPS variants (`git@github.com:foo/bar.git` → `github.com/foo/bar`).
    - `alias_kind = "git"`.
-3. If not a git repo, or git repo with no remotes: `alias_identity = "local://<absolute_workspace_root>"`. `alias_kind = "local"`.
+2. If `G` exists with no remotes: `alias_identity = "local://<absolute_path_of_G>"`, `alias_kind = "local"`.
+3. If `G` does not exist but `W` does (workspace declared inside a non-git directory): `alias_identity = "local://<absolute_path_of_W>"`, `alias_kind = "local"`.
+4. If neither `G` nor `W` exists, no alias is computed (resolution fails).
 
-`alias_identity` is the only stable handle — never the path. Cloning a repo to a different path keeps the same `alias_identity` (case 2) and a new `local://` alias (case 3 only) is bound to the absolute path.
+`alias_identity` is the stable handle. Cloning a git repo to a new path keeps the same `alias_identity` (case 1) since it derives from the remote URL.
 
 #### Project resolution (used by every command except `kata init`)
 
-Given a workspace path:
+Given a start path:
 
-1. **`.kata.toml` at the workspace root wins.** If `<workspace>/.kata.toml` exists and contains a valid `[project]` block, look up `projects WHERE identity = <toml.project.identity>`. If the project row exists, the resolution succeeds. If it does not, fail with `project_not_initialized` and a hint to run `kata init --project <identity>` (the `.kata.toml` declares the binding, but the project row is created by `kata init`, never on first read/write).
-2. **Else, alias lookup.** Compute `alias_identity`. If a `project_aliases` row matches, resolve to that project; update `last_seen_at`, `last_seen_path`.
-3. **Else, fail.** Both read and write commands return `project_not_initialized` with hint `run "kata init" in this workspace, or "kata init --project <identity>" to attach to an existing project`. There is no implicit project creation.
+1. **`.kata.toml` wins.** If `W` exists and `<W>/.kata.toml` declares a valid `[project]` block:
+   - Look up `projects WHERE identity = <toml.project.identity>`. If no row exists, fail with `project_not_initialized` (hint: run `kata init` in this workspace).
+   - Compute the alias from `G` (or `W` per case 3 above). If the alias is unattached, attach it to this project. If attached to a *different* project, fail with `project_alias_conflict` (hint: `kata init --reassign`). `.kata.toml` does not silently override an existing alias mapping.
+   - Update `project_aliases.last_seen_at` and `last_seen_path`.
+2. **Else, alias lookup.** If `G` exists, compute `alias_identity` and look up `project_aliases`. On match, resolve to that project; update `last_seen_at`/`last_seen_path`.
+3. **Else, fail.** Return `project_not_initialized` with hint `run "kata init" in this workspace`.
 
 Outside any git repo and without `.kata.toml`, every command except `kata init --project <X>` fails. kata never silently namespaces issues to "a random cwd."
 
-The `.kata.toml` parsing is performed daemon-side from the `root_path` the CLI sends — there is one source of truth for resolution semantics. The CLI never constructs project identities; it sends paths.
+`.kata.toml` parsing and `alias_identity` derivation are performed daemon-side from the `start_path` the CLI sends — there is one source of truth for resolution semantics. The CLI never constructs project identities; it sends paths.
 
 #### `kata init` semantics
 
-`kata init` is the **only** command that creates a `projects` row.
+`kata init` is the **only** command that creates a `projects` row. Resolution flow inside `kata init`:
 
-- `kata init` (no args, no `.kata.toml` present): inside a git repo, derive `project.identity` from the alias identity (the normalized origin URL). Use the last URL segment as `project.name`. Create the project row, write `.kata.toml`, register the workspace as an alias. Outside a git repo, fail with usage error.
-- `kata init --project <identity> [--name <name>]`: idempotent. Look up or create `projects WHERE identity = <identity>`. Register the current workspace as an alias. Write `.kata.toml` declaring this binding.
-- If `.kata.toml` already exists at the workspace and declares a different identity, fail with `project_binding_conflict`. Use `--replace` to overwrite (rare; explicit only).
-- If the current workspace alias is already attached to a different project, fail with `project_alias_conflict`. Use `--reassign` to move (rare; explicit only).
-- After successful init, every subsequent command in the workspace resolves through `.kata.toml` and "just works."
+1. Walk upward from the start path to find `W` (first ancestor with `.kata.toml`) and `G` (first ancestor with `.git`).
+2. **Fresh-clone flow — existing `.kata.toml` and no flags.** If `W` is found and `<W>/.kata.toml` contains a valid binding:
+   - Look up or create `projects WHERE identity = <toml.project.identity>` (using `<toml.project.name>` when creating, else last segment of identity). The project row is materialized here, on demand from the committed config — this is the only path that does so.
+   - Compute the alias from `G` (or `local://<abs(W)>` when `G` is absent). If the alias is unattached, attach it. If attached to a *different* project, fail with `project_alias_conflict` unless `--reassign` was passed.
+   - If `--project <identity>` was also passed and disagrees with `<toml.project.identity>`, fail with `project_binding_conflict` unless `--replace` was passed.
+   - The `.kata.toml` is left as-is when content matches (idempotent); written when `--replace` overrides identity.
+3. **No `.kata.toml`, with `--project <identity>`.** Look up or create the project; compute and attach the alias (same conflict rules); write `<G>/.kata.toml` (or `<start_path>/.kata.toml` when `G` is absent). `--name <name>` sets the display name.
+4. **No `.kata.toml`, no `--project` flag.**
+   - If `G` exists with a remote: derive identity from the alias (normalized origin URL); use the last URL segment as `name`. Proceed as step 3.
+   - If `G` exists with no remote: identity = `local://<abs(G)>`. Proceed as step 3.
+   - If `G` does not exist: fail with usage error (`cd` into a workspace, or pass `--project`).
 
-Two repos sharing a project: in each repo, `kata init --project github.com/wesm/system`. Both `.kata.toml` files declare the same identity. The daemon attaches both as aliases. Issues numbered from either repo share the project's `next_issue_number`.
+`--replace` allows overwriting `.kata.toml` whose identity disagrees with `--project`. `--reassign` allows moving an existing alias to this project. Neither is needed for the common fresh-clone case.
+
+Two repos sharing a project: each commits `.kata.toml` with `identity = "github.com/wesm/system"`. Running `kata init` in each (no flags) succeeds, attaching both aliases to the same project. Issue numbering is shared.
+
+**Monorepo with multiple projects per git repo.** Because `alias_identity` is `UNIQUE` per git origin URL, one git repo can attach to only one project in v1. Subdirectories with their own `.kata.toml` declaring a different project fail with `project_alias_conflict` until the operator runs `kata init --reassign` (which moves the single available alias). Operators who need genuine multi-project monorepos should accept one project per git repo for v1; v2 may add path-scoped aliases.
 
 #### Identity validation
 
@@ -423,12 +446,12 @@ Bypassed by `force_new=true` in the request body. **Idempotency wins** over `for
 GET    /api/v1/ping                                                # cheap liveness; no DB touch
 GET    /api/v1/health                                              # deep health (DB, subscribers, uptime)
 
-POST   /api/v1/projects                                            # body: {identity, name, alias_root_path}; idempotent. used by `kata init`.
+POST   /api/v1/projects                                            # body: {start_path, project_identity?, name?, replace?, reassign?}; daemon parses .kata.toml. used by `kata init`.
 GET    /api/v1/projects                                            # list known projects
 GET    /api/v1/projects/{project_id}                               # show project + aliases
 
-POST   /api/v1/projects/resolve                                    # body: {root_path}; reads .kata.toml or alias; fails if neither.
-                                                                   # used by every command except `kata init`.
+POST   /api/v1/projects/resolve                                    # body: {start_path}; daemon walks up for .kata.toml then .git;
+                                                                   # fails if neither. used by every command except `kata init`.
 
 POST   /api/v1/projects/{project_id}/issues                        # body includes actor, force_new
 GET    /api/v1/projects/{project_id}/issues
@@ -458,15 +481,33 @@ GET    /api/v1/events/stream                                       # SSE; ?after
 
 ### 4.2 Project resolution flow
 
-CLI commands (other than `kata init`) call `POST /api/v1/projects/resolve` with the workspace `root_path`. The daemon:
+CLI commands (other than `kata init`) call `POST /api/v1/projects/resolve` with a `start_path` (typically cwd or `--workspace <path>`). The daemon walks upward to discover `W` (first `.kata.toml` ancestor) and `G` (first `.git` ancestor), then applies the resolution rules from §2.4.
 
-1. Reads `<root_path>/.kata.toml` if present. If valid, looks up `projects WHERE identity = <toml.project.identity>`. If no row exists, returns `404 project_not_initialized`.
-2. Else, computes `alias_identity` from `root_path`, looks up `project_aliases`. On match, returns the project + updates `last_seen_at`.
-3. Else, returns `404 project_not_initialized`.
+Request body: `{ "start_path": "/absolute/path" }`.
 
-Response body: `{ "project": { "id": N, "identity": "...", "name": "...", "next_issue_number": N }, "alias": { "id": N, "alias_identity": "...", "alias_kind": "git|local" } }`.
+Successful response:
+
+```json
+{
+  "project":        { "id": 7,  "identity": "github.com/wesm/kata", "name": "kata", "next_issue_number": 42 },
+  "alias":          { "id": 13, "alias_identity": "github.com/wesm/kata", "alias_kind": "git", "root_path": "/Users/wesm/code/kata" },
+  "workspace_root": "/Users/wesm/code/kata"
+}
+```
+
+Errors: `project_not_initialized` (404, no `.kata.toml` and no matching alias); `project_alias_conflict` (409, `.kata.toml` declares project P but the alias for the path is already attached to project Q ≠ P).
 
 The CLI caches `project.id` per process and uses `/api/v1/projects/{id}/...` for subsequent calls in the same invocation.
+
+`kata init` does **not** call `/projects/resolve`. It calls `POST /api/v1/projects` directly. Body fields:
+
+- `start_path` (required): same start-path semantics; daemon walks up.
+- `project_identity` (optional): explicit identity from `--project` flag. If omitted and `.kata.toml` is present, the daemon reads the binding from the file; if neither, it derives from the git remote (or fails outside git).
+- `name` (optional): from `--name` flag; overrides the auto-derived name when creating.
+- `replace` (optional bool): from `--replace`; permits overwriting an existing `.kata.toml` whose identity disagrees with `project_identity`.
+- `reassign` (optional bool): from `--reassign`; permits moving an existing alias to this project.
+
+The init endpoint is idempotent for the fresh-clone case (existing `.kata.toml`, no flags).
 
 ### 4.3 Auth model
 
@@ -704,7 +745,7 @@ Agent skill activation isn't fully deterministic. Two backup commands:
 
 ## 6. CLI Surface
 
-Universal flags on every command: `--json`, `--quiet`/`-q`, `--as <name>`, `--repo <path>` (overrides cwd as the workspace root used for resolution; the value is a path, not a project identity). `--all-projects` for cross-project reads where applicable.
+Universal flags on every command: `--json`, `--quiet`/`-q`, `--as <name>`, `--workspace <path>` (overrides cwd as the workspace root used for resolution; the value is a path, not a project identity). `--all-projects` for cross-project reads where applicable.
 
 Note: there is no public `--project-id <N>` flag for agent-facing commands. Agents resolve through `.kata.toml`; the TUI and internal client may carry `project_id` end-to-end after a single `/projects/resolve` call but the value is never exposed as a CLI argument.
 
@@ -712,10 +753,10 @@ Note: there is no public `--project-id <N>` flag for agent-facing commands. Agen
 
 | Group | Command | Notes |
 |---|---|---|
-| Init | `kata init [--project <identity>] [--name <name>] [--replace] [--reassign]` | Creates/upserts the project, registers the workspace as an alias, writes `<workspace>/.kata.toml`. The **only** path that auto-derives identity. Idempotent. |
+| Init | `kata init [--project <identity>] [--name <name>] [--replace] [--reassign]` | Fresh-clone flow: with no flags, reads existing `.kata.toml` if present; else derives identity from git remote. Creates/upserts the project, attaches the workspace alias, writes `.kata.toml` if missing. The **only** path that creates project rows. Idempotent. |
 | Lifecycle | `kata create <title> [--body* / --idempotency-key K / --force-new / --label L / --owner O / --parent N / --blocks N]` | `--label` repeated only (no CSV). Initial labels/links/owner go into the `issue.created` event payload. Fails with `project_not_initialized` if no `.kata.toml` and no matching alias. |
 | | `kata show <number> [--include-events] [--include-deleted]` | Default: issue + comments + links + labels. |
-| | `kata list [--status / --label / --owner / --author / --repo / --all-projects / --updated-since / --limit / --search]` | Default: this project, `status=open`, `updated_at DESC`, limit 50. |
+| | `kata list [--status / --label / --owner / --author / --workspace / --all-projects / --updated-since / --limit / --search]` | Default: this project, `status=open`, `updated_at DESC`, limit 50. |
 | | `kata edit <number> [--title / --body* / --owner]` | At least one field; else exit 3. |
 | | `kata close <number> [--reason done\|wontfix\|duplicate]` | Default reason `done`. |
 | | `kata reopen <number>` | |
@@ -729,12 +770,12 @@ Note: there is no public `--project-id <N>` flag for agent-facing commands. Agen
 | | `kata relate <a> <b>` / `kata unrelate <a> <b>` | Canonical-ordered. |
 | | `kata link <from> <type> <to>` / `kata unlink <from> <type> <to>` | Generic escape hatch. |
 | Labels | `kata label add <number> <label>` / `kata label rm <number> <label>` | Charset `[a-z0-9._:-]{1,64}`. |
-| | `kata labels [--repo / --all-projects]` | Counts. |
+| | `kata labels [--workspace / --all-projects]` | Counts. |
 | Ownership | `kata assign <number> <owner>` / `kata unassign <number>` | |
-| Discovery | `kata ready [--repo / --all-projects / --label / --owner]` | Open issues with no open `blocks` predecessor. **Primary "what's next" command.** |
-| | `kata search <query> [--repo / --all-projects / --status / --limit]` | FTS5 + similarity. |
-| | `kata events [--after-id / --since / --tail / --repo / --all-projects / --type]` | Default: this project, 100 most recent. `--tail` → NDJSON over SSE. |
-| Diagnostics | `kata doctor [--repo / --all-projects]` | Read-only; system health only (see §6.4). |
+| Discovery | `kata ready [--workspace / --all-projects / --label / --owner]` | Open issues with no open `blocks` predecessor. **Primary "what's next" command.** |
+| | `kata search <query> [--workspace / --all-projects / --status / --limit]` | FTS5 + similarity. |
+| | `kata events [--after-id / --since / --tail / --workspace / --all-projects / --type]` | Default: this project, 100 most recent. `--tail` → NDJSON over SSE. |
+| Diagnostics | `kata doctor [--workspace / --all-projects]` | Read-only; system health only (see §6.4). |
 | | `kata whoami` | `{actor, source}`. |
 | | `kata health` | `/api/v1/health`. |
 | Projects | `kata projects [list\|show]` | List known projects (with their aliases) / show one. |
@@ -742,21 +783,21 @@ Note: there is no public `--project-id <N>` flag for agent-facing commands. Agen
 | | `kata skills doctor` / `kata skills list` | |
 | | `kata agent-instructions` | Canonical agent doc. |
 | Daemon | `kata daemon [start\|stop\|status\|logs\|reload]` | `logs --hooks` for hook runs. Auto-start by other commands. |
-| TUI | `kata tui [--repo / --all-projects / --include-deleted]` | (see §7) |
+| TUI | `kata tui [--workspace / --all-projects / --include-deleted]` | (see §7) |
 | Config | `kata config [get\|set\|list\|path]` | TOML. |
 
 ### 6.2 Project resolution (per command)
 
 Every command except `kata init` follows this flow:
 
-1. Determine workspace root: `--repo <path>` if given, else `cwd`.
-2. CLI sends `POST /api/v1/projects/resolve {root_path: <workspace>}` to the daemon.
-3. Daemon reads `<workspace>/.kata.toml` if present; falls back to alias lookup; fails with `project_not_initialized` (exit 4) if neither succeeds.
+1. Determine the start path: `--workspace <path>` if given, else `cwd`.
+2. CLI sends `POST /api/v1/projects/resolve { "start_path": <start_path> }` to the daemon.
+3. Daemon walks upward to find `W` (first `.kata.toml` ancestor) and `G` (first `.git` ancestor). Resolution per §2.4: `.kata.toml` wins (with alias verification); else alias lookup; else fail with `project_not_initialized` (exit 4).
 4. CLI uses returned `project.id` for subsequent calls in this invocation.
 
 `--all-projects` short-circuits the resolve step; the command fans out across registered projects.
 
-`kata init` does **not** call `/projects/resolve`. It calls `POST /api/v1/projects` directly, which creates/upserts. After init, every command in the workspace resolves through `.kata.toml`.
+`kata init` does **not** call `/projects/resolve`. It calls `POST /api/v1/projects` directly with the same start-path-driven body shape; the daemon owns `.kata.toml` parsing and identity derivation. After init, every command in the workspace resolves through `.kata.toml`.
 
 ### 6.3 `.kata.toml` format
 
