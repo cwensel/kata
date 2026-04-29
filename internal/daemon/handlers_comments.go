@@ -34,7 +34,10 @@ func registerCommentsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		updated, _ := cfg.DB.IssueByID(ctx, issue.ID)
+		updated, err := cfg.DB.IssueByID(ctx, issue.ID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
 		out := &api.CommentResponse{}
 		out.Body.Issue = updated
 		out.Body.Comment = c

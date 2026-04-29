@@ -159,11 +159,13 @@ type CommentResponse struct {
 }
 
 // ActionRequest is POST /api/v1/projects/{id}/issues/{number}/actions/close|reopen.
+// Reason is enforced to the schema's CHECK list so unsupported values surface
+// as 400 validation rather than a SQLite constraint failure (500 internal).
 type ActionRequest struct {
 	ProjectID int64 `path:"project_id" required:"true"`
 	Number    int64 `path:"number" required:"true"`
 	Body      struct {
 		Actor  string `json:"actor" required:"true"`
-		Reason string `json:"reason,omitempty"` // close only; "done"|"wontfix"|"duplicate"
+		Reason string `json:"reason,omitempty" enum:"done,wontfix,duplicate,"` // close only
 	}
 }

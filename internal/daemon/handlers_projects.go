@@ -95,7 +95,7 @@ func resolveProject(ctx context.Context, store *db.DB, startPath string) (*api.P
 	}
 	disc, err := config.DiscoverPaths(abs)
 	if err != nil {
-		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		return nil, api.NewError(400, "validation", err.Error(), "", nil)
 	}
 
 	if body, ok, err := resolveByKataToml(ctx, store, disc); err != nil {
@@ -163,12 +163,23 @@ func resolveByAlias(ctx context.Context, store *db.DB, disc config.DiscoveredPat
 	if err != nil {
 		return nil, api.NewError(500, "internal", err.Error(), "", nil)
 	}
-	_ = store.TouchAlias(ctx, alias.ID, info.RootPath)
+	if err := store.TouchAlias(ctx, alias.ID, info.RootPath); err != nil && !errors.Is(err, db.ErrNotFound) {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	// Refetch the alias so the response carries the updated last_seen_at and
+	// root_path, not the pre-touch snapshot.
+	if refreshed, err := store.AliasByIdentity(ctx, info.Identity); err == nil {
+		alias = refreshed
+	}
 	project, err := store.ProjectByID(ctx, alias.ProjectID)
 	if err != nil {
 		return nil, api.NewError(500, "internal", err.Error(), "", nil)
 	}
-	return &api.ProjectResolveBody{Project: project, Alias: alias, WorkspaceRoot: ""}, nil
+	return &api.ProjectResolveBody{
+		Project:       project,
+		Alias:         alias,
+		WorkspaceRoot: info.RootPath,
+	}, nil
 }
 
 // initProject implements `kata init` on the daemon side per spec §2.4.
@@ -182,7 +193,7 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 	}
 	disc, err := config.DiscoverPaths(abs)
 	if err != nil {
-		return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
+		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 	}
 
 	tomlCfg, err := readWorkspaceConfig(disc)
@@ -205,12 +216,22 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 		disc.WorkspaceRoot = abs
 	}
 
+	aliasInfo, err := config.ComputeAliasIdentity(disc)
+	if err != nil {
+		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	// Preflight alias conflict before mutating anything: without this, a fresh
+	// project row would be created and then orphaned when alias attach fails.
+	if err := preflightAliasConflict(ctx, store, aliasInfo, identity, req.Body.Reassign); err != nil {
+		return nil, false, err
+	}
+
 	project, created, err := upsertProject(ctx, store, identity, name)
 	if err != nil {
 		return nil, false, err
 	}
 
-	alias, err := upsertAliasFor(ctx, store, project.ID, disc, req.Body.Reassign)
+	alias, err := attachAlias(ctx, store, project.ID, aliasInfo, req.Body.Reassign)
 	if err != nil {
 		return nil, false, err
 	}
@@ -312,18 +333,28 @@ func upsertProject(ctx context.Context, store *db.DB, identity, name string) (db
 	return created, true, nil
 }
 
-// upsertAliasFor attaches the discovered alias to projectID. If the alias is
-// already attached to a *different* project, returns project_alias_conflict
-// (409) unless reassign is true (in which case we move it).
+// upsertAliasFor is the disc-flavored entry point used during resolve, where
+// no preflight has happened. It computes the alias identity then delegates.
 func upsertAliasFor(ctx context.Context, store *db.DB, projectID int64, disc config.DiscoveredPaths, reassign bool) (db.ProjectAlias, error) {
 	info, err := config.ComputeAliasIdentity(disc)
 	if err != nil {
 		return db.ProjectAlias{}, api.NewError(400, "validation", err.Error(), "", nil)
 	}
+	return attachAlias(ctx, store, projectID, info, reassign)
+}
+
+// attachAlias attaches a pre-computed alias identity to projectID. If the
+// alias is already attached to a *different* project, returns
+// project_alias_conflict (409) unless reassign is true (in which case we move
+// it). When called after preflightAliasConflict, the conflict branch is
+// unreachable but kept for callers that haven't preflit.
+func attachAlias(ctx context.Context, store *db.DB, projectID int64, info config.AliasInfo, reassign bool) (db.ProjectAlias, error) {
 	existing, err := store.AliasByIdentity(ctx, info.Identity)
 	if err == nil {
 		if existing.ProjectID == projectID {
-			_ = store.TouchAlias(ctx, existing.ID, info.RootPath)
+			if err := store.TouchAlias(ctx, existing.ID, info.RootPath); err != nil && !errors.Is(err, db.ErrNotFound) {
+				return db.ProjectAlias{}, api.NewError(500, "internal", err.Error(), "", nil)
+			}
 			refreshed, _ := store.AliasByIdentity(ctx, info.Identity)
 			return refreshed, nil
 		}
@@ -353,6 +384,36 @@ func upsertAliasFor(ctx context.Context, store *db.DB, projectID int64, disc con
 		return db.ProjectAlias{}, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	return a, nil
+}
+
+// preflightAliasConflict returns 409 project_alias_conflict when an existing
+// alias is bound to a different project than targetIdentity and reassign is
+// false. Run before any project mutation so a doomed init does not leave an
+// orphan project row.
+func preflightAliasConflict(ctx context.Context, store *db.DB, info config.AliasInfo, targetIdentity string, reassign bool) error {
+	if reassign {
+		return nil
+	}
+	existing, err := store.AliasByIdentity(ctx, info.Identity)
+	if errors.Is(err, db.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	existingProject, err := store.ProjectByID(ctx, existing.ProjectID)
+	if err != nil {
+		return api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if existingProject.Identity == targetIdentity {
+		return nil
+	}
+	return api.NewError(http.StatusConflict, "project_alias_conflict",
+		"alias already attached to a different project",
+		"pass reassign=true to move it", map[string]any{
+			"alias_identity":      info.Identity,
+			"existing_project_id": existing.ProjectID,
+		})
 }
 
 // pickName returns explicit if non-empty, otherwise the last `/` or `:`-separated

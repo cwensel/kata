@@ -45,6 +45,20 @@ func TestActionsClose_ReopenRoundtrip(t *testing.T) {
 	assert.Contains(t, string(bs2), `"status":"open"`)
 }
 
+func TestActionsClose_RejectsUnsupportedReason(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "x", "title": "x"})
+
+	resp, bs := postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+		map[string]any{"actor": "agent", "reason": "obsolete"})
+	assert.Equal(t, 400, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"code":"validation"`)
+}
+
 func TestActionsClose_AlreadyClosedIsNoOpEnvelope(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)

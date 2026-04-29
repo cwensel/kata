@@ -47,6 +47,12 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/projects/{project_id}/issues",
 	}, func(ctx context.Context, in *api.ListIssuesRequest) (*api.ListIssuesResponse, error) {
+		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+			}
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
 		issues, err := cfg.DB.ListIssues(ctx, db.ListIssuesParams{
 			ProjectID: in.ProjectID,
 			Status:    in.Status,

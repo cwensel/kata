@@ -71,16 +71,21 @@ func (e *APIError) MarshalJSON() ([]byte, error) {
 
 // InstallErrorFormatter wires Huma so non-API-typed errors (panics, validation
 // failures) also serialize to ErrorEnvelope. Call once at server startup.
+// Huma emits 422 for request-body validation failures; we normalize that to
+// 400 with code "validation" so the wire contract documented in spec §4.7
+// (no 422 in the status table) holds.
 func InstallErrorFormatter() {
 	huma.NewError = func(status int, message string, _ ...error) huma.StatusError {
-		code := codeForStatus(status)
-		return &APIError{Status: status, Code: code, Message: message}
+		if status == http.StatusUnprocessableEntity {
+			status = http.StatusBadRequest
+		}
+		return &APIError{Status: status, Code: codeForStatus(status), Message: message}
 	}
 }
 
 func codeForStatus(status int) string {
 	switch status {
-	case http.StatusBadRequest:
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return "validation"
 	case http.StatusNotFound:
 		return "not_found"
@@ -93,6 +98,19 @@ func codeForStatus(status int) string {
 	default:
 		return "error"
 	}
+}
+
+// WriteEnvelope writes an ErrorEnvelope JSON body with the given status code
+// and Content-Type: application/json. Used by HTTP middleware that needs to
+// emit the same wire shape as handler-returned APIErrors.
+func WriteEnvelope(w http.ResponseWriter, status int, code, message string) {
+	body, _ := json.Marshal(ErrorEnvelope{
+		Status: status,
+		Error:  ErrorBody{Code: code, Message: message},
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 // EnsureCancelled is a small helper so handlers can early-return when ctx is

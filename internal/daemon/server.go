@@ -37,6 +37,11 @@ func NewServer(cfg ServerConfig) *Server {
 	mux := http.NewServeMux()
 	humaConfig := huma.DefaultConfig("kata", "0.1.0")
 	humaConfig.OpenAPIPath = "" // Plan 1: no /openapi.json
+	// Drop DefaultConfig's SchemaLinkTransformer: it rebuilds response structs
+	// via reflection (adding a $schema field), which silently bypasses any
+	// MarshalJSON. Our APIError relies on MarshalJSON to emit the wire-spec
+	// envelope shape, so we must disable the transform.
+	humaConfig.CreateHooks = nil
 	humaAPI := humago.New(mux, humaConfig)
 
 	s := &Server{cfg: cfg, api: humaAPI}
@@ -84,17 +89,21 @@ func (s *Server) Run(ctx context.Context) error {
 
 // withCSRFGuards rejects browser-borne requests and enforces JSON content type
 // on mutation methods that carry a body. Per spec §2.9, CLI/TUI never set
-// Origin so this is transparent for our own clients.
+// Origin so this is transparent for our own clients. Errors are emitted as
+// JSON envelopes matching api.ErrorEnvelope so the wire contract holds for
+// every non-2xx response, not just handler-returned ones.
 func withCSRFGuards(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" {
-			http.Error(w, "Origin header forbidden", http.StatusForbidden)
+			api.WriteEnvelope(w, http.StatusForbidden, "origin_forbidden",
+				"Origin header forbidden")
 			return
 		}
 		if isMutation(r.Method) && r.ContentLength != 0 {
 			ct := r.Header.Get("Content-Type")
 			if !strings.HasPrefix(ct, "application/json") {
-				http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+				api.WriteEnvelope(w, http.StatusUnsupportedMediaType, "unsupported_media_type",
+					"Content-Type must be application/json")
 				return
 			}
 		}

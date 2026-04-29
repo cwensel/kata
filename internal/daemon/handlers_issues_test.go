@@ -80,6 +80,16 @@ func TestIssues_ListAndShow(t *testing.T) {
 	assert.Contains(t, string(bs2), `"comments":`)
 }
 
+func TestIssues_ListMissingProjectIs404(t *testing.T) {
+	h, _ := bootstrapProject(t)
+	resp, err := http.Get(h.ts.(*httptest.Server).URL + "/api/v1/projects/9999/issues")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, 404, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"code":"project_not_found"`)
+}
+
 func TestIssues_PatchEditTitleAndBody(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	_, _ = postJSON(t, h.ts.(*httptest.Server),
