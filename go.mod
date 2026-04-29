@@ -2,7 +2,10 @@ module github.com/wesm/kata
 
 go 1.26.1
 
-require github.com/stretchr/testify v1.11.1
+require (
+	github.com/BurntSushi/toml v1.6.0
+	github.com/stretchr/testify v1.11.1
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
