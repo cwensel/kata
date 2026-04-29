@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/danielgtaylor/huma/v2 v2.37.3
 	github.com/stretchr/testify v1.11.1
 	modernc.org/sqlite v1.49.1
 )
