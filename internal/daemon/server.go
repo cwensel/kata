@@ -133,8 +133,10 @@ func registerProjects(humaAPI huma.API, cfg ServerConfig) {
 	registerProjectsHandlers(humaAPI, cfg)
 }
 
-// registerIssues registers issue CRUD routes. Stub until Task 16.
-func registerIssues(_ huma.API, _ ServerConfig) {}
+// registerIssues registers issue CRUD routes (create/list/show/edit).
+func registerIssues(humaAPI huma.API, cfg ServerConfig) {
+	registerIssuesHandlers(humaAPI, cfg)
+}
 
 // registerComments registers issue-comment routes. Stub until Task 17.
 func registerComments(_ huma.API, _ ServerConfig) {}

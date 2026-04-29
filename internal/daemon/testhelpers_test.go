@@ -1,12 +1,19 @@
 package daemon_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/db"
 )
 
@@ -25,4 +32,38 @@ func openTestDB(t *testing.T) testDBHandle {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	return testDBHandle{db: d, now: time.Now().UTC()}
+}
+
+// newServerWithGitWorkspace creates a fresh git repo in t.TempDir(), wires a
+// daemon server against a fresh DB, and returns a handle exposing both. When
+// originURL is non-empty it is added as the "origin" remote so alias
+// derivation has an http(s) URL to chew on.
+func newServerWithGitWorkspace(t *testing.T, originURL string) *httptestServerHandle {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	if originURL != "" {
+		runGit(t, dir, "remote", "add", "origin", originURL)
+	}
+	d := openTestDB(t)
+	srv := daemon.NewServer(daemon.ServerConfig{DB: d.db, StartedAt: d.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return &httptestServerHandle{ts: ts, dir: dir}
+}
+
+// patchJSON issues a PATCH request with a JSON body and returns the response
+// plus the buffered body. Mirrors postJSON for the PATCH-only handlers.
+func patchJSON(t *testing.T, ts *httptest.Server, path string, body any) (*http.Response, []byte) {
+	t.Helper()
+	js, err := json.Marshal(body)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPatch, ts.URL+path, bytes.NewReader(js))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test request to httptest server URL
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, _ := io.ReadAll(resp.Body)
+	return resp, bs
 }
