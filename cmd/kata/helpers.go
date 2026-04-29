@@ -104,36 +104,35 @@ func readGitUserName() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// emitJSON marshals v with a "kata_api_version":1 wrapper and a trailing
-// newline.
+// emitJSON marshals v as a JSON object, splices in "kata_api_version":1 as
+// the first key, and writes the result followed by a trailing newline.
+//
+// The top-level value MUST marshal to a JSON object; non-object payloads
+// (scalars, arrays, nil) are rejected. The caller must also not include a
+// "kata_api_version" key in v: this helper owns that slot, and silently
+// merging a caller-supplied version would let a future struct field strip the
+// version stamp on the wire (spec §5.1).
 func emitJSON(w io.Writer, v any) error {
-	wrapped := map[string]any{"kata_api_version": 1}
-	for k, val := range structToMap(v) {
-		wrapped[k] = val
-	}
-	bs, err := json.Marshal(wrapped)
+	payload, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal payload: %w", err)
 	}
-	bs = append(bs, '\n')
-	_, err = w.Write(bs)
+	if len(payload) < 2 || payload[0] != '{' || payload[len(payload)-1] != '}' {
+		return fmt.Errorf("emitJSON: top-level value must be a JSON object, got %T", v)
+	}
+	if bytes.Contains(payload, []byte(`"kata_api_version"`)) {
+		return errors.New(`emitJSON: payload must not include "kata_api_version" key`)
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString(`{"kata_api_version":1`)
+	if len(payload) > 2 { // anything other than "{}"
+		buf.WriteByte(',')
+		buf.Write(payload[1 : len(payload)-1])
+	}
+	buf.WriteString("}\n")
+	_, err = w.Write(buf.Bytes())
 	return err
-}
-
-func structToMap(v any) map[string]any {
-	bs, _ := json.Marshal(v)
-	var m map[string]any
-	_ = json.Unmarshal(bs, &m)
-	if m == nil {
-		m = map[string]any{"value": v}
-	}
-	return m
-}
-
-// writeStringFile is a tiny wrapper used by tests.
-func writeStringFile(path, body string) error {
-	//nolint:gosec // test helper writing to a temp dir
-	return os.WriteFile(path, []byte(body), 0o644)
 }
 
 // httpDoJSON sends a request body, returns (status, response body bytes).
@@ -155,7 +154,7 @@ func httpDoJSON(ctx context.Context, client *http.Client, method, url string, bo
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	//nolint:gosec // URL is constructed from daemon socket address, not user input
+	//nolint:gosec // G107: callers in cmd/kata/* always pass daemon-local URLs; this helper is package-internal.
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, err
