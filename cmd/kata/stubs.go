@@ -2,10 +2,6 @@ package main
 
 import "github.com/spf13/cobra"
 
-func newDaemonCmd() *cobra.Command {
-	return &cobra.Command{Use: "daemon", Short: "manage the kata daemon"}
-}
-
 func newInitCmd() *cobra.Command {
 	return &cobra.Command{Use: "init", Short: "bind workspace to a project"}
 }
