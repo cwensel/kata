@@ -634,6 +634,38 @@ func ownerEqual(a, b *string) bool {
 	return *a == *b
 }
 
+// ReadyIssues returns open, non-deleted issues with no open `blocks` predecessor,
+// ordered by updated_at DESC. limit==0 means no limit.
+func (d *DB) ReadyIssues(ctx context.Context, projectID int64, limit int) ([]Issue, error) {
+	q := issueSelect + `
+		WHERE i.project_id = ? AND i.status = 'open' AND i.deleted_at IS NULL
+		  AND NOT EXISTS (
+		    SELECT 1 FROM links l
+		    JOIN issues blocker ON blocker.id = l.from_issue_id
+		    WHERE l.type = 'blocks' AND l.to_issue_id = i.id
+		      AND blocker.status = 'open' AND blocker.deleted_at IS NULL
+		  )
+		ORDER BY i.updated_at DESC, i.id DESC`
+	args := []any{projectID}
+	if limit > 0 {
+		q += fmt.Sprintf(` LIMIT %d`, limit)
+	}
+	rows, err := d.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("ready issues: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Issue
+	for rows.Next() {
+		i, err := scanIssue(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
 func insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Event, error) {
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO events(project_id, project_identity, issue_id, issue_number, related_issue_id, type, actor, payload)
