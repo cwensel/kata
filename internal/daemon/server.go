@@ -141,6 +141,7 @@ func registerRoutes(humaAPI huma.API, cfg ServerConfig) {
 	registerLinks(humaAPI, cfg)
 	registerLabels(humaAPI, cfg)
 	registerOwnership(humaAPI, cfg)
+	registerReady(humaAPI, cfg)
 }
 
 // registerHealth registers /api/v1/ping and /api/v1/health.
@@ -181,4 +182,9 @@ func registerLabels(humaAPI huma.API, cfg ServerConfig) {
 // registerOwnership registers POST /actions/assign and /actions/unassign routes.
 func registerOwnership(humaAPI huma.API, cfg ServerConfig) {
 	registerOwnershipHandlers(humaAPI, cfg)
+}
+
+// registerReady registers GET /projects/{id}/ready.
+func registerReady(humaAPI huma.API, cfg ServerConfig) {
+	registerReadyHandlers(humaAPI, cfg)
 }
