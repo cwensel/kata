@@ -234,18 +234,18 @@ func TestSearchFTS_LimitCappedAt200(t *testing.T) {
 	ctx := context.Background()
 	p, err := d.CreateProject(ctx, "p", "p")
 	require.NoError(t, err)
-	for i := 0; i < 3; i++ {
+	// Create 250 matching issues. The cap must clamp the result set to 200
+	// regardless of how large a limit the caller passes; without the cap, this
+	// test would return 250 and fail.
+	for i := 0; i < 250; i++ {
 		_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
 			ProjectID: p.ID, Title: "login bug", Body: "", Author: "tester",
 		})
 		require.NoError(t, err)
 	}
-	// A wildly large caller-supplied limit must be capped — the function must
-	// not pass an unbounded LIMIT through to SQLite. We can't observe the cap
-	// directly here, but the call must succeed and return all 3 hits.
 	got, err := d.SearchFTS(ctx, p.ID, "login", 1_000_000, false)
 	require.NoError(t, err)
-	assert.Len(t, got, 3)
+	assert.Len(t, got, 200, "limit must be capped at 200")
 }
 
 func TestSearchFTS_QueryEscaping(t *testing.T) {

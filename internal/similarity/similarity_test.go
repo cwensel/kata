@@ -135,3 +135,23 @@ func TestTokenize_StopWordsBeforeStem(t *testing.T) {
 		})
 	}
 }
+
+// TestTokenize_DropsSingleRuneNonASCII pins the rune-count short-token filter:
+// "é" is one rune (two bytes) and must be dropped per the documented
+// "shorter than 2 runes" rule, not retained because of byte length.
+func TestTokenize_DropsSingleRuneNonASCII(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"single_nonascii_rune", "é", nil},
+		{"single_ascii_letter", "a", nil},
+		{"two_runes_nonascii_kept", "éé", []string{"éé"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, similarity.Tokenize(tc.in))
+		})
+	}
+}

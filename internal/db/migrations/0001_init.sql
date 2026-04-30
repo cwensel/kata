@@ -181,14 +181,25 @@ CREATE TRIGGER issues_ai_fts AFTER INSERT ON issues BEGIN
   VALUES (NEW.id, NEW.title, NEW.body, '');
 END;
 
+-- All GROUP_CONCAT operations below wrap their source in a subquery with
+-- ORDER BY id so the aggregate is deterministic. SQLite does not guarantee
+-- input order to GROUP_CONCAT without ORDER BY, and the FTS5 'delete' command
+-- on a contentless table requires the exact bytes that were last inserted —
+-- any drift between the insert form and the delete form leaves stale tokens
+-- in the index.
+
 CREATE TRIGGER issues_au_fts AFTER UPDATE OF title, body ON issues BEGIN
   INSERT INTO issues_fts(issues_fts, rowid, title, body, comments) VALUES (
     'delete', OLD.id, OLD.title, OLD.body,
-    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = OLD.id), '')
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM (
+      SELECT body FROM comments WHERE issue_id = OLD.id ORDER BY id
+    )), '')
   );
   INSERT INTO issues_fts(rowid, title, body, comments) VALUES (
     NEW.id, NEW.title, NEW.body,
-    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = NEW.id), '')
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM (
+      SELECT body FROM comments WHERE issue_id = NEW.id ORDER BY id
+    )), '')
   );
 END;
 
@@ -198,7 +209,9 @@ CREATE TRIGGER issues_ad_fts AFTER DELETE ON issues BEGIN
   -- command sees the same column shape we last inserted.
   INSERT INTO issues_fts(issues_fts, rowid, title, body, comments) VALUES (
     'delete', OLD.id, OLD.title, OLD.body,
-    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = OLD.id), '')
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM (
+      SELECT body FROM comments WHERE issue_id = OLD.id ORDER BY id
+    )), '')
   );
 END;
 
@@ -209,40 +222,44 @@ CREATE TRIGGER comments_ai_fts AFTER INSERT ON comments BEGIN
     NEW.issue_id,
     (SELECT title FROM issues WHERE id = NEW.issue_id),
     (SELECT body  FROM issues WHERE id = NEW.issue_id),
-    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments
-              WHERE issue_id = NEW.issue_id AND id <> NEW.id), '')
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM (
+      SELECT body FROM comments WHERE issue_id = NEW.issue_id AND id <> NEW.id ORDER BY id
+    )), '')
   );
   -- Post-insert state (what FTS should hold) includes it.
   INSERT INTO issues_fts(rowid, title, body, comments) VALUES (
     NEW.issue_id,
     (SELECT title FROM issues WHERE id = NEW.issue_id),
     (SELECT body  FROM issues WHERE id = NEW.issue_id),
-    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = NEW.issue_id), '')
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM (
+      SELECT body FROM comments WHERE issue_id = NEW.issue_id ORDER BY id
+    )), '')
   );
 END;
 
 CREATE TRIGGER comments_ad_fts AFTER DELETE ON comments BEGIN
-  -- Pre-delete state (what FTS currently holds) included the deleted row.
-  -- Reconstruct it as: current aggregate UNION ALL old.body, then GROUP_CONCAT.
+  -- Pre-delete state (what FTS currently holds) included the deleted row at
+  -- its id-ordered position. Reconstruct by unioning OLD back in with its id
+  -- and ORDER BY id so the aggregate matches the form last inserted into FTS.
   INSERT INTO issues_fts(issues_fts, rowid, title, body, comments) VALUES (
     'delete',
     OLD.issue_id,
     (SELECT title FROM issues WHERE id = OLD.issue_id),
     (SELECT body  FROM issues WHERE id = OLD.issue_id),
-    COALESCE(
-      (SELECT GROUP_CONCAT(body, ' ') FROM (
-         SELECT body FROM comments WHERE issue_id = OLD.issue_id
-         UNION ALL
-         SELECT OLD.body
-      )),
-      ''
-    )
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM (
+      SELECT id, body FROM comments WHERE issue_id = OLD.issue_id
+      UNION ALL
+      SELECT OLD.id, OLD.body
+      ORDER BY id
+    )), '')
   );
   -- Post-delete state (what FTS should hold) excludes it.
   INSERT INTO issues_fts(rowid, title, body, comments) VALUES (
     OLD.issue_id,
     (SELECT title FROM issues WHERE id = OLD.issue_id),
     (SELECT body  FROM issues WHERE id = OLD.issue_id),
-    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = OLD.issue_id), '')
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM (
+      SELECT body FROM comments WHERE issue_id = OLD.issue_id ORDER BY id
+    )), '')
   );
 END;

@@ -1517,6 +1517,14 @@ PurgeIssue is the riskiest function in Plan 3. It runs the entire seven-step tra
 
 **Step ordering (all in one TX, BEGIN IMMEDIATE):**
 
+> **Implementation note:** Go's `database/sql` `BeginTx` issues a deferred
+> `BEGIN`, which acquires a reserved/exclusive lock only on first write.
+> For PurgeIssue we want the write lock held from step 1 so the count
+> snapshots in step 3 are stable. Use `tx.ExecContext(ctx, "BEGIN IMMEDIATE")`
+> on a dedicated connection (or wrap with a small `BeginImmediateTx` helper)
+> rather than the default `db.BeginTx`. Otherwise the audit-count step can
+> race with concurrent writers.
+
 1. `lookupIssueIncludingDeleted` — fetch the issue + project identity. ErrNotFound if missing.
 2. Capture `(min, max)` of `events.id` where `issue_id = N OR related_issue_id = N`. Both NULL if zero matches.
 3. Compute counts of dependents (comments, links, issue_labels, events).
@@ -2380,7 +2388,9 @@ func TestCreate_IdempotencyReuse_SameFingerprint(t *testing.T) {
 		map[string]any{"actor": "agent", "title": "fix login", "body": "details"})
 	require.Equal(t, 200, first.status, string(first.body))
 	assert.Contains(t, string(first.body), `"changed":true`)
-	assert.Contains(t, string(first.body), `"reused":false`, "first call must not be reused")
+	// MutationResponse.Reused is `omitempty`, so the not-reused case omits
+	// the field entirely — assert the field is absent rather than `false`.
+	assert.NotContains(t, string(first.body), `"reused"`, "first call must not be marked reused")
 
 	second := postWithHeader(t, ts, "/api/v1/projects/"+pidStr+"/issues",
 		map[string]string{"Idempotency-Key": "K1"},
@@ -3285,6 +3295,17 @@ func runDestructive(cmd *cobra.Command, number int64, verb, confirm string, extr
 	if status >= 400 {
 		return apiErrFromBody(status, bs)
 	}
+	// JSON output mode bypasses human one-liners — emit the daemon's response
+	// envelope so CLI consumers (and the global --json contract) see a
+	// uniform shape across delete/purge/other mutations.
+	if flags.JSON {
+		var buf bytes.Buffer
+		if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
+			return err
+		}
+		_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
+		return err
+	}
 	if !flags.Quiet {
 		switch verb {
 		case "delete":
@@ -3400,16 +3421,19 @@ func isTTY(f *os.File) bool {
 
 - [ ] **Step 4: Register `newDeleteCmd` in main.go**
 
-In `cmd/kata/main.go`, append `newDeleteCmd()` to the `subs` slice (after `newReopenCmd()` so the help output groups lifecycle verbs together):
+In `cmd/kata/main.go`, append `newDeleteCmd()` to the `subs` slice (after `newReopenCmd()` so the help output groups lifecycle verbs together).
+**Important — register only the command this task adds.** `newRestoreCmd`,
+`newPurgeCmd`, and `newSearchCmd` are introduced in Tasks 12, 13, and 14
+respectively; referencing them here before they exist breaks the build at
+the Task 11 commit. Each subsequent task adds its own line to `subs` in the
+same step:
 
 ```go
 subs := []*cobra.Command{
 	// ... existing ...
 	newReopenCmd(),
 	newDeleteCmd(),
-	newRestoreCmd(),
-	newPurgeCmd(),
-	newSearchCmd(),
+	// newRestoreCmd, newPurgeCmd, newSearchCmd are appended by Tasks 12-14.
 	// ... existing ...
 }
 ```
@@ -4065,7 +4089,8 @@ func TestSmoke_Plan3Lifecycle(t *testing.T) {
 		map[string]string{"Idempotency-Key": "smoke-K1"},
 		map[string]any{"actor": "agent", "title": "fix login crash on Safari", "body": "stack trace"})
 	require.Equalf(t, 200, first.status, "first create: %s", string(first.body))
-	assert.Contains(t, string(first.body), `"reused":false`)
+	// Reused is `omitempty`; absent on not-reused responses.
+	assert.NotContains(t, string(first.body), `"reused"`)
 
 	// 2. repeat with the same key — reuse.
 	second := postWithHeaderHTTP(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",

@@ -7,6 +7,7 @@ package similarity
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -59,14 +60,16 @@ func Tokenize(s string) []string {
 		// would be invalidated otherwise.
 		tok := cur.String()
 		cur.Reset()
-		if len(tok) < 2 {
+		// Filter by rune count, not byte length, so a single non-ASCII rune
+		// (e.g. "é") is treated as a one-rune token and dropped.
+		if utf8.RuneCountInString(tok) < 2 {
 			return
 		}
 		if _, isStop := stopWords[tok]; isStop {
 			return
 		}
 		tok = stem(tok)
-		if len(tok) < 2 {
+		if utf8.RuneCountInString(tok) < 2 {
 			return
 		}
 		out = append(out, tok)
