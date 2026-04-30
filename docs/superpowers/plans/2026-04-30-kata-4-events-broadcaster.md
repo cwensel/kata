@@ -1,5 +1,33 @@
 # Plan 4 — SSE Event Broadcaster + Polling Endpoints Implementation Plan
 
+> **As-shipped status (2026-04-30):** Plan 4 is complete. The verbatim code
+> snippets in some tasks are the original draft; review iterations changed
+> behavior in ways the inline snippets do not reflect. Future readers should
+> treat the repo as the source of truth and use this plan as a chronological
+> guide, not an implementation reference. Cross-cutting changes that landed
+> after the per-task work finished:
+>
+> - **Task 5 polling:** rejects `after_id < 0` with `400 validation` (was
+>   silently accepting and returning all events).
+> - **Task 6 SSE:** 405 sets `Allow: GET`; cursor_conflict detection is key-
+>   presence based; SSE handler 404s on unknown `project_id` (mirrors polling
+>   `project_not_found`); `parseSSECursor` rejects present-but-empty values.
+> - **Task 7 live phase:** calls `PurgeResetCheck` at the top of every
+>   `"event"` wakeup so a concurrent purge cannot be silenced by a racing
+>   event broadcast; the wakeup also loops `EventsAfter` until
+>   `len(rows) < sseLiveBatch` so a single broadcast carrying >1000 pending
+>   rows fully drains.
+> - **Task 11 `--tail`:** uses `streamingClientFor` (no overall timeout, with
+>   transport-level `ResponseHeaderTimeout`); 4xx responses are terminal
+>   (per spec §7.2 retryable-vs-terminal classification).
+> - **Task 12 e2e:** `openSSEAt` no longer skips a fixed 16 bytes; the
+>   per-line framer naturally consumes the `: connected` preamble as a
+>   comment frame.
+> - **Task 9 race tests:** `TestSSE_OutOfOrderBroadcastsEmitInIDOrder` uses
+>   a sentinel event to enter the live phase deterministically; the new
+>   `TestSSE_LivePhaseChecksPurgeResetBeforeReplay` pins the cross-cutting
+>   reset-ordering guarantee.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the `EventBroadcaster` + `GET /api/v1/events/stream` SSE endpoint + `GET /api/v1/events` polling endpoints + `kata events` CLI so agents can watch durable, ordered event streams over SSE with `Last-Event-ID` resume and a polling fallback.

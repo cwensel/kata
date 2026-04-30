@@ -376,14 +376,32 @@ for {
             flush(w)
             return
         case "event":
-            rows, err := cfg.DB.EventsAfter(ctx, EventsAfterParams{
-                AfterID: lastSent, ProjectID: projectID, ThroughID: msg.Event.ID, Limit: 1000,
-            })
+            // Defensive: a concurrent purge may have committed before this
+            // event broadcast was processed (broadcaster lock race). Surface
+            // the reset before any post-purge frames so a client cannot
+            // disconnect at id > resetAfterID and silently miss the reset.
+            resetTo, err := cfg.DB.PurgeResetCheck(ctx, lastSent, projectID)
             if err != nil { return }
-            for _, ev := range rows {
-                writeEventFrame(w, ev)
+            if resetTo > 0 {
+                writeResetFrame(w, resetTo)
                 flush(w)
-                lastSent = ev.ID
+                return
+            }
+            // Drain every row at or below the wakeup's id. A single broadcast
+            // can carry > sseLiveBatch pending rows; without the loop, the
+            // tail would languish in the DB until the next wakeup.
+            through := msg.Event.ID
+            for {
+                rows, err := cfg.DB.EventsAfter(ctx, EventsAfterParams{
+                    AfterID: lastSent, ProjectID: projectID, ThroughID: through, Limit: 1000,
+                })
+                if err != nil { return }
+                for _, ev := range rows {
+                    writeEventFrame(w, ev)
+                    flush(w)
+                    lastSent = ev.ID
+                }
+                if len(rows) < 1000 { break }
             }
         }
     }
@@ -394,7 +412,8 @@ Properties:
 - DB is the ordering authority. Two concurrent commits with reordered Broadcast calls are emitted in DB-id order: each wakeup re-queries `(lastSent, msg.Event.ID]`.
 - Late-arriving wakeups for IDs already covered by an earlier re-query no-op (`EventsAfter(lastSent, ..., ThroughID: <stale id>)` returns nothing if `<stale id> ≤ lastSent`).
 - A burst of N commits produces N wakeups but each re-query catches everything up to its `ThroughID`. Coalescing is automatic.
-- Reset signals bypass the requery path entirely and are terminal.
+- A wakeup that carries more than `sseLiveBatch` rows is fully drained inside the loop (re-query until `len(rows) < sseLiveBatch`), not stranded for the next wakeup.
+- Reset signals bypass the requery path entirely and are terminal. Both channel-side ("reset" Kind) and DB-side (PurgeResetCheck) paths terminate the live phase; whichever is observed first wins.
 
 `lastSent` is server-side state for the live loop's de-duplication. It is **not** the client's cursor. The client's `Last-Event-ID` only advances when it receives a frame with an `id:` line. If the drain emits no frames (empty drain on reconnect), the client cursor stays at its prior value — harmless.
 
@@ -485,6 +504,18 @@ kata events --tail [--project-id N | --all-projects] [--last-event-id K] [--json
 - On daemon shutdown / unexpected EOF: log to stderr `daemon disconnected, reconnecting...` (only when `--quiet` is not set), reconnect.
 - `--last-event-id K` overrides the initial cursor; default is 0 (consume from the start). Polite use is for resuming a previously interrupted tail.
 - Exit codes per master spec §4.7. SIGINT/SIGTERM trigger graceful shutdown (close stream, exit 0).
+
+#### Retryable vs terminal errors
+
+The reconnect/backoff loop is for transient failures, not for malformed local input or server-validated rejection. The classification:
+
+| Class | Examples | Behavior |
+|-------|----------|----------|
+| **Terminal (fail fast)** | local validation (negative `--last-event-id`, mutually exclusive flags); HTTP 4xx from the daemon (400 validation, 404 project_not_found, 405 method_not_allowed, 406 not_acceptable, 400 cursor_conflict) | Exit non-zero with `ExitUsage` for local arg errors, `ExitInternal` (or surfaced API code) for server rejection. **Never reconnect.** Looping on a 4xx is an infinite spin. |
+| **Retryable (backoff)** | TCP/connection errors before headers, EOF after headers, HTTP 5xx, daemon shutdown mid-stream, response-header timeout | Log to stderr (unless `--quiet`), back off, reconnect. Cursor is preserved (last id advanced by the previous attempt). |
+| **Reset (semantic)** | `sync.reset_required` frame | Emit the NDJSON envelope and reconnect with the new cursor. Backoff resets to 1s (the daemon is healthy; the cursor was just invalidated). |
+
+The CLI surfaces local validation before any HTTP call so a permanently broken request never enters the reconnect loop. Server-side 4xx responses must be detected at the response-status check (before parsing the body) and propagated as a hard error.
 
 ### 7.3 Reference for the Plan 6 TUI
 

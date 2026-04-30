@@ -125,6 +125,11 @@ func unixTransport(path string) *http.Transport {
 	}
 }
 
+// sseHandshakeTimeout caps how long streamingClientFor will wait for the
+// server's response headers. It is wired onto the transport, not the client,
+// so SSE body reads remain unbounded; only a stalled handshake is bounded.
+const sseHandshakeTimeout = 10 * time.Second
+
 // httpClientFor returns an *http.Client whose transport understands unix://
 // addresses. Pair with the URL returned by ensureDaemon. We filter by
 // ProcessAlive and prefer the first record that also passes a /ping probe so
@@ -133,19 +138,32 @@ func unixTransport(path string) *http.Transport {
 //
 //nolint:unused // consumed by upcoming command implementations (Tasks 22-27)
 func httpClientFor(ctx context.Context, baseURL string) (*http.Client, error) {
-	return newDaemonClient(ctx, baseURL, 5*time.Second)
+	return newDaemonClient(ctx, baseURL, daemonClientOpts{timeout: 5 * time.Second})
 }
 
 // streamingClientFor is httpClientFor but with no overall Client.Timeout, so
-// long-lived SSE bodies are not torn down mid-stream. Cancellation must come
-// from the request context. The unix-socket transport is preserved.
+// long-lived SSE bodies are not torn down mid-stream. A transport-level
+// ResponseHeaderTimeout caps the handshake phase so a daemon that accepts a
+// connection but stalls before sending headers cannot hang the consumer
+// indefinitely. Body cancellation comes from the request context.
 func streamingClientFor(ctx context.Context, baseURL string) (*http.Client, error) {
-	return newDaemonClient(ctx, baseURL, 0)
+	return newDaemonClient(ctx, baseURL, daemonClientOpts{
+		responseHeaderTimeout: sseHandshakeTimeout,
+	})
 }
 
-func newDaemonClient(ctx context.Context, baseURL string, timeout time.Duration) (*http.Client, error) {
+type daemonClientOpts struct {
+	timeout               time.Duration
+	responseHeaderTimeout time.Duration
+}
+
+func newDaemonClient(ctx context.Context, baseURL string, opts daemonClientOpts) (*http.Client, error) {
 	if !strings.HasPrefix(baseURL, "http://kata.invalid") {
-		return &http.Client{Timeout: timeout}, nil
+		c := &http.Client{Timeout: opts.timeout}
+		if opts.responseHeaderTimeout > 0 {
+			c.Transport = &http.Transport{ResponseHeaderTimeout: opts.responseHeaderTimeout}
+		}
+		return c, nil
 	}
 	ns, err := daemon.NewNamespace()
 	if err != nil {
@@ -164,7 +182,11 @@ func newDaemonClient(ctx context.Context, baseURL string, timeout time.Duration)
 		if !pingOK(ctx, probe, "http://kata.invalid") {
 			continue
 		}
-		return &http.Client{Transport: unixTransport(path), Timeout: timeout}, nil
+		t := unixTransport(path)
+		if opts.responseHeaderTimeout > 0 {
+			t.ResponseHeaderTimeout = opts.responseHeaderTimeout
+		}
+		return &http.Client{Transport: t, Timeout: opts.timeout}, nil
 	}
 	return nil, errors.New("no unix-socket daemon found")
 }

@@ -90,6 +90,10 @@ func doPollEvents(
 	rawLimit api.OptionalInt,
 	projectID int64,
 ) (*api.PollEventsResponse, error) {
+	if afterID < 0 {
+		return nil, api.NewError(400, "validation",
+			"after_id must be a non-negative integer", "", nil)
+	}
 	limit, err := resolveLimit(rawLimit)
 	if err != nil {
 		return nil, err
@@ -211,6 +215,17 @@ func sseHandler(cfg ServerConfig) http.HandlerFunc {
 					"project_id must be a positive integer", "", nil))
 				return
 			}
+			// Mirror the polling endpoint contract: an unknown positive
+			// project_id is project_not_found, not an idle 200 stream.
+			if _, err := cfg.DB.ProjectByID(r.Context(), n); err != nil {
+				if errors.Is(err, db.ErrNotFound) {
+					renderAPIError(w, api.NewError(404, "project_not_found",
+						"project not found", "", nil))
+					return
+				}
+				renderAPIError(w, api.NewError(500, "internal", err.Error(), "", nil))
+				return
+			}
 			projectID = n
 		}
 
@@ -314,6 +329,22 @@ func runLivePhase(ctx context.Context, deps livePhaseDeps, projectID, lastSent i
 			case "event":
 				if msg.Event == nil {
 					continue
+				}
+				// Defensive ordering: a concurrent purge can commit before
+				// this event's broadcast is processed (broadcaster lock race
+				// between two mutation goroutines). PurgeResetCheck makes the
+				// reset terminal here so the client cannot receive a
+				// post-purge frame, disconnect, and reconnect with
+				// Last-Event-ID past the reset cursor — which would
+				// permanently silence sync.reset_required.
+				resetTo, err := deps.cfg.DB.PurgeResetCheck(ctx, lastSent, projectID)
+				if err != nil {
+					return
+				}
+				if resetTo > 0 {
+					writeResetFrame(deps.w, resetTo)
+					deps.flusher.Flush()
+					return
 				}
 				// Loop until we've drained every row at or below the wakeup's
 				// id. Without this, a single broadcast carrying >sseLiveBatch

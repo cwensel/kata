@@ -192,6 +192,11 @@ type resetEnvelope struct {
 	ResetAfterID  int64 `json:"reset_after_id"`
 }
 
+// errTerminalHTTP wraps a server-validated rejection (HTTP 4xx) so the tail
+// reconnect loop bails out instead of spinning. See spec §7.2 retryable-vs-
+// terminal classification.
+var errTerminalHTTP = errors.New("terminal HTTP status")
+
 func runEventsTail(cmd *cobra.Command, opts eventsTailOptions) error {
 	ctx := cmd.Context()
 	baseURL, err := ensureDaemon(ctx)
@@ -217,6 +222,9 @@ func runEventsTail(cmd *cobra.Command, opts eventsTailOptions) error {
 			return nil
 		}
 		res, sErr := streamOnce(ctx, client, url, cursor, out)
+		if errors.Is(sErr, errTerminalHTTP) {
+			return sErr
+		}
 		if sErr != nil && !flags.Quiet {
 			fmt.Fprintln(os.Stderr, "kata: stream error:", sErr,
 				"(reconnecting in", backoff.Round(time.Second), ")")
@@ -329,6 +337,14 @@ func streamOnce(ctx context.Context, client *http.Client, baseURL string, cursor
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		bs, _ := io.ReadAll(resp.Body)
+		// 4xx responses are terminal: a malformed cursor, missing project,
+		// or method/Accept negotiation failure will not be cured by a
+		// reconnect. Wrap with errTerminalHTTP so the caller bails out.
+		// 5xx responses are transient; let the caller back off and retry.
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return streamResult{Progress: streamProgress{lastID: cursor}},
+				fmt.Errorf("%w: http %d: %s", errTerminalHTTP, resp.StatusCode, string(bs))
+		}
 		return streamResult{Progress: streamProgress{lastID: cursor}},
 			fmt.Errorf("http %d: %s", resp.StatusCode, string(bs))
 	}

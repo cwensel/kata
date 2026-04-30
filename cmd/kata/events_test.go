@@ -191,6 +191,25 @@ func TestEvents_NegativeLastEventIDRejected(t *testing.T) {
 	assert.Contains(t, ce.Message, "non-negative")
 }
 
+// TestEvents_TailFailsFastOn4xx pins the spec §7.2 rule: HTTP 4xx responses
+// are terminal, not retryable. A bad cursor or unknown project must surface
+// to the caller, not spin in the reconnect loop.
+func TestEvents_TailFailsFastOn4xx(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	cmd := newRootCmd()
+	buf := &safeBuffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	ctx, cancel := context.WithTimeout(contextWithBaseURL(context.Background(), env.URL), 5*time.Second)
+	defer cancel()
+	cmd.SetArgs([]string{"events", "--project-id", "99999", "--tail"})
+	cmd.SetContext(ctx)
+	err := cmd.Execute()
+	require.Error(t, err, "tail must surface 404 instead of looping")
+	assert.Contains(t, err.Error(), "404")
+}
+
 func TestEvents_TailFollowsResetRequired(t *testing.T) {
 	resetFlags(t)
 	env := testenv.New(t)

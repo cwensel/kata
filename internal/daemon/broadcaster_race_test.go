@@ -74,6 +74,55 @@ func TestSSE_OutOfOrderBroadcastsEmitInIDOrder(t *testing.T) {
 	assert.Equal(t, strconv.FormatInt(evt2.ID, 10), second.id)
 }
 
+// TestSSE_LivePhaseChecksPurgeResetBeforeReplay pins the cross-cutting fix
+// that surfaces sync.reset_required even when the corresponding "reset"
+// broadcast lost the race to a post-purge "event" broadcast. The handler
+// re-checks PurgeResetCheck on every event wakeup so the client cannot
+// receive a post-purge frame and silently advance past the reset cursor.
+func TestSSE_LivePhaseChecksPurgeResetBeforeReplay(t *testing.T) {
+	env := testenv.New(t)
+	project, err := env.DB.CreateProject(context.Background(), "github.com/test/a", "a")
+	require.NoError(t, err)
+
+	// Create a sentinel event so the SSE handler enters live phase.
+	sentinelIssue, sentinelEvt, err := env.DB.CreateIssue(context.Background(), db.CreateIssueParams{
+		ProjectID: project.ID, Title: "sentinel", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	hwm, err := env.DB.MaxEventID(context.Background())
+	require.NoError(t, err)
+	resp := openSSE(t, env, "after_id="+strconv.FormatInt(hwm-1, 10), nil)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+
+	framer := newSSEFramer(resp.Body)
+	first, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok)
+	require.Equal(t, strconv.FormatInt(sentinelEvt.ID, 10), first.id)
+
+	// Now create a second issue and purge the sentinel directly via DB so
+	// the handler-side broadcasts do NOT fire. Then broadcast ONLY an
+	// "event" message (simulating the broadcaster reordering: reset lost
+	// the race). The handler must still emit a reset because
+	// PurgeResetCheck sees the purge committed.
+	_, evt2, err := env.DB.CreateIssue(context.Background(), db.CreateIssueParams{
+		ProjectID: project.ID, Title: "post-purge", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = env.DB.PurgeIssue(context.Background(), sentinelIssue.ID, "tester", nil)
+	require.NoError(t, err)
+
+	env.Broadcaster.Broadcast(daemon.StreamMsg{
+		Kind: "event", Event: &evt2, ProjectID: project.ID,
+	})
+
+	frame, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok)
+	assert.Equal(t, "sync.reset_required", frame.event,
+		"live phase must surface the reset before replaying post-purge events")
+}
+
 // TestBroadcaster_ConcurrentSubscribeBroadcastUnsub is a -race fuzz of
 // concurrent Subscribe/Broadcast/Unsub. It asserts the broadcaster doesn't
 // deadlock, panic, or leak goroutines.

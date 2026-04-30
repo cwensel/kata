@@ -161,6 +161,25 @@ func TestPollEvents_LimitNonPositiveIs400(t *testing.T) {
 	}
 }
 
+func TestPollEvents_NegativeAfterIDIs400(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	pidStr := strconv.FormatInt(pid, 10)
+	urls := []string{
+		env.URL + "/api/v1/events?after_id=-1",
+		env.URL + "/api/v1/projects/" + pidStr + "/events?after_id=-1",
+	}
+	for _, u := range urls {
+		resp, err := env.HTTP.Get(u) //nolint:gosec // G107: test server URL, not user-controlled
+		require.NoError(t, err)
+		bs, _ := io.ReadAll(resp.Body)
+		body := string(bs)
+		_ = resp.Body.Close()
+		assert.Equal(t, 400, resp.StatusCode, "url %s should be 400", u)
+		assert.Contains(t, body, `"code":"validation"`)
+	}
+}
+
 func TestPollEvents_LimitNonNumericIs400(t *testing.T) {
 	env := testenv.New(t)
 	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=0&limit=foo")
@@ -588,6 +607,20 @@ func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {
 	require.Len(t, frames, 2)
 	assert.Equal(t, "issue.unlinked", frames[0].event)
 	assert.Equal(t, "issue.linked", frames[1].event)
+}
+
+func TestSSE_UnknownProjectIDReturns404(t *testing.T) {
+	env := testenv.New(t)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		env.URL+"/api/v1/events/stream?project_id=99999", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	bs, _ := io.ReadAll(resp.Body)
+	body := string(bs)
+	_ = resp.Body.Close()
+	assert.Equal(t, 404, resp.StatusCode)
+	assert.Contains(t, body, `"code":"project_not_found"`)
 }
 
 func TestSSE_LiveHeartbeatKeepsConnectionAlive(t *testing.T) {
