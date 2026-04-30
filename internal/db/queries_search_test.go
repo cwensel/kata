@@ -102,6 +102,56 @@ func TestSearchFTS_RanksByBM25(t *testing.T) {
 	// The doubly-mentioned issue should outrank the singly-mentioned one.
 	assert.Equal(t, int64(2), got[0].Issue.Number, "more matches → higher rank")
 	assert.Equal(t, int64(1), got[1].Issue.Number)
+	// Issue 2 has "login" in both title and body; issue 1 has it only in title.
+	assert.Equal(t, []string{"title", "body"}, got[0].MatchedIn,
+		"issue 2 has login in title AND body")
+	assert.Equal(t, []string{"title"}, got[1].MatchedIn,
+		"issue 1 has login only in title")
+}
+
+func TestSearchFTS_MatchedIn_Comments(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	// Issue body does NOT contain the search term; only the comment does.
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "unrelated", Body: "nothing here", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: issue.ID, Author: "tester", Body: "watermelon found",
+	})
+	require.NoError(t, err)
+
+	got, err := d.SearchFTS(ctx, p.ID, "watermelon", 20, false)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, []string{"comments"}, got[0].MatchedIn,
+		"term appears only in a comment")
+}
+
+func TestSearchFTS_MatchedIn_AllThreeColumns(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "watermelon title", Body: "watermelon body", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: issue.ID, Author: "tester", Body: "watermelon comment",
+	})
+	require.NoError(t, err)
+
+	got, err := d.SearchFTS(ctx, p.ID, "watermelon", 20, false)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, []string{"title", "body", "comments"}, got[0].MatchedIn,
+		"matched_in must list columns in title/body/comments order")
 }
 
 func TestSearchFTS_FiltersByProject(t *testing.T) {
