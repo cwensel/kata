@@ -193,9 +193,10 @@ func TestCreateLink_ParentReplaceUnlinkEventPointsToOldParent(t *testing.T) {
 
 // TestCreateLink_ParentReplaceSelfLinkLeavesNoMutation verifies that a
 // self-link rejected on the parent --replace path returns 400 BEFORE deleting
-// the existing parent. If the existing parent had been deleted as a side
-// effect of a self-link attempt, a subsequent valid replace would no-op (no
-// event), because there'd be nothing to replace.
+// the existing parent. With the bug, DeleteLinkAndEvent would have committed
+// the unlink (row + event) before CreateLinkAndEvent surfaced ErrSelfLink. We
+// assert directly against the events and links tables: no issue.unlinked
+// event exists, and the original parent link is still attached.
 func TestCreateLink_ParentReplaceSelfLinkLeavesNoMutation(t *testing.T) {
 	env := testenv.New(t)
 	pid, child, p1 := setupTwoIssues(t, env)
@@ -215,29 +216,21 @@ func TestCreateLink_ParentReplaceSelfLinkLeavesNoMutation(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, 400, resp.StatusCode, "self-link must be rejected before mutation")
 
-	// If the original parent had been deleted by the failed self-link
-	// attempt, this second --replace would no-op (no event, changed=false)
-	// because there'd be nothing to replace. Observing event != nil and
-	// changed=true confirms p1 was still attached.
-	p2 := createIssueViaHTTP(t, env, pid, "p2")
-	body, _ = json.Marshal(map[string]any{
-		"actor":     "tester",
-		"type":      "parent",
-		"to_number": p2,
-		"replace":   true,
-	})
-	resp2, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
-			"/issues/"+strconv.FormatInt(child, 10)+"/links",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = resp2.Body.Close() }()
-	require.Equal(t, 200, resp2.StatusCode)
-	var out linkResp
-	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&out))
-	require.NotNil(t, out.Event, "if original parent had been deleted, replace would no-op")
-	assert.Equal(t, "issue.linked", out.Event.Type)
-	assert.True(t, out.Changed)
+	// No issue.unlinked event was inserted. The bug's signature was a
+	// committed unlink event followed by a 400; the fix's signature is
+	// zero unlink events.
+	var unlinkedCount int
+	require.NoError(t, env.DB.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM events WHERE project_id = ? AND type = 'issue.unlinked'`,
+		pid).Scan(&unlinkedCount))
+	assert.Equal(t, 0, unlinkedCount, "no issue.unlinked event should exist after rejected self-link")
+
+	// And the original parent link row itself is still attached.
+	var parentLinks int
+	require.NoError(t, env.DB.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM links WHERE project_id = ? AND type = 'parent'`,
+		pid).Scan(&parentLinks))
+	assert.Equal(t, 1, parentLinks, "original parent link must still exist")
 }
 
 func TestCreateLink_BlankActorIs400(t *testing.T) {
