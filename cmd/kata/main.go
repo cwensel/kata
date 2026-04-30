@@ -80,14 +80,21 @@ func main() {
 			os.Exit(cli.ExitCode)
 		}
 		fmt.Fprintln(os.Stderr, "kata:", err)
-		if !runEEntered {
-			// PersistentPreRunE never fired, so cobra failed during argument or
-			// flag parsing (unknown command, missing positional arg, bad flag
-			// value). Exit code 2 per spec §4.7.
-			os.Exit(ExitUsage)
-		}
-		// RunE ran and returned a plain error — operational failure (daemon
-		// startup, HTTP transport, filesystem). Exit code 1.
-		os.Exit(ExitInternal)
+		os.Exit(exitCodeFor(err, runEEntered))
 	}
+}
+
+// exitCodeFor maps a non-cliError ExecuteContext error to a CLI exit code
+// based on whether RunE was reached. PersistentPreRunE flips runEEntered to
+// true before any subcommand's RunE runs, so a false value means cobra
+// rejected the invocation during arg/flag parsing.
+func exitCodeFor(_ error, runEReached bool) int {
+	if !runEReached {
+		// Cobra failed before PersistentPreRunE — unknown command, missing
+		// positional arg (cobra.ExactArgs / NoArgs), or bad flag value.
+		return ExitUsage
+	}
+	// RunE entered and returned a plain error — operational failure (daemon
+	// startup, HTTP transport, filesystem).
+	return ExitInternal
 }
