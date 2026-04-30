@@ -148,3 +148,48 @@ func TestCreateIssue_NoInitialStateEmitsEmptyPayload(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "{}", evt.Payload)
 }
+
+func TestCreateIssue_WithAllInitialState(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
+
+	owner := "alice"
+	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "child", Author: "tester",
+		Labels: []string{"bug", "priority:high"},
+		Links:  []db.InitialLink{{Type: "parent", ToNumber: parent.Number}},
+		Owner:  &owner,
+	})
+	require.NoError(t, err)
+
+	// Issue carries the owner.
+	require.NotNil(t, issue.Owner)
+	assert.Equal(t, "alice", *issue.Owner)
+
+	// DB has 2 labels + 1 link.
+	labels, err := d.LabelsByIssue(ctx, issue.ID)
+	require.NoError(t, err)
+	assert.Len(t, labels, 2)
+	links, err := d.LinksByIssue(ctx, issue.ID)
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+
+	// Payload union: labels, links, and owner all present.
+	var payload struct {
+		Labels []string `json:"labels"`
+		Links  []struct {
+			Type     string `json:"type"`
+			ToNumber int64  `json:"to_number"`
+		} `json:"links"`
+		Owner string `json:"owner"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(evt.Payload), &payload))
+	assert.Equal(t, []string{"bug", "priority:high"}, payload.Labels)
+	require.Len(t, payload.Links, 1)
+	assert.Equal(t, "parent", payload.Links[0].Type)
+	assert.Equal(t, parent.Number, payload.Links[0].ToNumber)
+	assert.Equal(t, "alice", payload.Owner)
+}

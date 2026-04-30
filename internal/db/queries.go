@@ -193,9 +193,11 @@ var ErrInitialLinkInvalidType = errors.New("invalid initial link type")
 // and appends a single issue.created event whose payload describes the initial
 // state. All steps run in one TX.
 func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event, error) {
-	// Validate link types client-side so we don't waste a roundtrip on the
-	// schema CHECK; the schema enforces the same set, but our typed error is
-	// cleaner for the handler to map.
+	// Link types are validated client-side (small fixed set) so a bad type
+	// returns immediately without opening a transaction. Label charset is
+	// validated server-side via classifyLabelInsertError because mirroring
+	// the schema's GLOB pattern in Go would risk drift; a bad label rolls
+	// back the whole TX, which is acceptable for an all-or-nothing create.
 	for _, l := range p.Links {
 		switch l.Type {
 		case "parent", "blocks", "related":
@@ -267,6 +269,8 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		if err != nil {
 			return Issue{}, Event{}, fmt.Errorf("resolve initial link target: %w", err)
 		}
+		// Canonical ordering is a storage concern: the payload still reports
+		// the caller's to_number unchanged, so the wire shape isn't affected.
 		fromID, toID := issueID, toIssueID
 		if l.Type == "related" && fromID > toID {
 			fromID, toID = toID, fromID
@@ -323,6 +327,9 @@ func buildCreatedPayload(labels []string, links []InitialLink, owner *string) st
 		o.Labels = labels
 	}
 	if len(links) > 0 {
+		// Layout-coupled with InitialLink: identical fields and order. If
+		// InitialLink ever gains a field that linkOut shouldn't expose, replace
+		// this conversion with explicit field assignment.
 		o.Links = make([]linkOut, 0, len(links))
 		for _, l := range links {
 			o.Links = append(o.Links, linkOut(l))
@@ -332,7 +339,7 @@ func buildCreatedPayload(labels []string, links []InitialLink, owner *string) st
 		o.Owner = *owner
 	}
 	bs, err := json.Marshal(o)
-	if err != nil || string(bs) == "null" {
+	if err != nil {
 		return "{}"
 	}
 	return string(bs)
