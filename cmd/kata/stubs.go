@@ -2,10 +2,6 @@ package main
 
 import "github.com/spf13/cobra"
 
-func newCreateCmd() *cobra.Command {
-	return &cobra.Command{Use: "create <title>", Short: "create issue"}
-}
-
 func newShowCmd() *cobra.Command {
 	return &cobra.Command{Use: "show <number>", Short: "show issue"}
 }

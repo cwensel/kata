@@ -14,9 +14,16 @@ import (
 	"github.com/wesm/kata/internal/daemon"
 )
 
+// baseURLKey is the context key used to inject a daemon base URL in tests,
+// bypassing the real discovery/auto-start flow.
+type baseURLKey struct{}
+
 // ensureDaemon discovers a live daemon's HTTP base URL, auto-starting one if
 // none is found.
 func ensureDaemon(ctx context.Context) (string, error) {
+	if v, ok := ctx.Value(baseURLKey{}).(string); ok && v != "" {
+		return v, nil
+	}
 	ns, err := daemon.NewNamespace()
 	if err != nil {
 		return "", err

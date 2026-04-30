@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/daemon"
 )
 
@@ -47,4 +51,31 @@ func writeRuntimeFor(home, addr string) error {
 	}
 	_, err = daemon.WriteRuntimeFile(ns.DataDir, rec)
 	return err
+}
+
+// contextWithBaseURL injects a daemon base URL into the context so CLI
+// commands bypass real daemon discovery during tests.
+func contextWithBaseURL(ctx context.Context, url string) context.Context {
+	return context.WithValue(ctx, baseURLKey{}, url)
+}
+
+// initBoundWorkspace creates a temporary git workspace, adds a git remote, and
+// registers it with the test daemon via POST /api/v1/projects. Returns the
+// workspace directory path.
+func initBoundWorkspace(t *testing.T, baseURL, origin string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", "--quiet")
+	cmd.Dir = dir
+	require.NoError(t, cmd.Run())
+	cmd = exec.Command("git", "remote", "add", "origin", origin) //nolint:gosec // G204: git with test-controlled origin
+	cmd.Dir = dir
+	require.NoError(t, cmd.Run())
+
+	body := []byte(`{"start_path":"` + dir + `"}`)
+	resp, err := http.Post(baseURL+"/api/v1/projects", "application/json", bytes.NewReader(body)) //nolint:gosec,noctx // test-only
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	return dir
 }
