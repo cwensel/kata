@@ -1,0 +1,122 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/db"
+)
+
+// registerDestructiveHandlers installs /actions/delete, /actions/restore, and
+// /actions/purge. Delete and purge gate on the X-Kata-Confirm header per spec
+// §4.4 / §3.5. Restore is reversible and idempotent so it ships unguarded.
+func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "deleteIssue",
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/delete",
+	}, func(ctx context.Context, in *api.DestructiveActionRequest) (*api.MutationResponse, error) {
+		if err := validateActor(in.Body.Actor); err != nil {
+			return nil, err
+		}
+		if err := validateConfirm(in.Confirm, "DELETE", in.Number); err != nil {
+			return nil, err
+		}
+		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		updated, evt, changed, err := cfg.DB.SoftDeleteIssue(ctx, issue.ID, in.Body.Actor)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.MutationResponse{}
+		out.Body.Issue = updated
+		out.Body.Event = evt
+		out.Body.Changed = changed
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "restoreIssue",
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/restore",
+	}, func(ctx context.Context, in *api.RestoreRequest) (*api.MutationResponse, error) {
+		if err := validateActor(in.Body.Actor); err != nil {
+			return nil, err
+		}
+		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		updated, evt, changed, err := cfg.DB.RestoreIssue(ctx, issue.ID, in.Body.Actor)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.MutationResponse{}
+		out.Body.Issue = updated
+		out.Body.Event = evt
+		out.Body.Changed = changed
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "purgeIssue",
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/purge",
+	}, func(ctx context.Context, in *api.DestructiveActionRequest) (*api.PurgeResponse, error) {
+		if err := validateActor(in.Body.Actor); err != nil {
+			return nil, err
+		}
+		if err := validateConfirm(in.Confirm, "PURGE", in.Number); err != nil {
+			return nil, err
+		}
+		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		var reasonPtr *string
+		if in.Body.Reason != "" {
+			r := in.Body.Reason
+			reasonPtr = &r
+		}
+		pl, err := cfg.DB.PurgeIssue(ctx, issue.ID, in.Body.Actor, reasonPtr)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.PurgeResponse{}
+		out.Body.PurgeLog = pl
+		return out, nil
+	})
+}
+
+// validateConfirm checks an X-Kata-Confirm header against the verb-specific
+// expected value ("DELETE #N" or "PURGE #N"). Missing header → confirm_required;
+// wrong value → confirm_mismatch.
+func validateConfirm(got, verb string, number int64) error {
+	expected := fmt.Sprintf("%s #%d", verb, number)
+	if got == "" {
+		return api.NewError(412, "confirm_required",
+			"this action requires X-Kata-Confirm",
+			"set the header to "+expected, nil)
+	}
+	if got != expected {
+		return api.NewError(412, "confirm_mismatch",
+			"X-Kata-Confirm header value does not match",
+			"expected "+expected, nil)
+	}
+	return nil
+}

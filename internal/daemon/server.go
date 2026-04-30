@@ -143,6 +143,7 @@ func registerRoutes(humaAPI huma.API, cfg ServerConfig) {
 	registerOwnership(humaAPI, cfg)
 	registerReady(humaAPI, cfg)
 	registerSearch(humaAPI, cfg)
+	registerDestructive(humaAPI, cfg)
 }
 
 // registerHealth registers /api/v1/ping and /api/v1/health.
@@ -193,6 +194,11 @@ func registerReady(humaAPI huma.API, cfg ServerConfig) {
 // registerSearch registers GET /projects/{id}/search.
 func registerSearch(humaAPI huma.API, cfg ServerConfig) {
 	registerSearchHandlers(humaAPI, cfg)
+}
+
+// registerDestructive registers /actions/delete, /actions/restore, /actions/purge.
+func registerDestructive(humaAPI huma.API, cfg ServerConfig) {
+	registerDestructiveHandlers(humaAPI, cfg)
 }
 
 // validateActor returns a 400 validation error when actor is empty after

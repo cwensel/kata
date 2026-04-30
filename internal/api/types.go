@@ -316,7 +316,7 @@ type LabelsListResponse struct {
 type DestructiveActionRequest struct {
 	ProjectID int64  `path:"project_id" required:"true"`
 	Number    int64  `path:"number" required:"true"`
-	Confirm   string `header:"X-Kata-Confirm,omitempty"`
+	Confirm   string `header:"X-Kata-Confirm"`
 	Body      struct {
 		Actor  string `json:"actor" required:"true"`
 		Reason string `json:"reason,omitempty"` // purge only; lands in purge_log.reason
