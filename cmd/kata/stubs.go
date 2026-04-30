@@ -2,14 +2,6 @@ package main
 
 import "github.com/spf13/cobra"
 
-func newEditCmd() *cobra.Command {
-	return &cobra.Command{Use: "edit <number>", Short: "edit issue"}
-}
-
-func newCommentCmd() *cobra.Command {
-	return &cobra.Command{Use: "comment <number>", Short: "comment on issue"}
-}
-
 func newCloseCmd() *cobra.Command {
 	return &cobra.Command{Use: "close <number>", Short: "close issue"}
 }
