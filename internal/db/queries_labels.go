@@ -18,18 +18,15 @@ var ErrLabelInvalid = errors.New("invalid label")
 
 // AddLabel attaches a label to an issue.
 func (d *DB) AddLabel(ctx context.Context, issueID int64, label, author string) (IssueLabel, error) {
-	res, err := d.ExecContext(ctx,
+	if _, err := d.ExecContext(ctx,
 		`INSERT INTO issue_labels(issue_id, label, author) VALUES(?, ?, ?)`,
-		issueID, label, author)
-	if err != nil {
+		issueID, label, author); err != nil {
 		return IssueLabel{}, classifyLabelInsertError(err)
 	}
-	_ = res
 	row := d.QueryRowContext(ctx,
-		`SELECT issue_id, label, author, created_at FROM issue_labels
-		 WHERE issue_id = ? AND label = ?`, issueID, label)
-	var out IssueLabel
-	if err := row.Scan(&out.IssueID, &out.Label, &out.Author, &out.CreatedAt); err != nil {
+		labelSelect+` WHERE issue_id = ? AND label = ?`, issueID, label)
+	out, err := scanLabel(row)
+	if err != nil {
 		return IssueLabel{}, fmt.Errorf("re-fetch label: %w", err)
 	}
 	return out, nil
@@ -84,16 +81,15 @@ func (d *DB) HasLabel(ctx context.Context, issueID int64, label string) (bool, e
 // LabelsByIssue returns every label attached to issueID, ordered alphabetically.
 func (d *DB) LabelsByIssue(ctx context.Context, issueID int64) ([]IssueLabel, error) {
 	rows, err := d.QueryContext(ctx,
-		`SELECT issue_id, label, author, created_at FROM issue_labels
-		 WHERE issue_id = ? ORDER BY label ASC`, issueID)
+		labelSelect+` WHERE issue_id = ? ORDER BY label ASC`, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("list labels: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var out []IssueLabel
 	for rows.Next() {
-		var l IssueLabel
-		if err := rows.Scan(&l.IssueID, &l.Label, &l.Author, &l.CreatedAt); err != nil {
+		l, err := scanLabel(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, l)
@@ -124,4 +120,18 @@ func (d *DB) LabelCounts(ctx context.Context, projectID int64) ([]LabelCount, er
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+const labelSelect = `SELECT issue_id, label, author, created_at FROM issue_labels`
+
+func scanLabel(r rowScanner) (IssueLabel, error) {
+	var l IssueLabel
+	err := r.Scan(&l.IssueID, &l.Label, &l.Author, &l.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return IssueLabel{}, ErrNotFound
+	}
+	if err != nil {
+		return IssueLabel{}, fmt.Errorf("scan label: %w", err)
+	}
+	return l, nil
 }
