@@ -225,3 +225,119 @@ func drain(t *testing.T, resp *http.Response) string {
 	require.NoError(t, err)
 	return string(bs)
 }
+
+// smokeResp captures status + drained body so callers can read the body
+// multiple times without stream-position concerns.
+type smokeResp struct {
+	status int
+	body   []byte
+}
+
+// postWithHeaderHTTP is postJSON + extra request headers, draining the body
+// up front so callers can inspect both status and body. Used by the Plan 3
+// lifecycle smoke for Idempotency-Key and X-Kata-Confirm.
+func postWithHeaderHTTP(t *testing.T, client *http.Client, url string,
+	headers map[string]string, body any) smokeResp {
+	t.Helper()
+	bs, err := json.Marshal(body)
+	require.NoError(t, err)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(bs))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req) //nolint:gosec // G704: test-only loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	out, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return smokeResp{status: resp.StatusCode, body: out}
+}
+
+// getStatusBodyHTTP runs a GET and returns the response + drained body
+// without asserting a 2xx status, so callers can verify 404s.
+func getStatusBodyHTTP(t *testing.T, client *http.Client, url string) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req) //nolint:gosec // G704: test-only loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp, bs
+}
+
+// TestSmoke_Plan3Lifecycle exercises the search → idempotent create →
+// look-alike block → force-new bypass → soft-delete → restore → purge end
+// to end against a real testenv daemon. A single failure here surfaces any
+// regression that crosses Plan 3's seam between DB, daemon, and CLI layers.
+func TestSmoke_Plan3Lifecycle(t *testing.T) {
+	env := testenv.New(t)
+	dir := initRepo(t, "https://github.com/wesm/system.git")
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects",
+		map[string]any{"start_path": dir}))
+	pid := resolvePID(t, env.HTTP, env.URL, dir)
+	pidStr := strconv.FormatInt(pid, 10)
+
+	// 1. create with idempotency key.
+	first := postWithHeaderHTTP(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
+		map[string]string{"Idempotency-Key": "smoke-K1"},
+		map[string]any{"actor": "agent", "title": "fix login crash on Safari", "body": "stack trace"})
+	require.Equalf(t, 200, first.status, "first create: %s", string(first.body))
+	// Reused is `omitempty`; absent on not-reused responses.
+	assert.NotContains(t, string(first.body), `"reused"`)
+
+	// 2. repeat with the same key — reuse, same fingerprint.
+	second := postWithHeaderHTTP(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
+		map[string]string{"Idempotency-Key": "smoke-K1"},
+		map[string]any{"actor": "agent", "title": "fix login crash on Safari", "body": "stack trace"})
+	require.Equal(t, 200, second.status, string(second.body))
+	assert.Contains(t, string(second.body), `"reused":true`)
+	assert.Contains(t, string(second.body), `"original_event"`)
+
+	// 3. search picks up the issue.
+	bs := getBody(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/search?q=login")
+	assert.Contains(t, bs, `"title":"fix login crash on Safari"`)
+
+	// 4. look-alike soft-block on a near-identical title.
+	resp := postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
+		map[string]any{"actor": "agent", "title": "fix login crash Safari",
+			"body": "stack trace"})
+	body := drain(t, resp)
+	require.Equal(t, 409, resp.StatusCode, body)
+	assert.Contains(t, body, `"duplicate_candidates"`)
+
+	// 5. force_new bypasses.
+	resp = postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
+		map[string]any{"actor": "agent", "title": "fix login crash Safari",
+			"body": "stack trace", "force_new": true})
+	body = drain(t, resp)
+	require.Equal(t, 200, resp.StatusCode, body)
+
+	// 6. soft-delete #1 with confirm header.
+	delResp := postWithHeaderHTTP(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/1/actions/delete",
+		map[string]string{"X-Kata-Confirm": "DELETE #1"},
+		map[string]any{"actor": "agent"})
+	require.Equal(t, 200, delResp.status, string(delResp.body))
+	assert.Contains(t, string(delResp.body), `"issue.soft_deleted"`)
+
+	// 7. show without include_deleted now 404s.
+	showResp, _ := getStatusBodyHTTP(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/1")
+	assert.Equal(t, 404, showResp.StatusCode)
+
+	// 8. restore brings it back.
+	resp = postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/1/actions/restore",
+		map[string]any{"actor": "agent"})
+	body = drain(t, resp)
+	require.Equal(t, 200, resp.StatusCode, body)
+
+	// 9. purge #2 (irreversible). Verify purge_log row in the response.
+	purgeResp := postWithHeaderHTTP(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2/actions/purge",
+		map[string]string{"X-Kata-Confirm": "PURGE #2"},
+		map[string]any{"actor": "agent"})
+	require.Equal(t, 200, purgeResp.status, string(purgeResp.body))
+	assert.Contains(t, string(purgeResp.body), `"purge_log"`)
+	assert.Contains(t, string(purgeResp.body), `"purge_reset_after_event_id"`)
+}

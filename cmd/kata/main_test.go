@@ -100,6 +100,21 @@ func TestRoot_Plan2VerbsAdvertised(t *testing.T) {
 	}
 }
 
+// TestRoot_Plan3VerbsAdvertised mirrors the Plan 2 advertise check for the
+// search-and-destroy verbs Plan 3 introduces. A future regression that
+// drops a `subs` line will surface here, before it bites a user at the help.
+func TestRoot_Plan3VerbsAdvertised(t *testing.T) {
+	cmd := newRootCmd()
+	registered := make(map[string]struct{}, len(cmd.Commands()))
+	for _, sub := range cmd.Commands() {
+		registered[sub.Name()] = struct{}{}
+	}
+	for _, verb := range []string{"delete", "restore", "purge", "search"} {
+		_, ok := registered[verb]
+		assert.Truef(t, ok, "root must register subcommand %q", verb)
+	}
+}
+
 // resetRunEEntered restores the package-level sentinel via t.Cleanup so tests
 // don't leak state across the shuffled order.
 func resetRunEEntered(t *testing.T) {
