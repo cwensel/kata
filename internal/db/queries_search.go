@@ -27,10 +27,21 @@ func (d *DB) SearchFTS(ctx context.Context, projectID int64, q string, limit int
 		limit = 200
 	}
 
-	// Wrap the user query as a single FTS5 phrase. Embedded double quotes are
-	// doubled per FTS5 quoting rules so the whole query is opaque to FTS's
-	// special characters (`:`, `*`, parens, `OR`/`AND`/`NOT` as bare words).
-	phrase := `"` + strings.ReplaceAll(q, `"`, `""`) + `"`
+	// Split the user query on whitespace, quote each whitespace-delimited
+	// segment as an FTS5 phrase, and join with spaces — FTS5 treats
+	// space-separated phrases as implicit AND. This gives multi-term AND
+	// search ("login Safari" matches "fix login crash on Safari") while
+	// keeping every segment opaque to FTS5's special characters (`:`, `*`,
+	// parens, `OR`/`AND`/`NOT` as bare words). Embedded double quotes are
+	// doubled per FTS5 quoting rules.
+	var quoted []string
+	for _, w := range strings.Fields(q) {
+		quoted = append(quoted, `"`+strings.ReplaceAll(w, `"`, `""`)+`"`)
+	}
+	if len(quoted) == 0 {
+		return nil, nil
+	}
+	phrase := strings.Join(quoted, " ")
 
 	deletedFilter := "AND i.deleted_at IS NULL"
 	if includeDeleted {

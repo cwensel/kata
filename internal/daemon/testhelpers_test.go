@@ -67,3 +67,32 @@ func patchJSON(t *testing.T, ts *httptest.Server, path string, body any) (*http.
 	bs, _ := io.ReadAll(resp.Body)
 	return resp, bs
 }
+
+// getBody runs a GET against the test server and asserts a 2xx status. Returns
+// the body as a string for easy substring assertions.
+func getBody(t *testing.T, ts *httptest.Server, path string) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+path, nil)
+	require.NoError(t, err)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704: test request to httptest server URL
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(bs))
+	return string(bs)
+}
+
+// getStatusBody is like getBody but returns the response so callers can assert
+// on non-2xx status codes.
+func getStatusBody(t *testing.T, ts *httptest.Server, path string) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+path, nil)
+	require.NoError(t, err)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704: test request to httptest server URL
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp, bs
+}

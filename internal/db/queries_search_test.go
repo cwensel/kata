@@ -248,6 +248,34 @@ func TestSearchFTS_LimitCappedAt200(t *testing.T) {
 	assert.Len(t, got, 200, "limit must be capped at 200")
 }
 
+func TestSearchFTS_MultiTermImplicitAND(t *testing.T) {
+	// Multi-term queries split on whitespace and AND the terms. "login Safari"
+	// must match an issue that contains both terms even when they aren't
+	// adjacent — the previous single-phrase wrap missed this.
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "fix login crash on Safari", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "login bug", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "Safari preferences", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.SearchFTS(ctx, p.ID, "login Safari", 20, false)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "only the issue containing both terms must match")
+	assert.Equal(t, "fix login crash on Safari", got[0].Issue.Title)
+}
+
 func TestSearchFTS_QueryEscaping(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
