@@ -72,3 +72,17 @@ type Link struct {
 	Author      string    `json:"author"`
 	CreatedAt   time.Time `json:"created_at"`
 }
+
+// IssueLabel mirrors a row in issue_labels.
+type IssueLabel struct {
+	IssueID   int64     `json:"issue_id"`
+	Label     string    `json:"label"`
+	Author    string    `json:"author"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// LabelCount is the per-label aggregate returned by LabelCounts.
+type LabelCount struct {
+	Label string `json:"label"`
+	Count int64  `json:"count"`
+}
