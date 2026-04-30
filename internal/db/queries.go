@@ -567,6 +567,73 @@ type eventInsert struct {
 	Payload         string
 }
 
+// UpdateOwner sets issues.owner to the new value and emits the matching
+// assigned/unassigned event. newOwner == nil means unassign. No-op when the
+// new value matches the current value (returns nil event, changed=false).
+func (d *DB) UpdateOwner(ctx context.Context, issueID int64, newOwner *string, actor string) (Issue, *Event, bool, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	// No-op: same owner.
+	if ownerEqual(issue.Owner, newOwner) {
+		return issue, nil, false, tx.Commit()
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE issues
+		 SET owner      = ?,
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		 WHERE id = ?`, newOwner, issueID); err != nil {
+		return Issue{}, nil, false, fmt.Errorf("update owner: %w", err)
+	}
+
+	eventType := "issue.unassigned"
+	payload := "{}"
+	if newOwner != nil {
+		eventType = "issue.assigned"
+		payload = fmt.Sprintf(`{"owner":%q}`, *newOwner)
+	}
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       issue.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &issue.ID,
+		IssueNumber:     &issue.Number,
+		Type:            eventType,
+		Actor:           actor,
+		Payload:         payload,
+	})
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Issue{}, nil, false, err
+	}
+	updated, err := d.IssueByID(ctx, issueID)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	return updated, &evt, true, nil
+}
+
+// ownerEqual returns true when two *string owners reference the same value
+// (both nil = equal; nil vs non-nil = different; otherwise compare strings).
+func ownerEqual(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
 func insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Event, error) {
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO events(project_id, project_identity, issue_id, issue_number, related_issue_id, type, actor, payload)
