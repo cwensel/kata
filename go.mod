@@ -7,6 +7,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.37.3
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/text v0.36.0
 	modernc.org/sqlite v1.49.1
 )
 
