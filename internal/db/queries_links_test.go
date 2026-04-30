@@ -3,7 +3,6 @@ package db_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -102,9 +101,8 @@ func TestCreateLink_CrossProjectIsErrCrossProject(t *testing.T) {
 		ProjectID: p1.ID, FromIssueID: a.ID, ToIssueID: b.ID, Type: "blocks", Author: "tester",
 	})
 	require.Error(t, err)
-	assert.True(t, strings.Contains(err.Error(), "cross-project") ||
-		errors.Is(err, db.ErrCrossProjectLink),
-		"expected cross-project error, got %v", err)
+	assert.True(t, errors.Is(err, db.ErrCrossProjectLink),
+		"expected ErrCrossProjectLink, got %v", err)
 }
 
 func TestCreateLink_SelfLinkIsError(t *testing.T) {
@@ -191,8 +189,8 @@ func TestDeleteLinkByID_RemovesRow(t *testing.T) {
 	_, err = d.LinkByID(ctx, link.ID)
 	assert.True(t, errors.Is(err, db.ErrNotFound))
 
-	// Idempotent — deleting an absent row is also ErrNotFound (caller decides
-	// whether to surface as no-op or 404).
+	// Re-deleting returns ErrNotFound (caller decides whether to surface as
+	// no-op or 404).
 	err = d.DeleteLinkByID(ctx, link.ID)
 	assert.True(t, errors.Is(err, db.ErrNotFound))
 }

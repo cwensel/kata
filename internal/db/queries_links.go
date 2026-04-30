@@ -9,11 +9,11 @@ import (
 )
 
 // ErrLinkExists is returned when a (from, to, type) triple already has a row.
-// Surface as 200 with event:null, changed:false in the handler.
+// Caller treats this as a no-op success on duplicate links.
 var ErrLinkExists = errors.New("link already exists")
 
 // ErrParentAlreadySet is returned when a child issue already has a parent and
-// CreateLink is called with type=parent. The handler maps this to 409.
+// CreateLink is called with type=parent.
 var ErrParentAlreadySet = errors.New("parent already set")
 
 // ErrSelfLink is returned when from_issue_id == to_issue_id.
