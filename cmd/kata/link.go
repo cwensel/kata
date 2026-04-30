@@ -269,6 +269,10 @@ type linkRow struct {
 // reading the issue's links via GET /issues/{from}. Returns 404 link_not_found
 // when no link matches. The returned linkRow carries enough context for the
 // post-DELETE print line.
+//
+// For type=related the daemon canonicalizes storage to (min,max), so the
+// matcher accepts either endpoint order — `kata link 5 related 3` and
+// `kata unlink 5 related 3` must agree even though the stored row is (3,5).
 func lookupLink(ctx context.Context, baseURL string, pid, fromNumber int64, linkType string, toNumber *int64) (linkRow, error) {
 	client, err := httpClientFor(ctx, baseURL)
 	if err != nil {
@@ -292,15 +296,35 @@ func lookupLink(ctx context.Context, baseURL string, pid, fromNumber int64, link
 		if l.Type != linkType {
 			continue
 		}
-		if l.FromNumber != fromNumber {
-			continue
-		}
-		if toNumber != nil && l.ToNumber != *toNumber {
+		if !linkEndpointsMatch(l, linkType, fromNumber, toNumber) {
 			continue
 		}
 		return l, nil
 	}
 	return linkRow{}, &cliError{Message: "link not found", Code: "link_not_found", ExitCode: ExitNotFound}
+}
+
+// linkEndpointsMatch reports whether l matches the (from, to) request. For
+// directional types (parent, blocks) the order is fixed: l.FromNumber == from
+// and (if specified) l.ToNumber == to. For type=related the link is undirected
+// so either endpoint order is acceptable.
+func linkEndpointsMatch(l linkRow, linkType string, fromNumber int64, toNumber *int64) bool {
+	if linkType == "related" {
+		if l.FromNumber == fromNumber && (toNumber == nil || l.ToNumber == *toNumber) {
+			return true
+		}
+		if l.ToNumber == fromNumber && (toNumber == nil || l.FromNumber == *toNumber) {
+			return true
+		}
+		return false
+	}
+	if l.FromNumber != fromNumber {
+		return false
+	}
+	if toNumber != nil && l.ToNumber != *toNumber {
+		return false
+	}
+	return true
 }
 
 func runDeleteLink(cmd *cobra.Command, baseURL string, pid int64, link linkRow) error {

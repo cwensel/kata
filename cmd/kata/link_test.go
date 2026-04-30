@@ -147,6 +147,32 @@ func TestBlock_RoundTrip(t *testing.T) {
 		strings.Contains(buf.String(), "removed"))
 }
 
+// TestUnlink_RelatedReverseOrderStillFinds verifies that `kata unlink 5
+// related 3` matches a link stored canonically as (3,5). The daemon
+// canonicalizes related storage to (min,max), so order at lookup time must
+// not matter.
+func TestUnlink_RelatedReverseOrderStillFinds(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	createIssue(t, env, pid, "a")
+	createIssue(t, env, pid, "b")
+
+	// Daemon stores this canonically as (1,2).
+	createLinkViaHTTP(t, env, pid, 1, "related", 2)
+
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	// User passes (2,1) — reverse of the canonical storage order.
+	cmd.SetArgs([]string{"--workspace", dir, "unlink", "2", "related", "1"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, buf.String(), "unlinked")
+}
+
 // createLinkViaHTTP is a thin test helper duplicated in link_test.go and
 // label_test.go because cmd/kata is a separate package from internal/daemon.
 func createLinkViaHTTP(t *testing.T, env *testenv.Env, projectID, fromNumber int64, linkType string, toNumber int64) {
