@@ -16,7 +16,7 @@ const (
 	pollLimitMax     = 1000
 )
 
-func registerEvents(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
+func registerEventsHandlers(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "pollEvents",
 		Method:      "GET",
@@ -37,6 +37,22 @@ func registerEvents(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	_ = mux
 }
 
+// resolveLimit normalizes the optional Limit query param: explicit non-positive
+// values are a 400 validation error; missing or zero values default to
+// pollLimitDefault; values above pollLimitMax silently clamp.
+func resolveLimit(rawLimit api.OptionalInt) (int, error) {
+	if rawLimit.IsSet && rawLimit.Value <= 0 {
+		return 0, api.NewError(400, "validation", "limit must be a positive integer", "", nil)
+	}
+	if !rawLimit.IsSet {
+		return pollLimitDefault, nil
+	}
+	if rawLimit.Value > pollLimitMax {
+		return pollLimitMax, nil
+	}
+	return rawLimit.Value, nil
+}
+
 // doPollEvents is the shared implementation for both polling endpoints. When
 // projectID is 0 it is a cross-project poll; otherwise events are filtered to
 // that project.
@@ -47,14 +63,9 @@ func doPollEvents(
 	rawLimit api.OptionalInt,
 	projectID int64,
 ) (*api.PollEventsResponse, error) {
-	limit := rawLimit.Value
-	switch {
-	case rawLimit.IsSet && limit <= 0:
-		return nil, api.NewError(400, "validation", "limit must be a positive integer", "", nil)
-	case !rawLimit.IsSet || limit == 0:
-		limit = pollLimitDefault
-	case limit > pollLimitMax:
-		limit = pollLimitMax
+	limit, err := resolveLimit(rawLimit)
+	if err != nil {
+		return nil, err
 	}
 
 	resetTo, err := cfg.DB.PurgeResetCheck(ctx, afterID, projectID)
@@ -70,6 +81,8 @@ func doPollEvents(
 		return out, nil
 	}
 
+	// Unknown project_id: return empty events rather than 404. Polling is
+	// idempotent and a fresh client may legitimately race a project's creation.
 	rows, err := cfg.DB.EventsAfter(ctx, db.EventsAfterParams{
 		AfterID:   afterID,
 		ProjectID: projectID,

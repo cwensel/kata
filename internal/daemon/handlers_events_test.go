@@ -3,9 +3,8 @@ package daemon_test
 import (
 	"context"
 	"encoding/json"
-	"net/http"
+	"io"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,7 +35,8 @@ func TestPollEvents_EmptyResultIsNonNullArray(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
-	body := readBody(t, resp)
+	bs, _ := io.ReadAll(resp.Body)
+	body := string(bs)
 	assert.Contains(t, body, `"events":[]`, "must be empty array, never null")
 	assert.Contains(t, body, `"reset_required":false`)
 	assert.Contains(t, body, `"next_after_id":0`)
@@ -78,7 +78,8 @@ func TestPollEvents_NextAfterIDEchoesAfterIDOnEmpty(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
-	body := readBody(t, resp)
+	bs, _ := io.ReadAll(resp.Body)
+	body := string(bs)
 	assert.Contains(t, body, `"next_after_id":99`)
 	assert.Contains(t, body, `"events":[]`)
 }
@@ -148,7 +149,8 @@ func TestPollEvents_LimitNonPositiveIs400(t *testing.T) {
 	for _, q := range []string{"after_id=0&limit=0", "after_id=0&limit=-5"} {
 		resp, err := env.HTTP.Get(env.URL + "/api/v1/events?" + q)
 		require.NoError(t, err)
-		body := readBody(t, resp)
+		bs, _ := io.ReadAll(resp.Body)
+		body := string(bs)
 		_ = resp.Body.Close()
 		assert.Equal(t, 400, resp.StatusCode, "limit %s should be 400", q)
 		assert.Contains(t, body, `"code":"validation"`)
@@ -163,19 +165,22 @@ func TestPollEvents_LimitNonNumericIs400(t *testing.T) {
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
-// readBody is a small helper that reads the body and asserts no read error.
-func readBody(t *testing.T, resp *http.Response) string {
-	t.Helper()
-	var sb strings.Builder
-	buf := make([]byte, 4096)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			sb.Write(buf[:n])
-		}
-		if err != nil {
-			break
-		}
+func TestPollEvents_LimitAbsentUsesDefault(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	mkIssue(t, env, pid, "first")
+	mkIssue(t, env, pid, "second")
+
+	// No limit query param at all — should default to 100 and return both rows.
+	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=0")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var b struct {
+		Events []struct {
+			EventID int64 `json:"event_id"`
+		} `json:"events"`
 	}
-	return sb.String()
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	require.Len(t, b.Events, 2, "missing limit should default to pollLimitDefault, not reject the request")
 }

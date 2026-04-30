@@ -155,7 +155,7 @@ func registerRoutes(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	registerReady(humaAPI, cfg)
 	registerSearch(humaAPI, cfg)
 	registerDestructive(humaAPI, cfg)
-	registerEvents(humaAPI, mux, cfg)
+	registerEventsHandlers(humaAPI, mux, cfg)
 }
 
 // registerHealth registers /api/v1/ping and /api/v1/health.

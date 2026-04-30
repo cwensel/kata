@@ -1,4 +1,4 @@
-package api //nolint:revive // package name "api" is fixed by Plan 1 §4 wire-types layout.
+package api
 
 import (
 	"context"
