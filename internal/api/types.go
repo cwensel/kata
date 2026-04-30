@@ -82,10 +82,19 @@ type ShowProjectResponse struct {
 type CreateIssueRequest struct {
 	ProjectID int64 `path:"project_id" required:"true"`
 	Body      struct {
-		Actor string `json:"actor" required:"true"`
-		Title string `json:"title" required:"true"`
-		Body  string `json:"body,omitempty"`
+		Actor  string                  `json:"actor" required:"true"`
+		Title  string                  `json:"title" required:"true"`
+		Body   string                  `json:"body,omitempty"`
+		Owner  *string                 `json:"owner,omitempty"`
+		Labels []string                `json:"labels,omitempty"`
+		Links  []CreateInitialLinkBody `json:"links,omitempty"`
 	}
+}
+
+// CreateInitialLinkBody is one entry in CreateIssueRequest.Body.Links.
+type CreateInitialLinkBody struct {
+	Type     string `json:"type" enum:"parent,blocks,related"`
+	ToNumber int64  `json:"to_number"`
 }
 
 // MutationResponse is the standard mutation envelope (§4.5).
@@ -118,11 +127,13 @@ type ShowIssueRequest struct {
 	Number    int64 `path:"number" required:"true"`
 }
 
-// ShowIssueResponse is the per-issue read payload (Plan 1: issue + comments).
+// ShowIssueResponse is the per-issue read payload (Plan 2: + links, + labels).
 type ShowIssueResponse struct {
 	Body struct {
-		Issue    db.Issue     `json:"issue"`
-		Comments []db.Comment `json:"comments"`
+		Issue    db.Issue        `json:"issue"`
+		Comments []db.Comment    `json:"comments"`
+		Links    []LinkOut       `json:"links"`
+		Labels   []db.IssueLabel `json:"labels"`
 	}
 }
 
@@ -167,5 +178,122 @@ type ActionRequest struct {
 	Body      struct {
 		Actor  string `json:"actor" required:"true"`
 		Reason string `json:"reason,omitempty" enum:"done,wontfix,duplicate,"` // close only
+	}
+}
+
+// CreateLinkRequest is POST /api/v1/projects/{id}/issues/{number}/links.
+type CreateLinkRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor    string `json:"actor" required:"true"`
+		Type     string `json:"type" required:"true" enum:"parent,blocks,related"`
+		ToNumber int64  `json:"to_number" required:"true"`
+		Replace  bool   `json:"replace,omitempty"` // type=parent only
+	}
+}
+
+// LinkOut is the wire projection of a link with both endpoint *numbers* (not
+// internal issue ids) so clients can correlate without an extra lookup.
+type LinkOut struct {
+	ID         int64     `json:"id"`
+	ProjectID  int64     `json:"project_id"`
+	FromNumber int64     `json:"from_number"`
+	ToNumber   int64     `json:"to_number"`
+	Type       string    `json:"type"`
+	Author     string    `json:"author"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// CreateLinkResponse extends MutationResponse with the new link's wire
+// projection (handlers populate `Link` for both new and no-op cases).
+type CreateLinkResponse struct {
+	Body struct {
+		Issue   db.Issue  `json:"issue"`
+		Link    LinkOut   `json:"link"`
+		Event   *db.Event `json:"event"`
+		Changed bool      `json:"changed"`
+	}
+}
+
+// DeleteLinkRequest is DELETE /api/v1/projects/{id}/issues/{number}/links/{link_id}.
+// Actor is in the query string because DELETE bodies are non-portable.
+type DeleteLinkRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Number    int64  `path:"number" required:"true"`
+	LinkID    int64  `path:"link_id" required:"true"`
+	Actor     string `query:"actor" required:"true"`
+}
+
+// AddLabelRequest is POST /api/v1/projects/{id}/issues/{number}/labels.
+type AddLabelRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor string `json:"actor" required:"true"`
+		Label string `json:"label" required:"true"`
+	}
+}
+
+// AddLabelResponse extends the standard envelope with the new label row.
+type AddLabelResponse struct {
+	Body struct {
+		Issue   db.Issue      `json:"issue"`
+		Label   db.IssueLabel `json:"label"`
+		Event   *db.Event     `json:"event"`
+		Changed bool          `json:"changed"`
+	}
+}
+
+// RemoveLabelRequest is DELETE /api/v1/projects/{id}/issues/{number}/labels/{label}.
+type RemoveLabelRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Number    int64  `path:"number" required:"true"`
+	Label     string `path:"label" required:"true"`
+	Actor     string `query:"actor" required:"true"`
+}
+
+// AssignRequest is POST /api/v1/projects/{id}/issues/{number}/actions/assign.
+type AssignRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor string `json:"actor" required:"true"`
+		Owner string `json:"owner" required:"true"`
+	}
+}
+
+// UnassignRequest is POST /api/v1/projects/{id}/issues/{number}/actions/unassign.
+// Same shape as AssignRequest minus owner.
+type UnassignRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor string `json:"actor" required:"true"`
+	}
+}
+
+// ReadyRequest is GET /api/v1/projects/{id}/ready.
+type ReadyRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Limit     int   `query:"limit,omitempty"`
+}
+
+// ReadyResponse is the ready-issue list.
+type ReadyResponse struct {
+	Body struct {
+		Issues []db.Issue `json:"issues"`
+	}
+}
+
+// LabelsListRequest is GET /api/v1/projects/{id}/labels (counts).
+type LabelsListRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+}
+
+// LabelsListResponse is the per-label aggregate.
+type LabelsListResponse struct {
+	Body struct {
+		Labels []db.LabelCount `json:"labels"`
 	}
 }
