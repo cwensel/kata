@@ -11,16 +11,18 @@ import (
 
 // EventEnvelope is the wire shape for a single event row.
 type EventEnvelope struct {
-	EventID         int64           `json:"event_id"`
-	Type            string          `json:"type"`
-	ProjectID       int64           `json:"project_id"`
-	ProjectIdentity string          `json:"project_identity"`
-	IssueID         *int64          `json:"issue_id,omitempty"`
-	IssueNumber     *int64          `json:"issue_number,omitempty"`
-	RelatedIssueID  *int64          `json:"related_issue_id,omitempty"`
-	Actor           string          `json:"actor"`
-	Payload         json.RawMessage `json:"payload,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
+	EventID         int64  `json:"event_id"`
+	Type            string `json:"type"`
+	ProjectID       int64  `json:"project_id"`
+	ProjectIdentity string `json:"project_identity"`
+	IssueID         *int64 `json:"issue_id,omitempty"`
+	IssueNumber     *int64 `json:"issue_number,omitempty"`
+	RelatedIssueID  *int64 `json:"related_issue_id,omitempty"`
+	Actor           string `json:"actor"`
+	// Payload is the event-type-specific JSON object. Always valid JSON
+	// because the schema enforces json_valid(payload) at write time.
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // EventReset is the data: payload of a sync.reset_required SSE frame and the
@@ -36,7 +38,7 @@ type EventReset struct {
 // should pass on the next request. Limit defaults to 100 and is clamped to
 // 1000 server-side; non-positive Limit returns 400 validation.
 type PollEventsRequest struct {
-	ProjectID int64 `path:"project_id,omitempty"`
+	ProjectID int64 `path:"project_id"`
 	AfterID   int64 `query:"after_id,omitempty"`
 	Limit     int   `query:"limit,omitempty"`
 }

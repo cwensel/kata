@@ -96,7 +96,7 @@ type EventReset struct {
 // should pass on the next request. Limit defaults to 100 and is clamped to
 // 1000 server-side; non-positive Limit returns 400 validation.
 type PollEventsRequest struct {
-	ProjectID int64 `path:"project_id,omitempty"`
+	ProjectID int64 `path:"project_id"`
 	AfterID   int64 `query:"after_id,omitempty"`
 	Limit     int   `query:"limit,omitempty"`
 }
