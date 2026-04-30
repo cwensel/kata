@@ -295,12 +295,15 @@ func tryIdempotencyMatch(ctx context.Context, cfg ServerConfig, in *api.CreateIs
 	return fp, out, nil
 }
 
-// runLookalikeCheck runs the §3.7 soft-block: SearchFTS over title+body, scores
-// each candidate via similarity.Score, and returns a 409 duplicate_candidates
-// error if any candidate is at or above the 0.7 threshold. nil means proceed.
+// runLookalikeCheck runs the §3.7 soft-block: SearchFTSAny over title+body
+// (OR-of-tokens for high recall), scores each candidate via similarity.Score,
+// and returns a 409 duplicate_candidates error if any candidate is at or
+// above the 0.7 threshold. nil means proceed. The OR variant is required
+// because near-duplicates that differ by even one token would be filtered
+// out by SearchFTS's implicit-AND before similarity scoring runs.
 func runLookalikeCheck(ctx context.Context, cfg ServerConfig, in *api.CreateIssueRequest) error {
 	q := strings.TrimSpace(in.Body.Title + " " + in.Body.Body)
-	candidates, err := cfg.DB.SearchFTS(ctx, in.ProjectID, q, 20, false)
+	candidates, err := cfg.DB.SearchFTSAny(ctx, in.ProjectID, q, 20, false)
 	if err != nil {
 		return api.NewError(500, "internal", err.Error(), "", nil)
 	}

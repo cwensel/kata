@@ -291,3 +291,54 @@ func TestSearchFTS_QueryEscaping(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, got, 1)
 }
+
+// TestSearchFTS_MatchedIn_CrossColumn pins the matched_in fix from roborev
+// 16789: when the query is multi-term implicit-AND and the tokens land in
+// different columns (title="login", body="Safari"), the per-column subqueries
+// must use OR semantics so each column reports as matched. With the old
+// AND-based per-column subqueries this returned matched_in=[].
+func TestSearchFTS_MatchedIn_CrossColumn(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "login bug", Body: "Safari issue", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.SearchFTS(ctx, p.ID, "login Safari", 20, false)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.ElementsMatch(t, []string{"title", "body"}, got[0].MatchedIn)
+}
+
+// TestSearchFTSAny_FindsNearDuplicates pins the look-alike fix from roborev
+// 16791: implicit-AND search misses a row that's a near-duplicate but lacks
+// one of the query tokens; the OR variant retrieves it so similarity.Score
+// can decide. With AND, "login crash Safari critical" excludes a row that
+// only contains "login crash Safari" (no "critical").
+func TestSearchFTSAny_FindsNearDuplicates(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "login crash on Safari", Body: "stack trace", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	// Implicit-AND: query has an extra token ("critical") that the row lacks
+	// — the row is filtered out before similarity scoring would see it.
+	gotAnd, err := d.SearchFTS(ctx, p.ID, "login crash Safari critical", 20, false)
+	require.NoError(t, err)
+	assert.Len(t, gotAnd, 0, "AND form must filter rows missing any token")
+
+	// OR variant: same query, but the row matches because it contains at
+	// least one of the tokens. similarity.Score in the handler decides
+	// whether to actually treat this as a duplicate.
+	gotOr, err := d.SearchFTSAny(ctx, p.ID, "login crash Safari critical", 20, false)
+	require.NoError(t, err)
+	require.Len(t, gotOr, 1, "OR form must retrieve near-duplicates")
+	assert.Equal(t, "login crash on Safari", gotOr[0].Issue.Title)
+}

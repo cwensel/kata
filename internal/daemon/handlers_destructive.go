@@ -34,6 +34,9 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		updated, evt, changed, err := cfg.DB.SoftDeleteIssue(ctx, issue.ID, in.Body.Actor)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
@@ -60,6 +63,9 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		updated, evt, changed, err := cfg.DB.RestoreIssue(ctx, issue.ID, in.Body.Actor)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
@@ -94,6 +100,9 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 			reasonPtr = &r
 		}
 		pl, err := cfg.DB.PurgeIssue(ctx, issue.ID, in.Body.Actor, reasonPtr)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
