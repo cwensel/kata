@@ -132,3 +132,14 @@ func resetFlags(t *testing.T) {
 	flags = globalFlags{}
 	t.Cleanup(func() { flags = saved })
 }
+
+// stubIsTTY swaps the package-level isTTY hook for a constant-valued stub
+// during the test. Required for the noninteractive-stdin branch of
+// resolveConfirm: `go test` from a developer's terminal otherwise sees the
+// real stdin as a TTY, which would make the assertion flaky.
+func stubIsTTY(t *testing.T, want bool) {
+	t.Helper()
+	saved := isTTY
+	isTTY = func(*os.File) bool { return want }
+	t.Cleanup(func() { isTTY = saved })
+}

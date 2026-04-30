@@ -333,6 +333,19 @@ func TestSmoke_Plan3Lifecycle(t *testing.T) {
 	body = drain(t, resp)
 	require.Equal(t, 200, resp.StatusCode, body)
 
+	// 8b. confirm restore actually unstuck deleted_at — show without
+	// include_deleted must succeed now. A regression that reported success
+	// while leaving the issue soft-deleted would 404 here (the show handler
+	// hides soft-deleted rows by default), so this catches the silent-bug
+	// case step 8 alone would miss. The Issue DTO uses `omitempty` on the
+	// deleted_at pointer, so a successful 200 with the field absent
+	// confirms the column was cleared.
+	postRestore, postRestoreBody := getStatusBodyHTTP(t, env.HTTP,
+		env.URL+"/api/v1/projects/"+pidStr+"/issues/1")
+	require.Equal(t, 200, postRestore.StatusCode, string(postRestoreBody))
+	assert.NotContains(t, string(postRestoreBody), `"deleted_at"`,
+		"restore must clear deleted_at; the field is omitempty so it should be absent")
+
 	// 9. purge #2 (irreversible). Verify purge_log row in the response.
 	purgeResp := postWithHeaderHTTP(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2/actions/purge",
 		map[string]string{"X-Kata-Confirm": "PURGE #2"},
