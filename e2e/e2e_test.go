@@ -125,11 +125,19 @@ func TestSmoke_Plan2Lifecycle(t *testing.T) {
 	deleteWith(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/1/links/"+
 		strconv.FormatInt(blocksLinkID, 10)+"?actor=agent")
 
-	// show #2 must reflect the post-state: owner gone (db.Issue.Owner has
-	// omitempty so a cleared pointer drops the key entirely), bug label gone,
-	// parent link still present.
+	// show #2 must reflect the post-state: owner cleared, bug label gone,
+	// parent link still present. Decode the response so the owner check is
+	// exact — a substring miss could pass if the handler wrote a different
+	// owner string (or "") instead of clearing the column.
 	showBody := getBody(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2")
-	assert.NotContains(t, showBody, `"owner":"alice"`, "owner must be cleared after unassign")
+	var post struct {
+		Issue struct {
+			Owner *string `json:"owner"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(showBody), &post),
+		"show response must decode")
+	assert.Nil(t, post.Issue.Owner, "owner must be nil after unassign")
 	assert.NotContains(t, showBody, `"label":"bug"`, "bug label must be gone from issue #2")
 	assert.Contains(t, showBody, `"parent"`, "parent link must still be present on issue #2")
 
