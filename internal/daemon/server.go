@@ -16,11 +16,14 @@ import (
 )
 
 // ServerConfig wires the daemon's runtime dependencies. DB and StartedAt are
-// required; Endpoint is only consulted by Run.
+// required; Endpoint is only consulted by Run; Broadcaster is owned by the
+// server (NewServer fills it if nil so handler tests don't have to plumb one
+// through).
 type ServerConfig struct {
-	DB        *db.DB
-	StartedAt time.Time
-	Endpoint  DaemonEndpoint
+	DB          *db.DB
+	StartedAt   time.Time
+	Endpoint    DaemonEndpoint
+	Broadcaster *EventBroadcaster
 }
 
 // Server bundles the http handler and lifecycle.
@@ -34,6 +37,9 @@ type Server struct {
 // safe to mount in tests via httptest.NewServer.
 func NewServer(cfg ServerConfig) *Server {
 	api.InstallErrorFormatter()
+	if cfg.Broadcaster == nil {
+		cfg.Broadcaster = NewEventBroadcaster()
+	}
 
 	mux := http.NewServeMux()
 	humaConfig := huma.DefaultConfig("kata", "0.1.0")
@@ -46,7 +52,7 @@ func NewServer(cfg ServerConfig) *Server {
 	humaAPI := humago.New(mux, humaConfig)
 
 	s := &Server{cfg: cfg, api: humaAPI}
-	registerRoutes(humaAPI, cfg)
+	registerRoutes(humaAPI, mux, cfg)
 
 	s.handler = withCSRFGuards(mux)
 	return s
@@ -82,6 +88,9 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	httpSrv := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		// BaseContext roots every request in the daemon ctx so long-lived
+		// SSE handlers exit on Shutdown via r.Context().Done().
+		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 	go func() {
 		<-ctx.Done()
@@ -131,8 +140,10 @@ func isMutation(method string) bool {
 
 // registerRoutes installs the per-resource handler groups onto humaAPI. Each
 // group lives in its own file (handlers_health.go, handlers_projects.go, etc.)
-// and replaces the matching stub below as it lands.
-func registerRoutes(humaAPI huma.API, cfg ServerConfig) {
+// and replaces the matching stub below as it lands. The events handler also
+// receives mux so it can register the SSE endpoint as a raw http.HandlerFunc
+// (Huma doesn't model streaming responses).
+func registerRoutes(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	registerHealth(humaAPI, cfg)
 	registerProjects(humaAPI, cfg)
 	registerIssues(humaAPI, cfg)
@@ -144,6 +155,7 @@ func registerRoutes(humaAPI huma.API, cfg ServerConfig) {
 	registerReady(humaAPI, cfg)
 	registerSearch(humaAPI, cfg)
 	registerDestructive(humaAPI, cfg)
+	registerEvents(humaAPI, mux, cfg)
 }
 
 // registerHealth registers /api/v1/ping and /api/v1/health.
