@@ -32,6 +32,10 @@ func ensureDaemon(ctx context.Context) (string, error) {
 	cmd := exec.Command(exe, "daemon", "start")
 	cmd.Stdout = nil
 	cmd.Stderr = os.Stderr
+	// Detach the child into its own process group so that a SIGINT delivered
+	// to the foreground CLI (e.g. ctrl-C on `kata create`) is not propagated
+	// to the daemon we just spawned.
+	detachChild(cmd)
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("auto-start daemon: %w", err)
 	}
@@ -42,7 +46,11 @@ func ensureDaemon(ctx context.Context) (string, error) {
 		if url, ok := tryDiscover(ctx, ns.DataDir); ok {
 			return url, nil
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 	return "", errors.New("daemon failed to start within 5s")
 }
@@ -75,7 +83,7 @@ func pingAddress(ctx context.Context, address string) (string, bool) {
 			},
 			Timeout: 1 * time.Second,
 		}
-		const base = "http://kata"
+		const base = "http://kata.invalid"
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/ping", nil)
 		if err != nil {
 			return "", false
@@ -106,7 +114,7 @@ func pingAddress(ctx context.Context, address string) (string, bool) {
 //
 //nolint:unused // consumed by upcoming command implementations (Tasks 22-27)
 func httpClientFor(baseURL string) (*http.Client, error) {
-	if !strings.HasPrefix(baseURL, "http://kata") {
+	if !strings.HasPrefix(baseURL, "http://kata.invalid") {
 		return &http.Client{Timeout: 5 * time.Second}, nil
 	}
 	ns, err := daemon.NewNamespace()

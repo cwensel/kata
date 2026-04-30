@@ -2,8 +2,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -49,7 +52,12 @@ func newRootCmd() *cobra.Command {
 }
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
+	// Wire SIGINT/SIGTERM into cobra's command context so long-running
+	// subcommands (notably `kata daemon start`) can shut down gracefully via
+	// their deferred cleanups instead of being torn down mid-syscall.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := newRootCmd().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "kata:", err)
 		os.Exit(ExitInternal)
 	}
