@@ -165,3 +165,84 @@ CREATE VIRTUAL TABLE issues_fts USING fts5(
   title, body, comments,
   content='', tokenize='unicode61 remove_diacritics 2'
 );
+
+-- FTS5 sync triggers. The issues_fts table uses content='' so each delete must
+-- provide the previously indexed column values; we stay in sync by routing every
+-- title/body/comments mutation through one of the five triggers below. comments
+-- is stored as a single space-separated aggregate built from the comments table
+-- at trigger time.
+--
+-- Soft-delete (issues.deleted_at IS NOT NULL) does NOT remove rows from FTS --
+-- look-alike checks and search filter deleted rows at query time so soft-deleted
+-- issues remain reachable for `kata search --include-deleted` later.
+
+CREATE TRIGGER issues_ai_fts AFTER INSERT ON issues BEGIN
+  INSERT INTO issues_fts(rowid, title, body, comments)
+  VALUES (NEW.id, NEW.title, NEW.body, '');
+END;
+
+CREATE TRIGGER issues_au_fts AFTER UPDATE OF title, body ON issues BEGIN
+  INSERT INTO issues_fts(issues_fts, rowid, title, body, comments) VALUES (
+    'delete', OLD.id, OLD.title, OLD.body,
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = OLD.id), '')
+  );
+  INSERT INTO issues_fts(rowid, title, body, comments) VALUES (
+    NEW.id, NEW.title, NEW.body,
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = NEW.id), '')
+  );
+END;
+
+CREATE TRIGGER issues_ad_fts AFTER DELETE ON issues BEGIN
+  -- Purge cascade deletes comments before issues, so the GROUP_CONCAT here is
+  -- always '' at trigger time. We still pass it explicitly so the FTS delete
+  -- command sees the same column shape we last inserted.
+  INSERT INTO issues_fts(issues_fts, rowid, title, body, comments) VALUES (
+    'delete', OLD.id, OLD.title, OLD.body,
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = OLD.id), '')
+  );
+END;
+
+CREATE TRIGGER comments_ai_fts AFTER INSERT ON comments BEGIN
+  -- Pre-insert state (what FTS currently holds) excludes the just-inserted row.
+  INSERT INTO issues_fts(issues_fts, rowid, title, body, comments) VALUES (
+    'delete',
+    NEW.issue_id,
+    (SELECT title FROM issues WHERE id = NEW.issue_id),
+    (SELECT body  FROM issues WHERE id = NEW.issue_id),
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments
+              WHERE issue_id = NEW.issue_id AND id <> NEW.id), '')
+  );
+  -- Post-insert state (what FTS should hold) includes it.
+  INSERT INTO issues_fts(rowid, title, body, comments) VALUES (
+    NEW.issue_id,
+    (SELECT title FROM issues WHERE id = NEW.issue_id),
+    (SELECT body  FROM issues WHERE id = NEW.issue_id),
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = NEW.issue_id), '')
+  );
+END;
+
+CREATE TRIGGER comments_ad_fts AFTER DELETE ON comments BEGIN
+  -- Pre-delete state (what FTS currently holds) included the deleted row.
+  -- Reconstruct it as: current aggregate UNION ALL old.body, then GROUP_CONCAT.
+  INSERT INTO issues_fts(issues_fts, rowid, title, body, comments) VALUES (
+    'delete',
+    OLD.issue_id,
+    (SELECT title FROM issues WHERE id = OLD.issue_id),
+    (SELECT body  FROM issues WHERE id = OLD.issue_id),
+    COALESCE(
+      (SELECT GROUP_CONCAT(body, ' ') FROM (
+         SELECT body FROM comments WHERE issue_id = OLD.issue_id
+         UNION ALL
+         SELECT OLD.body
+      )),
+      ''
+    )
+  );
+  -- Post-delete state (what FTS should hold) excludes it.
+  INSERT INTO issues_fts(rowid, title, body, comments) VALUES (
+    OLD.issue_id,
+    (SELECT title FROM issues WHERE id = OLD.issue_id),
+    (SELECT body  FROM issues WHERE id = OLD.issue_id),
+    COALESCE((SELECT GROUP_CONCAT(body, ' ') FROM comments WHERE issue_id = OLD.issue_id), '')
+  );
+END;
