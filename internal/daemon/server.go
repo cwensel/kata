@@ -139,6 +139,7 @@ func registerRoutes(humaAPI huma.API, cfg ServerConfig) {
 	registerComments(humaAPI, cfg)
 	registerActions(humaAPI, cfg)
 	registerLinks(humaAPI, cfg)
+	registerLabels(humaAPI, cfg)
 }
 
 // registerHealth registers /api/v1/ping and /api/v1/health.
@@ -169,4 +170,9 @@ func registerActions(humaAPI huma.API, cfg ServerConfig) {
 // registerLinks registers POST/DELETE /links routes.
 func registerLinks(humaAPI huma.API, cfg ServerConfig) {
 	registerLinksHandlers(humaAPI, cfg)
+}
+
+// registerLabels registers POST/DELETE /labels and GET /labels (counts) routes.
+func registerLabels(humaAPI huma.API, cfg ServerConfig) {
+	registerLabelsHandlers(humaAPI, cfg)
 }
