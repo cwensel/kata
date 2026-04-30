@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -113,17 +115,15 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 	}
 
 	if flags.JSON {
-		// Re-marshal through a map to get compact single-line output, keeping
-		// the raw daemon JSON shape without reformatting.
-		var rawMap map[string]json.RawMessage
-		if err := json.Unmarshal(bs, &rawMap); err != nil {
-			return string(bs) + "\n", nil
+		// Route JSON output through emitJSON so kata_api_version is present
+		// (CLI JSON contract per spec §5.1). The daemon's response body is
+		// already a JSON object, so we can pass it as a json.RawMessage
+		// directly without re-marshaling field-by-field.
+		var buf bytes.Buffer
+		if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
+			return "", fmt.Errorf("emit json: %w", err)
 		}
-		out, err := json.Marshal(rawMap)
-		if err != nil {
-			return string(bs) + "\n", nil
-		}
-		return string(out) + "\n", nil
+		return buf.String(), nil
 	}
 
 	action := "bound"
@@ -133,13 +133,15 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 	return fmt.Sprintf("%s project %s (%s)\n", action, resp.Project.Identity, resp.Project.Name), nil
 }
 
-// resolveStartPath returns workspace if non-empty, else the current working
-// directory.
+// resolveStartPath returns the absolute path to use as the daemon's
+// start_path. Relative paths are resolved against the CLI's current working
+// directory so the daemon (which may have a different cwd) doesn't end up
+// binding or writing .kata.toml in the wrong place.
 func resolveStartPath(workspace string) (string, error) {
-	if workspace != "" {
-		return workspace, nil
+	if workspace == "" {
+		return os.Getwd()
 	}
-	return os.Getwd()
+	return filepath.Abs(workspace)
 }
 
 // apiErrFromBody decodes a daemon ErrorEnvelope and returns a *cliError with
