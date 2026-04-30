@@ -87,6 +87,29 @@ func TestCreateLink_SecondParentIsErrParentAlreadySet(t *testing.T) {
 		"expected ErrParentAlreadySet, got %v", err)
 }
 
+func TestCreateLink_ExactDuplicateParentIsErrLinkExists(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	child := makeIssue(t, ctx, d, p.ID, "child", "tester")
+	parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
+
+	// First insert succeeds.
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: child.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	// Re-inserting the exact same triple is "already linked" (idempotent
+	// no-op), not "different parent set". Must be ErrLinkExists.
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: child.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
+	})
+	assert.True(t, errors.Is(err, db.ErrLinkExists),
+		"exact duplicate parent must be ErrLinkExists, got %v", err)
+}
+
 func TestCreateLink_CrossProjectIsErrCrossProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

@@ -40,7 +40,18 @@ func (d *DB) CreateLink(ctx context.Context, p CreateLinkParams) (Link, error) {
 		 VALUES(?, ?, ?, ?, ?)`,
 		p.ProjectID, p.FromIssueID, p.ToIssueID, p.Type, p.Author)
 	if err != nil {
-		return Link{}, classifyLinkInsertError(err)
+		classified := classifyLinkInsertError(err)
+		// SQLite may report the partial-parent index violation as a bare
+		// `links.from_issue_id` UNIQUE failure, which classifies to
+		// ErrParentAlreadySet. For an exact-duplicate parent link the
+		// caller-facing semantic is "already linked" (200 no-op), not
+		// "different parent set" (409 conflict). Disambiguate by re-querying.
+		if errors.Is(classified, ErrParentAlreadySet) && p.Type == "parent" {
+			if _, lookupErr := d.LinkByEndpoints(ctx, p.FromIssueID, p.ToIssueID, "parent"); lookupErr == nil {
+				return Link{}, ErrLinkExists
+			}
+		}
+		return Link{}, classified
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
