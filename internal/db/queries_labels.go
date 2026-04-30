@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -124,6 +125,132 @@ func (d *DB) LabelCounts(ctx context.Context, projectID int64) ([]LabelCount, er
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// LabelEventParams describes the event-emission side of a label mutation. The
+// DB-layer methods AddLabelAndEvent and RemoveLabelAndEvent split the mutation
+// (label insert/delete) from the event metadata so the handler can emit the
+// matching issue.labeled / issue.unlabeled event without an extra round trip.
+type LabelEventParams struct {
+	EventType string // "issue.labeled" | "issue.unlabeled"
+	Label     string // the label being added/removed (used for both DB op and event payload)
+	Actor     string
+}
+
+// AddLabelAndEvent attaches a label to an issue, emits the matching
+// issue.labeled event, and bumps the issue's updated_at — all in one TX.
+// Returns the new label row and the event row. Typed errors (ErrLabelExists,
+// ErrLabelInvalid) flow up unchanged from the underlying INSERT classification.
+//
+// Used by the daemon's POST /labels handler so the label insert and its event
+// are atomic — there's no window where the row exists without an event.
+func (d *DB) AddLabelAndEvent(ctx context.Context, issueID int64, ev LabelEventParams) (IssueLabel, Event, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return IssueLabel{}, Event{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO issue_labels(issue_id, label, author) VALUES(?, ?, ?)`,
+		issueID, ev.Label, ev.Actor); err != nil {
+		return IssueLabel{}, Event{}, classifyLabelInsertError(err)
+	}
+
+	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	if err != nil {
+		return IssueLabel{}, Event{}, err
+	}
+
+	payload, err := json.Marshal(map[string]string{"label": ev.Label})
+	if err != nil {
+		return IssueLabel{}, Event{}, fmt.Errorf("marshal label payload: %w", err)
+	}
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       issue.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &issue.ID,
+		IssueNumber:     &issue.Number,
+		Type:            ev.EventType,
+		Actor:           ev.Actor,
+		Payload:         string(payload),
+	})
+	if err != nil {
+		return IssueLabel{}, Event{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE issues SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		issueID); err != nil {
+		return IssueLabel{}, Event{}, fmt.Errorf("touch issue: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return IssueLabel{}, Event{}, fmt.Errorf("commit: %w", err)
+	}
+
+	row := d.QueryRowContext(ctx, labelSelect+` WHERE issue_id = ? AND label = ?`, issueID, ev.Label)
+	out, err := scanLabel(row)
+	if err != nil {
+		return IssueLabel{}, Event{}, fmt.Errorf("re-fetch label: %w", err)
+	}
+	return out, evt, nil
+}
+
+// RemoveLabelAndEvent detaches a label and emits the matching issue.unlabeled
+// event in one TX. Returns ErrNotFound when the label was never attached —
+// caller maps to 200 no-op envelope per spec §4.5.
+func (d *DB) RemoveLabelAndEvent(ctx context.Context, issueID int64, ev LabelEventParams) (Event, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return Event{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM issue_labels WHERE issue_id = ? AND label = ?`,
+		issueID, ev.Label)
+	if err != nil {
+		return Event{}, fmt.Errorf("delete label: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Event{}, fmt.Errorf("delete label rows affected: %w", err)
+	}
+	if n == 0 {
+		return Event{}, ErrNotFound
+	}
+
+	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	if err != nil {
+		return Event{}, err
+	}
+
+	payload, err := json.Marshal(map[string]string{"label": ev.Label})
+	if err != nil {
+		return Event{}, fmt.Errorf("marshal label payload: %w", err)
+	}
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       issue.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &issue.ID,
+		IssueNumber:     &issue.Number,
+		Type:            ev.EventType,
+		Actor:           ev.Actor,
+		Payload:         string(payload),
+	})
+	if err != nil {
+		return Event{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE issues SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		issueID); err != nil {
+		return Event{}, fmt.Errorf("touch issue: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Event{}, fmt.Errorf("commit: %w", err)
+	}
+	return evt, nil
 }
 
 const labelSelect = `SELECT issue_id, label, author, created_at FROM issue_labels`
