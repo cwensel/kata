@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,7 +9,9 @@ import (
 	"net/http"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -353,4 +356,258 @@ func TestSmoke_Plan3Lifecycle(t *testing.T) {
 	require.Equal(t, 200, purgeResp.status, string(purgeResp.body))
 	assert.Contains(t, string(purgeResp.body), `"purge_log"`)
 	assert.Contains(t, string(purgeResp.body), `"purge_reset_after_event_id"`)
+}
+
+// TestSmoke_Plan4Events exercises Plan 4 end-to-end via HTTP:
+//  1. boot daemon, init two projects A/B, create one issue each
+//  2. capture baseline cursor for project A so setup events are absorbed
+//  3. open SSE consumer for project A with cursor = baseline_A
+//  4. mutate project A (comment, label, assign), and project B (comment)
+//  5. SSE consumer sees three frames (A's events) and no project B events
+//  6. polling client returns three events from baseline_A; subsequent poll empty
+//  7. parent --replace path emits issue.unlinked + issue.linked + issue.created
+//  8. purge issue 1 in project A → SSE sees sync.reset_required, stream closes
+//  9. polling client (with stale cursor) gets reset_required:true
+//  10. reconnect SSE with reset cursor; resume cleanly with no further events
+func TestSmoke_Plan4Events(t *testing.T) {
+	env := testenv.New(t)
+	dirA := initRepo(t, "https://github.com/wesm/plan4-a.git")
+	dirB := initRepo(t, "https://github.com/wesm/plan4-b.git")
+
+	// 1. init both projects.
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects",
+		map[string]any{"start_path": dirA}))
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects",
+		map[string]any{"start_path": dirB}))
+
+	pidA := resolvePID(t, env.HTTP, env.URL, dirA)
+	pidB := resolvePID(t, env.HTTP, env.URL, dirB)
+	pidAStr := strconv.FormatInt(pidA, 10)
+	pidBStr := strconv.FormatInt(pidB, 10)
+
+	// One issue in each.
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidAStr+"/issues",
+		map[string]any{"actor": "agent", "title": "first-A"}))
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidBStr+"/issues",
+		map[string]any{"actor": "agent", "title": "first-B"}))
+
+	// 2. baseline cursor for project A.
+	baselineA := pollNextAfterID(t, env.HTTP, env.URL+"/api/v1/projects/"+pidAStr+"/events?after_id=0")
+	require.Greater(t, baselineA, int64(0))
+
+	// 3. open SSE consumer at baseline_A.
+	sseResp := openSSEAt(t, env.HTTP, env.URL+"/api/v1/events/stream?project_id="+pidAStr+
+		"&after_id="+strconv.FormatInt(baselineA, 10))
+	defer func() { _ = sseResp.Body.Close() }()
+	framer := newSmokeFramer(sseResp.Body)
+
+	// 4. mutate.
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidAStr+"/issues/1/comments",
+		map[string]any{"actor": "agent", "body": "comment-1"}))
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidAStr+"/issues/1/labels",
+		map[string]any{"actor": "agent", "label": "bug"}))
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidAStr+"/issues/1/actions/assign",
+		map[string]any{"actor": "agent", "owner": "claude"}))
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidBStr+"/issues/1/comments",
+		map[string]any{"actor": "agent", "body": "comment-B"}))
+
+	// 5. SSE sees exactly the three project-A frames.
+	frames := framer.NextN(t, 3, 2*time.Second)
+	require.Len(t, frames, 3)
+	assert.Equal(t, "issue.commented", frames[0].event)
+	assert.Equal(t, "issue.labeled", frames[1].event)
+	assert.Equal(t, "issue.assigned", frames[2].event)
+
+	// 6. polling client returns the same three; subsequent poll is empty.
+	resp, err := env.HTTP.Get(env.URL + "/api/v1/projects/" + pidAStr +
+		"/events?after_id=" + strconv.FormatInt(baselineA, 10))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	var pollBody struct {
+		ResetRequired bool `json:"reset_required"`
+		Events        []struct {
+			Type string `json:"type"`
+		} `json:"events"`
+		NextAfterID int64 `json:"next_after_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&pollBody))
+	require.Len(t, pollBody.Events, 3)
+	require.Greater(t, pollBody.NextAfterID, baselineA)
+
+	resp2, err := env.HTTP.Get(env.URL + "/api/v1/projects/" + pidAStr +
+		"/events?after_id=" + strconv.FormatInt(pollBody.NextAfterID, 10))
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	var poll2 struct {
+		Events      []struct{} `json:"events"`
+		NextAfterID int64      `json:"next_after_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&poll2))
+	assert.Len(t, poll2.Events, 0)
+	assert.Equal(t, pollBody.NextAfterID, poll2.NextAfterID)
+
+	// 7. parent --replace: create #2 with parent #1, then re-link to a fresh #3 with replace.
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidAStr+"/issues",
+		map[string]any{"actor": "agent", "title": "child",
+			"links": []map[string]any{{"type": "parent", "to_number": 1}}}))
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidAStr+"/issues",
+		map[string]any{"actor": "agent", "title": "new-parent"}))
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidAStr+"/issues/2/links",
+		map[string]any{"actor": "agent", "type": "parent", "to_number": 3, "replace": true}))
+
+	// New SSE frames: issue.created (child #2), issue.created (new-parent #3),
+	// then issue.unlinked + issue.linked from the replace.
+	moreFrames := framer.NextN(t, 4, 2*time.Second)
+	require.Len(t, moreFrames, 4)
+	assert.Equal(t, "issue.created", moreFrames[0].event)
+	assert.Equal(t, "issue.created", moreFrames[1].event)
+	assert.Equal(t, "issue.unlinked", moreFrames[2].event, "replace must emit unlinked first")
+	assert.Equal(t, "issue.linked", moreFrames[3].event, "then linked")
+
+	// 8. purge issue 1 in project A.
+	purgeURL := env.URL + "/api/v1/projects/" + pidAStr + "/issues/1/actions/purge"
+	pReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, purgeURL,
+		strings.NewReader(`{"actor":"agent"}`))
+	require.NoError(t, err)
+	pReq.Header.Set("Content-Type", "application/json")
+	pReq.Header.Set("X-Kata-Confirm", "PURGE #1")
+	pResp, err := env.HTTP.Do(pReq) //nolint:gosec // G704: test-only loopback
+	require.NoError(t, err)
+	_ = pResp.Body.Close()
+	require.Equal(t, 200, pResp.StatusCode)
+
+	resetFrames := framer.NextN(t, 1, 2*time.Second)
+	require.Len(t, resetFrames, 1)
+	assert.Equal(t, "sync.reset_required", resetFrames[0].event)
+	resetID, err := strconv.ParseInt(resetFrames[0].id, 10, 64)
+	require.NoError(t, err)
+	require.Greater(t, resetID, int64(0))
+
+	// 9. polling client with stale cursor.
+	resp3, err := env.HTTP.Get(env.URL + "/api/v1/projects/" + pidAStr +
+		"/events?after_id=" + strconv.FormatInt(baselineA, 10))
+	require.NoError(t, err)
+	defer func() { _ = resp3.Body.Close() }()
+	var poll3 struct {
+		ResetRequired bool  `json:"reset_required"`
+		ResetAfterID  int64 `json:"reset_after_id"`
+		NextAfterID   int64 `json:"next_after_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp3.Body).Decode(&poll3))
+	assert.True(t, poll3.ResetRequired)
+	assert.Equal(t, resetID, poll3.ResetAfterID)
+	assert.Equal(t, resetID, poll3.NextAfterID)
+
+	// 10. reconnect SSE with reset cursor; should be clean (no further frames).
+	sseResp2 := openSSEAt(t, env.HTTP, env.URL+"/api/v1/events/stream?project_id="+pidAStr+
+		"&after_id="+strconv.FormatInt(resetID, 10))
+	defer func() { _ = sseResp2.Body.Close() }()
+	framer2 := newSmokeFramer(sseResp2.Body)
+	noMore := framer2.NextN(t, 1, 200*time.Millisecond)
+	assert.Len(t, noMore, 0, "no further frames after reset cursor")
+}
+
+// pollNextAfterID issues a GET poll and returns next_after_id.
+func pollNextAfterID(t *testing.T, client *http.Client, url string) int64 {
+	t.Helper()
+	resp, err := client.Get(url) //nolint:gosec // G107: test-only loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var b struct {
+		NextAfterID int64 `json:"next_after_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	return b.NextAfterID
+}
+
+// openSSEAt opens an SSE GET with Accept: text/event-stream and skips the
+// initial ": connected" preamble comment so subsequent reads start at the
+// first data frame.
+func openSSEAt(t *testing.T, client *http.Client, url string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	require.NoError(t, err)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := client.Do(req) //nolint:gosec // G107: test-only loopback
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+	// Eat the ": connected\n\n" preamble so subsequent reads start at the first frame.
+	preamble := make([]byte, 16)
+	_, _ = resp.Body.Read(preamble)
+	return resp
+}
+
+type smokeSSEFrame struct {
+	id    string
+	event string
+	data  string
+}
+
+// smokeFramer streams SSE frames so callers can pull them one at a time
+// across multiple test phases without re-creating the bufio.Reader each call
+// (which would race with any in-flight ReadString or drop bytes the previous
+// reader had buffered).
+type smokeFramer struct {
+	framesCh chan smokeSSEFrame
+}
+
+func newSmokeFramer(body io.Reader) *smokeFramer {
+	f := &smokeFramer{framesCh: make(chan smokeSSEFrame, 16)}
+	go func() {
+		defer close(f.framesCh)
+		rd := bufio.NewReader(body)
+		cur := smokeSSEFrame{}
+		for {
+			s, err := rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			line := strings.TrimRight(s, "\r\n")
+			switch {
+			case line == "":
+				if cur.id != "" || cur.event != "" || cur.data != "" {
+					f.framesCh <- cur
+					cur = smokeSSEFrame{}
+				}
+			case strings.HasPrefix(line, ":"):
+				// heartbeat / comment — ignore
+			case strings.HasPrefix(line, "id: "):
+				cur.id = strings.TrimPrefix(line, "id: ")
+			case strings.HasPrefix(line, "event: "):
+				cur.event = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				cur.data = strings.TrimPrefix(line, "data: ")
+			}
+		}
+	}()
+	return f
+}
+
+func (f *smokeFramer) Next(t *testing.T, timeout time.Duration) (smokeSSEFrame, bool) {
+	t.Helper()
+	select {
+	case fr, ok := <-f.framesCh:
+		return fr, ok
+	case <-time.After(timeout):
+		return smokeSSEFrame{}, false
+	}
+}
+
+func (f *smokeFramer) NextN(t *testing.T, n int, timeout time.Duration) []smokeSSEFrame {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var frames []smokeSSEFrame
+	for len(frames) < n {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return frames
+		}
+		fr, ok := f.Next(t, remaining)
+		if !ok {
+			return frames
+		}
+		frames = append(frames, fr)
+	}
+	return frames
 }
