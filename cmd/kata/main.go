@@ -56,6 +56,7 @@ func newRootCmd() *cobra.Command {
 		newDeleteCmd(),
 		newRestoreCmd(),
 		newPurgeCmd(),
+		newSearchCmd(),
 		newLinkCmd(),
 		newUnlinkCmd(),
 		newParentCmd(),
