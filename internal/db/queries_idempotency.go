@@ -15,11 +15,31 @@ import (
 	"github.com/wesm/kata/internal/similarity"
 )
 
+// sqliteTimeFormat matches the schema's strftime('%Y-%m-%dT%H:%M:%fZ', ...)
+// (3 fractional-second digits, UTC). Both sides must use the same width for
+// SQLite's lexicographic string comparison on created_at to be correct.
+const sqliteTimeFormat = "2006-01-02T15:04:05.000Z"
+
 // Fingerprint returns the lowercase hex SHA-256 of the canonical concatenation
 // of (title, body, owner, sorted labels, sorted links) per spec §3.6. The
 // fingerprint is order-independent for labels and links: both are sorted before
 // hashing. Owner is canonicalized as "" when nil or empty. Labels are
 // alphabetized. Links are sorted by (type, to_number).
+//
+// Canonical byte layout (the input to SHA-256):
+//
+//	title=<canonical-title>\nbody=<canonical-body>\nowner=<canonical-owner>\nlabels=<csv-of-sorted-labels>\nlinks=<canonical-json>
+//
+// where canonical-* applies similarity.Canonical (NFC + trim + collapse internal
+// whitespace, case preserved). Cross-language clients reproducing this must use
+// the same five-line layout, sort labels alphabetically, sort links by
+// (type, to_number), and emit links as the JSON shape
+// `[{"type":"…","other_number":N},…]`.
+//
+// Label-charset assumption: labels are constrained at the API layer to
+// `[a-z0-9._:-]` (see the labels CHECK constraint in 0001_init.sql), so the `,`
+// separator can never collide with a label byte. Bypassing API validation
+// before calling Fingerprint may break this contract.
 func Fingerprint(title, body string, owner *string, labels []string, links []InitialLink) string {
 	ownerStr := ""
 	if owner != nil {
@@ -79,7 +99,7 @@ func (d *DB) LookupIdempotency(ctx context.Context, projectID int64, key string,
 		  AND e.created_at >= ?
 		ORDER BY e.id DESC
 		LIMIT 1`
-	row := d.QueryRowContext(ctx, q, projectID, key, since.UTC().Format("2006-01-02T15:04:05.000Z"))
+	row := d.QueryRowContext(ctx, q, projectID, key, since.UTC().Format(sqliteTimeFormat))
 
 	var (
 		evt Event

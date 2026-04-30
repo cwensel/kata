@@ -68,6 +68,24 @@ func TestFingerprint_HexLowercaseSHA256(t *testing.T) {
 	assert.True(t, strings.ToLower(got) == got, "must be lowercase hex")
 }
 
+// TestFingerprint_Vector pins exact hex outputs so any change to the canonical
+// byte layout, separator order, JSON shape, sort order, or Canonical()
+// behavior immediately breaks the test. This is the cross-language contract.
+func TestFingerprint_Vector(t *testing.T) {
+	// All-empty inputs: title=\nbody=\nowner=\nlabels=\nlinks=[]
+	assert.Equal(t,
+		"3e3678620b59364a3d56c8608ff431933b042a8619e74892243b0d2bfdb09af2",
+		db.Fingerprint("", "", nil, nil, nil),
+		"empty-everything fingerprint must not drift")
+
+	// Filled: one label, one parent link.
+	assert.Equal(t,
+		"2c77531b9b3e7522ccf86eb353fc2aaa8cd8418e1132c8ebb1f2f80ea1dca8db",
+		db.Fingerprint("hello", "world", nil, []string{"bug"},
+			[]db.InitialLink{{Type: "parent", ToNumber: 3}}),
+		"filled fingerprint must not drift")
+}
+
 func strPtr(s string) *string { return &s }
 
 func TestLookupIdempotency_ReturnsMatchWithinWindow(t *testing.T) {
@@ -152,4 +170,33 @@ func TestLookupIdempotency_DifferentProjectIsNil(t *testing.T) {
 	got, err := d.LookupIdempotency(ctx, p2.ID, "K1", time.Now().Add(-1*time.Hour))
 	require.NoError(t, err)
 	assert.Nil(t, got, "key in p1 must not match a lookup in p2")
+}
+
+// TestLookupIdempotency_OnlyIssueCreatedEvents ensures that an idempotency_key
+// in the payload of a non-issue.created event (e.g. issue.edited) is never
+// returned. The partial index already enforces this; the SQL WHERE clause
+// reinforces it. This test locks both layers.
+func TestLookupIdempotency_OnlyIssueCreatedEvents(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+	// Stamp the idempotency_key onto a NON-issue.created row by inserting a
+	// fake issue.edited event. The partial index excludes this row by type;
+	// the WHERE e.type = 'issue.created' clause reinforces.
+	_, err = d.ExecContext(ctx, `
+		INSERT INTO events (project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		VALUES (?, ?, ?, ?, 'issue.edited', 'tester',
+		        json_object('idempotency_key', 'K1', 'idempotency_fingerprint', 'fp'),
+		        strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+		p.ID, p.Identity, issue.ID, issue.Number)
+	require.NoError(t, err)
+
+	got, err := d.LookupIdempotency(ctx, p.ID, "K1", time.Now().Add(-1*time.Hour))
+	require.NoError(t, err)
+	assert.Nil(t, got, "non-issue.created event with same key must not match")
 }
