@@ -184,3 +184,29 @@ func TestPollEvents_LimitAbsentUsesDefault(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
 	require.Len(t, b.Events, 2, "missing limit should default to pollLimitDefault, not reject the request")
 }
+
+// TestPollEvents_PerProject_NonPositiveProjectIDIs400 ensures that a request
+// to /api/v1/projects/0/events does not silently fall through to the
+// cross-project sentinel (projectID == 0) and leak every project's events.
+func TestPollEvents_PerProject_NonPositiveProjectIDIs400(t *testing.T) {
+	env := testenv.New(t)
+	resp, err := env.HTTP.Get(env.URL + "/api/v1/projects/0/events?after_id=0&limit=10")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 400, resp.StatusCode)
+	bs, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(bs), `"code":"validation"`)
+}
+
+// TestPollEvents_PerProject_UnknownProjectIs404 mirrors sibling project-scoped
+// handlers (e.g. issues/comments) which 404 with project_not_found rather
+// than returning an empty list for a project that does not exist.
+func TestPollEvents_PerProject_UnknownProjectIs404(t *testing.T) {
+	env := testenv.New(t)
+	resp, err := env.HTTP.Get(env.URL + "/api/v1/projects/9999/events?after_id=0&limit=10")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 404, resp.StatusCode)
+	bs, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(bs), `"code":"project_not_found"`)
+}

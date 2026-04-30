@@ -1213,6 +1213,25 @@ Expected: FAIL — endpoints not registered yet (404 / handler missing).
 
 - [ ] **Step 3: Implement the polling handlers in `handlers_events.go`**
 
+> **DOC NOTE — as-shipped deviations:** The verbatim listing below has known
+> bugs that surface in test (`limit=0` cannot be distinguished from "missing"
+> with plain `int`; the per-project handler does not validate `project_id`,
+> letting `/api/v1/projects/0/events` leak cross-project events). The shipped
+> implementation differs in three ways:
+>
+> 1. `internal/api/events.go` defines a `OptionalInt` Huma `ParamReactor`
+>    helper, used as `Limit OptionalInt` so the handler can distinguish
+>    explicit `limit=0` (→ 400) from a missing query param (→ default 100).
+> 2. `PollEventsRequest` is split: a per-project struct with `ProjectID`
+>    (`path:"project_id"`) and a `PollEventsGlobalRequest` struct without
+>    the path tag, registered to the cross-project route.
+> 3. The per-project route closure validates `in.ProjectID > 0` (→ 400) and
+>    calls `cfg.DB.ProjectByID` to 404 with `project_not_found` on missing
+>    projects, mirroring sibling handlers in `handlers_issues.go:30`.
+>
+> Future readers of this section: the listing below is the original draft.
+> Use the actual repo code as source of truth.
+
 Replace the contents of `/Users/wesm/code/kata/internal/daemon/handlers_events.go` with:
 
 ```go
@@ -1412,9 +1431,10 @@ func readSSEFramesUntilN(t *testing.T, body interface {
 	var frames []sseFrame
 	cur := sseFrame{}
 	deadline := time.Now().Add(timeout)
-	rd := bufio.NewReader(struct {
-		Read func([]byte) (int, error)
-	}{Read: body.Read})
+	// body already implements io.Reader via its Read method; pass it directly.
+	// (Earlier draft wrapped it in an anonymous struct{ Read func(...) ...
+	// }, which does not satisfy io.Reader because struct fields aren't methods.)
+	rd := bufio.NewReader(body)
 
 	type lineResult struct {
 		line string
@@ -3333,6 +3353,26 @@ import (
 	"time"
 )
 
+// safeBuffer is a mutex-protected bytes.Buffer used by tail tests so that
+// `go test -race` does not flag the goroutine running cmd.Execute writing to
+// the buffer racing with the test goroutine reading it via Snapshot.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuffer) Snapshot() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
 func TestEvents_TailEmitsNDJSON(t *testing.T) {
 	resetFlags(t)
 	env := testenv.New(t)
@@ -3341,8 +3381,8 @@ func TestEvents_TailEmitsNDJSON(t *testing.T) {
 	// Subscribe before any events so drain is empty; once tail is open, fire
 	// two issue.created events and assert two NDJSON lines.
 	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
+	buf := &safeBuffer{}
+	cmd.SetOut(buf)
 	ctx, cancel := context.WithTimeout(contextWithBaseURL(context.Background(), env.URL), 5*time.Second)
 	defer cancel()
 	cmd.SetArgs([]string{"--workspace", dir, "events", "--tail"})
@@ -3363,7 +3403,7 @@ func TestEvents_TailEmitsNDJSON(t *testing.T) {
 	// Wait for two lines or timeout.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Count(buf.String(), "issue.created") >= 2 {
+		if strings.Count(buf.Snapshot(), "issue.created") >= 2 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -3371,7 +3411,7 @@ func TestEvents_TailEmitsNDJSON(t *testing.T) {
 	cancel()
 	wg.Wait()
 
-	out := buf.String()
+	out := buf.Snapshot()
 	lines := []string{}
 	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
 		if strings.TrimSpace(l) != "" {
@@ -3393,8 +3433,8 @@ func TestEvents_TailFollowsResetRequired(t *testing.T) {
 	createIssueViaHTTP(t, env, dir, "doomed")
 
 	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
+	buf := &safeBuffer{}
+	cmd.SetOut(buf)
 	ctx, cancel := context.WithTimeout(contextWithBaseURL(context.Background(), env.URL), 5*time.Second)
 	defer cancel()
 	cmd.SetArgs([]string{"--workspace", dir, "events", "--tail"})
@@ -3422,7 +3462,7 @@ func TestEvents_TailFollowsResetRequired(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(buf.String(), `"reset_required":true`) {
+		if strings.Contains(buf.Snapshot(), `"reset_required":true`) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -3430,7 +3470,7 @@ func TestEvents_TailFollowsResetRequired(t *testing.T) {
 	cancel()
 	wg.Wait()
 
-	assert.Contains(t, buf.String(), `"reset_required":true`,
+	assert.Contains(t, buf.Snapshot(), `"reset_required":true`,
 		"--tail must emit a reset envelope when the daemon sends sync.reset_required")
 }
 ```

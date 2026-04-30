@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -30,6 +31,15 @@ func registerEventsHandlers(humaAPI huma.API, mux *http.ServeMux, cfg ServerConf
 		Method:      "GET",
 		Path:        "/api/v1/projects/{project_id}/events",
 	}, func(ctx context.Context, in *api.PollEventsRequest) (*api.PollEventsResponse, error) {
+		if in.ProjectID <= 0 {
+			return nil, api.NewError(400, "validation", "project_id must be a positive integer", "", nil)
+		}
+		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+			}
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
 		return doPollEvents(ctx, cfg, in.AfterID, in.Limit, in.ProjectID)
 	})
 
@@ -81,8 +91,6 @@ func doPollEvents(
 		return out, nil
 	}
 
-	// Unknown project_id: return empty events rather than 404. Polling is
-	// idempotent and a fresh client may legitimately race a project's creation.
 	rows, err := cfg.DB.EventsAfter(ctx, db.EventsAfterParams{
 		AfterID:   afterID,
 		ProjectID: projectID,
