@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -18,6 +19,9 @@ func registerOwnershipHandlers(humaAPI huma.API, cfg ServerConfig) {
 	}, func(ctx context.Context, in *api.AssignRequest) (*api.MutationResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(in.Body.Owner) == "" {
+			return nil, api.NewError(400, "validation", "owner must be non-empty", "", nil)
 		}
 		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
 		if errors.Is(err, db.ErrNotFound) {

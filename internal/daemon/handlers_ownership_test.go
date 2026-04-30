@@ -64,6 +64,19 @@ func TestAssign_SameOwnerIsNoOp(t *testing.T) {
 	assert.False(t, out.Changed)
 }
 
+func TestAssign_BlankOwnerIs400(t *testing.T) {
+	env := testenv.New(t)
+	pid, n := setupOneIssue(t, env)
+	body, _ := json.Marshal(map[string]string{"actor": "tester", "owner": "   "})
+	resp, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
+			"/issues/"+strconv.FormatInt(n, 10)+"/actions/assign",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
 func TestAssign_BlankActorIs400(t *testing.T) {
 	env := testenv.New(t)
 	pid, n := setupOneIssue(t, env)
