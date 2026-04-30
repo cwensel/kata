@@ -102,3 +102,25 @@ func TestIssues_PatchEditTitleAndBody(t *testing.T) {
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"title":"new"`)
 }
+
+func TestCreateIssue_BlankActorIs400(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	resp, bs := postJSON(t, h.ts.(*httptest.Server),
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "   ", "title": "x"})
+	assert.Equal(t, 400, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"code":"validation"`)
+}
+
+func TestEditIssue_BlankActorIs400(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	_, _ = postJSON(t, h.ts.(*httptest.Server),
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "x", "title": "old"})
+
+	resp, bs := patchJSON(t, h.ts.(*httptest.Server),
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1",
+		map[string]any{"actor": "   ", "title": "new"})
+	assert.Equal(t, 400, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"code":"validation"`)
+}

@@ -20,6 +20,9 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "POST",
 		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/close",
 	}, func(ctx context.Context, in *api.ActionRequest) (*api.MutationResponse, error) {
+		if err := validateActor(in.Body.Actor); err != nil {
+			return nil, err
+		}
 		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
@@ -43,6 +46,9 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "POST",
 		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/reopen",
 	}, func(ctx context.Context, in *api.ActionRequest) (*api.MutationResponse, error) {
+		if err := validateActor(in.Body.Actor); err != nil {
+			return nil, err
+		}
 		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)

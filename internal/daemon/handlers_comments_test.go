@@ -76,3 +76,45 @@ func TestActionsClose_AlreadyClosedIsNoOpEnvelope(t *testing.T) {
 	assert.Contains(t, string(bs), `"changed":false`)
 	assert.Contains(t, string(bs), `"event":null`)
 }
+
+func TestCreateComment_BlankActorIs400(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "x", "title": "x"})
+
+	resp, bs := postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/comments",
+		map[string]any{"actor": "   ", "body": "hi"})
+	assert.Equal(t, 400, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"code":"validation"`)
+}
+
+func TestCloseIssue_BlankActorIs400(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "x", "title": "x"})
+
+	resp, bs := postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+		map[string]any{"actor": "   "})
+	assert.Equal(t, 400, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"code":"validation"`)
+}
+
+func TestReopenIssue_BlankActorIs400(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		map[string]any{"actor": "x", "title": "x"})
+
+	resp, bs := postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/reopen",
+		map[string]any{"actor": "   "})
+	assert.Equal(t, 400, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"code":"validation"`)
+}
