@@ -85,9 +85,19 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+		links, err := loadLinkOuts(ctx, cfg.DB, issue.ID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		labels, err := cfg.DB.LabelsByIssue(ctx, issue.ID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
 		out := &api.ShowIssueResponse{}
 		out.Body.Issue = issue
 		out.Body.Comments = comments
+		out.Body.Links = links
+		out.Body.Labels = labels
 		return out, nil
 	})
 
@@ -125,6 +135,38 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		out.Body.Changed = changed
 		return out, nil
 	})
+}
+
+// loadLinkOuts fetches every link involving issueID, resolving both endpoint
+// numbers so the wire response speaks the agent-facing surface (numbers, not
+// internal ids). One IssueByID call per endpoint is fine for show; pagination
+// is a Plan 4 concern.
+func loadLinkOuts(ctx context.Context, store *db.DB, issueID int64) ([]api.LinkOut, error) {
+	rows, err := store.LinksByIssue(ctx, issueID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]api.LinkOut, 0, len(rows))
+	for _, l := range rows {
+		from, err := store.IssueByID(ctx, l.FromIssueID)
+		if err != nil {
+			return nil, err
+		}
+		to, err := store.IssueByID(ctx, l.ToIssueID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, api.LinkOut{
+			ID:         l.ID,
+			ProjectID:  l.ProjectID,
+			FromNumber: from.Number,
+			ToNumber:   to.Number,
+			Type:       l.Type,
+			Author:     l.Author,
+			CreatedAt:  l.CreatedAt,
+		})
+	}
+	return out, nil
 }
 
 // listComments fetches every comment attached to issueID in chronological

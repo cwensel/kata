@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/testenv"
 )
 
 // httptestServerHandle bundles a httptest.Server with the on-disk workspace
@@ -123,4 +124,35 @@ func TestEditIssue_BlankActorIs400(t *testing.T) {
 		map[string]any{"actor": "   ", "title": "new"})
 	assert.Equal(t, 400, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"code":"validation"`)
+}
+
+func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
+	env := testenv.New(t)
+	pid, parent, child := setupTwoIssues(t, env)
+	postLabel(t, env, pid, child, "bug")
+	postLink(t, env, pid, child, "parent", parent)
+
+	resp, err := env.HTTP.Get(env.URL +
+		"/api/v1/projects/" + strconv.FormatInt(pid, 10) +
+		"/issues/" + strconv.FormatInt(child, 10))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var out struct {
+		Links []struct {
+			Type       string `json:"type"`
+			FromNumber int64  `json:"from_number"`
+			ToNumber   int64  `json:"to_number"`
+		} `json:"links"`
+		Labels []struct {
+			Label string `json:"label"`
+		} `json:"labels"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.Len(t, out.Links, 1)
+	assert.Equal(t, "parent", out.Links[0].Type)
+	assert.Equal(t, child, out.Links[0].FromNumber)
+	assert.Equal(t, parent, out.Links[0].ToNumber)
+	require.Len(t, out.Labels, 1)
+	assert.Equal(t, "bug", out.Labels[0].Label)
 }
