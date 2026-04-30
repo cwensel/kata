@@ -603,9 +603,19 @@ git commit -m "feat(similarity): canonical, tokenize, jaccard, weighted score"
 
 Spec refs: §3.7 (top-20 by BM25, then app-side similarity), §4.10 (search response shape; matched_in is daemon-side).
 
+> **Implementation deviation (recorded after the fact).** The plan below prescribes
+> `highlight()` for column-attribution, but `highlight()` returns NULL on contentless
+> FTS5 tables (`issues_fts` is declared `content=''` in Task 1), so `MatchedIn` was
+> always empty. The shipped code uses per-column `MATCH` subqueries instead — three
+> correlated `(issues_fts.rowid IN (SELECT rowid FROM issues_fts WHERE col MATCH ?))`
+> booleans. See commit `779e56d` for the fix and `24d1d81` for polish (limit cap,
+> rank-test dominance, doc fixes). The Step 4 SQL block below is preserved as
+> originally written — refer to `internal/db/queries_search.go` at HEAD for the
+> actual approach.
+
 A single new function: `SearchFTS(ctx, projectID, q, limit, includeDeleted) ([]SearchCandidate, error)`. Uses FTS5 BM25 to rank, joins back to `issues` to filter by project and (optionally) by `deleted_at`, returns the top `limit` rows along with which columns matched.
 
-**Match-column detection** is done with a CASE expression over `highlight()` so the daemon doesn't have to re-tokenize the query. The result is a `[]string` of `"title"`/`"body"`/`"comments"` per row — these are what spec §4.10's `matched_in` field surfaces.
+**Match-column detection** uses per-column `MATCH` subqueries (see deviation note above). The result is a `[]string` of `"title"`/`"body"`/`"comments"` per row — these are what spec §4.10's `matched_in` field surfaces.
 
 **FTS query escaping:** SQLite FTS5 treats `:` `"` `*` and parens as MATCH operators. To support arbitrary user queries (`fix login: bug`) without surfacing those as syntax errors, we wrap the query in double quotes and double any embedded quotes (`fix "x" bug` → `"fix ""x"" bug"`). This makes the whole user query a single phrase token. For Plan 3 that's good enough — multi-token AND queries are a Plan 4+ concern.
 
