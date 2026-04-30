@@ -332,3 +332,49 @@ func TestPurgeIssue_UnknownIssueIsErrNotFound(t *testing.T) {
 	_, err := d.PurgeIssue(context.Background(), 9999, "agent", nil)
 	assert.True(t, errors.Is(err, db.ErrNotFound))
 }
+
+func TestPurgeIssue_PersistsReason(t *testing.T) {
+	// Reason threads through to purge_log.reason and round-trips on the
+	// returned PurgeLog. Catches argument-order regressions in the INSERT.
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	target, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	reason := "ops cleanup"
+	pl, err := d.PurgeIssue(ctx, target.ID, "agent", &reason)
+	require.NoError(t, err)
+	require.NotNil(t, pl.Reason)
+	assert.Equal(t, "ops cleanup", *pl.Reason)
+}
+
+func TestPurgeIssue_OnSoftDeletedIssue(t *testing.T) {
+	// PurgeIssue must work on already soft-deleted issues — the destructive
+	// ladder is delete → purge, not delete-XOR-purge. lookupIssueIncludingDeleted
+	// is the right primitive; this test pins the contract so a future swap
+	// to a deleted-filtering lookup would fail loudly.
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	target, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "delete-then-purge", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, _, err = d.SoftDeleteIssue(ctx, target.ID, "agent")
+	require.NoError(t, err)
+
+	pl, err := d.PurgeIssue(ctx, target.ID, "agent", nil)
+	require.NoError(t, err)
+	assert.Equal(t, target.ID, pl.PurgedIssueID)
+
+	// Row is gone from issues.
+	var n int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM issues WHERE id = ?`, target.ID).Scan(&n))
+	assert.Equal(t, 0, n, "issue row removed even though it was soft-deleted first")
+}

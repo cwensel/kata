@@ -174,7 +174,10 @@ func (d *DB) PurgeIssue(ctx context.Context, issueID int64, actor string, reason
 	committed := false
 	defer func() {
 		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			// Use a detached context so rollback runs even if the caller's
+			// ctx is already canceled — otherwise the conn may return to the
+			// pool with an open tx after a mid-flight cancellation.
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
 		}
 	}()
 
@@ -331,15 +334,8 @@ func reserveEventSequence(ctx context.Context, c connExec, hadEvents bool) (sql.
 		return sql.NullInt64{}, nil
 	}
 	var seq int64
-	err := c.QueryRowContext(ctx,
-		`SELECT seq FROM sqlite_sequence WHERE name = 'events'`).Scan(&seq)
-	if errors.Is(err, sql.ErrNoRows) {
-		// events table exists but has never been written to. Nothing was
-		// deleted from it (hadEvents implies MIN(id) was non-null), so this
-		// branch is unreachable in practice, but be defensive.
-		return sql.NullInt64{}, nil
-	}
-	if err != nil {
+	if err := c.QueryRowContext(ctx,
+		`SELECT seq FROM sqlite_sequence WHERE name = 'events'`).Scan(&seq); err != nil {
 		return sql.NullInt64{}, fmt.Errorf("read events seq: %w", err)
 	}
 	seq++
@@ -352,6 +348,8 @@ func reserveEventSequence(ctx context.Context, c connExec, hadEvents bool) (sql.
 
 // scanPurgeLog re-reads the purge_log row inserted by purgeCascade so the
 // caller receives a typed PurgeLog with nullable fields decoded as *int64.
+// Returns ErrNotFound when no row matches; callers in PurgeIssue see this only
+// if the just-inserted row is missing (which would indicate a DB-level bug).
 func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) {
 	const q = `
 		SELECT id, project_id, purged_issue_id, project_identity, issue_number,
