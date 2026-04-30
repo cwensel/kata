@@ -13,6 +13,12 @@ import (
 
 func newCreateCmd() *cobra.Command {
 	var src BodySources
+	var (
+		labels []string
+		parent int64
+		blocks []int64
+		owner  string
+	)
 	cmd := &cobra.Command{
 		Use:   "create <title>",
 		Short: "create a new issue",
@@ -21,6 +27,10 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&src.Body, "body", "", "issue body")
 	cmd.Flags().StringVar(&src.File, "body-file", "", "read body from file")
 	cmd.Flags().BoolVar(&src.Stdin, "body-stdin", false, "read body from stdin")
+	cmd.Flags().StringSliceVar(&labels, "label", nil, "initial label (repeatable)")
+	cmd.Flags().Int64Var(&parent, "parent", 0, "initial parent link target (issue number)")
+	cmd.Flags().Int64SliceVar(&blocks, "blocks", nil, "initial blocks link target (issue number, repeatable)")
+	cmd.Flags().StringVar(&owner, "owner", "", "initial owner")
 
 	// RunE is set after flag registration so we can reference cmd.Flags().Changed.
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
@@ -58,9 +68,28 @@ func newCreateCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
+
+		req := map[string]any{"actor": actor, "title": title, "body": body}
+		if cmd.Flags().Changed("owner") {
+			req["owner"] = owner
+		}
+		if len(labels) > 0 {
+			req["labels"] = labels
+		}
+		var links []map[string]any
+		if cmd.Flags().Changed("parent") {
+			links = append(links, map[string]any{"type": "parent", "to_number": parent})
+		}
+		for _, b := range blocks {
+			links = append(links, map[string]any{"type": "blocks", "to_number": b})
+		}
+		if len(links) > 0 {
+			req["links"] = links
+		}
+
 		status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
 			fmt.Sprintf("%s/api/v1/projects/%d/issues", baseURL, projectID),
-			map[string]any{"actor": actor, "title": title, "body": body})
+			req)
 		if err != nil {
 			return err
 		}

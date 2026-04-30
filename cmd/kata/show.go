@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -65,6 +66,14 @@ func newShowCmd() *cobra.Command {
 					Author string `json:"author"`
 					Body   string `json:"body"`
 				} `json:"comments"`
+				Labels []struct {
+					Label string `json:"label"`
+				} `json:"labels"`
+				Links []struct {
+					Type       string `json:"type"`
+					FromNumber int64  `json:"from_number"`
+					ToNumber   int64  `json:"to_number"`
+				} `json:"links"`
 			}
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
@@ -88,6 +97,36 @@ func newShowCmd() *cobra.Command {
 				}
 				for _, c := range b.Comments {
 					if _, err := fmt.Fprintf(out, "%s: %s\n", c.Author, c.Body); err != nil {
+						return err
+					}
+				}
+			}
+			if len(b.Labels) > 0 {
+				if _, err := fmt.Fprintln(out, "\n--- labels ---"); err != nil {
+					return err
+				}
+				parts := make([]string, 0, len(b.Labels))
+				for _, l := range b.Labels {
+					parts = append(parts, l.Label)
+				}
+				if _, err := fmt.Fprintln(out, strings.Join(parts, ", ")); err != nil {
+					return err
+				}
+			}
+			if len(b.Links) > 0 {
+				if _, err := fmt.Fprintln(out, "\n--- links ---"); err != nil {
+					return err
+				}
+				for _, l := range b.Links {
+					other := l.ToNumber
+					dir := "→"
+					// If show is for the link's "to" side, point the arrow back so
+					// the rendering reads naturally regardless of direction.
+					if l.FromNumber != b.Issue.Number {
+						other = l.FromNumber
+						dir = "←"
+					}
+					if _, err := fmt.Fprintf(out, "%s %s #%d\n", l.Type, dir, other); err != nil {
 						return err
 					}
 				}
