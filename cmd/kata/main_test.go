@@ -78,6 +78,27 @@ func TestRunEEntered_TrueOnSuccessfulRunE(t *testing.T) {
 	assert.True(t, runEEntered, "PersistentPreRunE should fire before whoami's RunE")
 }
 
+// TestRoot_Plan2VerbsAdvertised pins the new top-level verbs so a future
+// command-registration regression on any of them fails fast at help-rendering
+// time, not at first user run.
+func TestRoot_Plan2VerbsAdvertised(t *testing.T) {
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--help"})
+	require.NoError(t, cmd.Execute())
+	out := buf.String()
+	for _, verb := range []string{
+		"link", "unlink", "parent", "unparent",
+		"block", "unblock", "relate", "unrelate",
+		"label", "labels",
+		"assign", "unassign",
+		"ready",
+	} {
+		assert.Containsf(t, out, verb, "root help must list %q", verb)
+	}
+}
+
 // resetRunEEntered restores the package-level sentinel via t.Cleanup so tests
 // don't leak state across the shuffled order.
 func resetRunEEntered(t *testing.T) {

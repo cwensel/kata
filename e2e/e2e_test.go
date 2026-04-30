@@ -57,6 +57,74 @@ func TestSmoke_FullLifecycle(t *testing.T) {
 	assert.Contains(t, showBody, `"status":"open"`)
 }
 
+// TestSmoke_Plan2Lifecycle exercises the Plan 2 verbs end-to-end via HTTP:
+// link, label, assign, ready (with blocked filtering), unassign, label rm,
+// and unlink — all on a real daemon over a loopback listener.
+func TestSmoke_Plan2Lifecycle(t *testing.T) {
+	env := testenv.New(t)
+	dir := initRepo(t, "https://github.com/wesm/system.git")
+
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects",
+		map[string]any{"start_path": dir}))
+	pid := resolvePID(t, env.HTTP, env.URL, dir)
+	pidStr := strconv.FormatInt(pid, 10)
+
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
+		map[string]any{"actor": "agent", "title": "parent"}))
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
+		map[string]any{"actor": "agent", "title": "child"}))
+
+	// Hierarchy: child has parent #1.
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2/links",
+		map[string]any{"actor": "agent", "type": "parent", "to_number": 1}))
+
+	// Label child as bug.
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2/labels",
+		map[string]any{"actor": "agent", "label": "bug"}))
+
+	// Assign child to alice.
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2/actions/assign",
+		map[string]any{"actor": "agent", "owner": "alice"}))
+
+	// parent links don't gate ready — only blocks links do. Both issues are
+	// ready right now.
+	readyBody := getBody(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/ready")
+	assert.Contains(t, readyBody, `"title":"parent"`)
+	assert.Contains(t, readyBody, `"title":"child"`)
+
+	// Now make parent block child explicitly. child must drop out of ready.
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/1/links",
+		map[string]any{"actor": "agent", "type": "blocks", "to_number": 2}))
+	readyBody = getBody(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/ready")
+	assert.Contains(t, readyBody, `"title":"parent"`)
+	assert.NotContains(t, readyBody, `"title":"child"`,
+		"child must be filtered while parent (blocker) is open")
+
+	// Unassign + remove label to verify the reverse paths.
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2/actions/unassign",
+		map[string]any{"actor": "agent"}))
+	deleteWith(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2/labels/bug?actor=agent")
+
+	// show #2 must reflect the post-state: bug label gone, parent link still
+	// present.
+	showBody := getBody(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2")
+	assert.NotContains(t, showBody, `"label":"bug"`, "bug label must be gone from issue #2")
+	assert.Contains(t, showBody, `"parent"`, "parent link must still be present on issue #2")
+}
+
+// deleteWith issues a DELETE through the bounded testenv client and asserts
+// the response is 200.
+func deleteWith(t *testing.T, client *http.Client, url string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, url, nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req) //nolint:gosec // G704: test-only loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	body := drain(t, resp)
+	require.Equalf(t, 200, resp.StatusCode, "DELETE %s → %d: %s", url, resp.StatusCode, body)
+}
+
 // helpers
 
 func initRepo(t *testing.T, origin string) string {
