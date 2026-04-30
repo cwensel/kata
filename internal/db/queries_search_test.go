@@ -74,3 +74,118 @@ func TestFTS_CommentInsertReindexes(t *testing.T) {
 		`SELECT count(*) FROM issues_fts WHERE issues_fts MATCH 'watermelon'`).Scan(&hits))
 	assert.Equal(t, 1, hits, "comment body must be searchable after insert")
 }
+
+func TestSearchFTS_RanksByBM25(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	// Three issues. Only the first two mention "login"; the second has it twice.
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "fix login crash", Body: "stack trace", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "login is broken on login screen",
+		Body: "login fails twice", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "unrelated issue", Body: "no match here", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.SearchFTS(ctx, p.ID, "login", 20, false)
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+	// The doubly-mentioned issue should outrank the singly-mentioned one.
+	assert.Equal(t, int64(2), got[0].Issue.Number, "more matches → higher rank")
+	assert.Equal(t, int64(1), got[1].Issue.Number)
+}
+
+func TestSearchFTS_FiltersByProject(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p1, err := d.CreateProject(ctx, "p1", "p1")
+	require.NoError(t, err)
+	p2, err := d.CreateProject(ctx, "p2", "p2")
+	require.NoError(t, err)
+
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p1.ID, Title: "login bug", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p2.ID, Title: "login bug", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.SearchFTS(ctx, p1.ID, "login", 20, false)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, p1.ID, got[0].Issue.ProjectID)
+}
+
+func TestSearchFTS_ExcludesDeletedByDefault(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	keep, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "keep login", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+	gone, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "deleted login", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+	// Mark the second issue soft-deleted directly via SQL — Task 5 ships
+	// SoftDeleteIssue but this test runs before that, and the DB-layer
+	// behavior we want to verify is "search query filters deleted_at IS NULL".
+	_, err = d.ExecContext(ctx,
+		`UPDATE issues SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		gone.ID)
+	require.NoError(t, err)
+
+	got, err := d.SearchFTS(ctx, p.ID, "login", 20, false)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, keep.ID, got[0].Issue.ID, "soft-deleted issue must be filtered")
+
+	// includeDeleted=true returns both.
+	got, err = d.SearchFTS(ctx, p.ID, "login", 20, true)
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+}
+
+func TestSearchFTS_EmptyQueryReturnsEmpty(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "anything", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.SearchFTS(ctx, p.ID, "   ", 20, false)
+	require.NoError(t, err)
+	assert.Empty(t, got, "blank query → empty result, not an error")
+}
+
+func TestSearchFTS_QueryEscaping(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: `fix "login" crash`, Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	// FTS5 syntax characters must not surface as syntax errors.
+	got, err := d.SearchFTS(ctx, p.ID, `"login"`, 20, false)
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+}
