@@ -108,10 +108,13 @@ func runDestructive(cmd *cobra.Command, number int64, verb, confirm string,
 		return err
 	}
 	actor, _ := resolveActor(flags.As, nil)
-	body := map[string]any{"actor": actor}
+	// Build body from extraBody first so a future caller can't overwrite the
+	// resolved actor with a stray map key.
+	body := map[string]any{}
 	for k, v := range extraBody {
 		body[k] = v
 	}
+	body["actor"] = actor
 	client, err := httpClientFor(ctx, baseURL)
 	if err != nil {
 		return err
