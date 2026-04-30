@@ -1,0 +1,190 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/spf13/cobra"
+)
+
+// newDeleteCmd returns the cobra.Command for `kata delete`.
+//
+// Spec §3.5 / §4.4: deletion is gated by --force and an X-Kata-Confirm header
+// whose value is the exact string "DELETE #N". The CLI accepts the header
+// value via --confirm (noninteractive) or builds it from a TTY prompt where
+// the user types just the issue number.
+func newDeleteCmd() *cobra.Command {
+	var force bool
+	var confirm string
+	cmd := &cobra.Command{
+		Use:   "delete <number>",
+		Short: "soft-delete an issue (reversible via kata restore)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			n, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+			}
+			if !force {
+				return &cliError{
+					Message:  "deletion requires --force; use `kata restore` to undo if you change your mind",
+					Code:     "validation",
+					ExitCode: ExitValidation,
+				}
+			}
+			expected := fmt.Sprintf("DELETE #%d", n)
+			confirm, err = resolveConfirm(cmd, confirm, expected)
+			if err != nil {
+				return err
+			}
+			return runDestructive(cmd, n, "delete", confirm, nil)
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "required to perform the soft delete")
+	cmd.Flags().StringVar(&confirm, "confirm", "", `exact confirmation string ("DELETE #N")`)
+	return cmd
+}
+
+// resolveConfirm returns the X-Kata-Confirm value the daemon expects:
+//   - if --confirm was passed, use it as-is (the daemon validates exact match);
+//   - otherwise, if stdin is a TTY, prompt for the issue number and build the
+//     full string;
+//   - otherwise, exit 6 confirm_required.
+func resolveConfirm(cmd *cobra.Command, flagVal, expected string) (string, error) {
+	if flagVal != "" {
+		return flagVal, nil
+	}
+	if !isTTY(os.Stdin) {
+		return "", &cliError{
+			Message:  "no TTY: pass --confirm \"" + expected + "\" to proceed noninteractively",
+			Code:     "confirm_required",
+			ExitCode: ExitConfirm,
+		}
+	}
+	if _, err := fmt.Fprint(cmd.ErrOrStderr(), "Type the issue number to confirm: "); err != nil {
+		return "", err
+	}
+	r := bufio.NewReader(cmd.InOrStdin())
+	//nolint:errcheck // ReadString returns the data read up to EOF; an EOF here
+	// just means the user closed stdin, which we treat as an empty mismatch.
+	line, _ := r.ReadString('\n')
+	line = strings.TrimSpace(line)
+	// Pull the number out of "DELETE #N" / "PURGE #N".
+	_, num, _ := strings.Cut(expected, "#")
+	if line != num {
+		return "", &cliError{
+			Message:  "confirmation input did not match issue number",
+			Code:     "confirm_mismatch",
+			ExitCode: ExitConfirm,
+		}
+	}
+	return expected, nil
+}
+
+// runDestructive POSTs to /actions/{verb} with the X-Kata-Confirm header. Used
+// by both delete and purge (Task 13). Verb-specific success printing is
+// handled here so the caller doesn't repeat scaffolding.
+func runDestructive(cmd *cobra.Command, number int64, verb, confirm string,
+	extraBody map[string]any) error {
+	ctx := cmd.Context()
+	start, err := resolveStartPath(flags.Workspace)
+	if err != nil {
+		return err
+	}
+	baseURL, err := ensureDaemon(ctx)
+	if err != nil {
+		return err
+	}
+	pid, err := resolveProjectID(ctx, baseURL, start)
+	if err != nil {
+		return err
+	}
+	actor, _ := resolveActor(flags.As, nil)
+	body := map[string]any{"actor": actor}
+	for k, v := range extraBody {
+		body[k] = v
+	}
+	client, err := httpClientFor(ctx, baseURL)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/%s", baseURL, pid, number, verb)
+	status, bs, err := httpDoJSONWithHeader(ctx, client, http.MethodPost, url,
+		map[string]string{"X-Kata-Confirm": confirm}, body)
+	if err != nil {
+		return err
+	}
+	if status >= 400 {
+		return apiErrFromBody(status, bs)
+	}
+	return printDestructive(cmd, number, verb, bs)
+}
+
+// printDestructive renders the destructive-action response in the active
+// output mode (JSON envelope, quiet, or one-line human).
+func printDestructive(cmd *cobra.Command, number int64, verb string, bs []byte) error {
+	if flags.JSON {
+		var buf bytes.Buffer
+		if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
+			return err
+		}
+		_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
+		return err
+	}
+	if flags.Quiet {
+		return nil
+	}
+	switch verb {
+	case "delete":
+		_, err := fmt.Fprintf(cmd.OutOrStdout(),
+			"#%d deleted (use `kata restore %d` to undo)\n", number, number)
+		return err
+	case "purge":
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d purged (irreversible)\n", number)
+		return err
+	}
+	return nil
+}
+
+// httpDoJSONWithHeader mirrors httpDoJSON but lets callers attach extra
+// request headers (notably X-Kata-Confirm). Defined here so delete and the
+// upcoming purge command don't have to extend the helpers.go signature.
+func httpDoJSONWithHeader(ctx context.Context, client *http.Client,
+	method, url string, headers map[string]string, body any) (int, []byte, error) {
+	var rdr io.Reader
+	if body != nil {
+		bs, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		rdr = bytes.NewReader(bs)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, rdr)
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req) //nolint:gosec // G107: daemon-local URL controlled by ensureDaemon.
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, out, nil
+}

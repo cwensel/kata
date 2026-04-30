@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/daemon"
+	"github.com/wesm/kata/internal/testenv"
 )
 
 // pipeServer starts a TCP listener on a random loopback port, registers
@@ -100,6 +101,28 @@ func resolvePIDViaHTTP(t *testing.T, baseURL, startPath string) int64 {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// createIssueViaHTTP creates an issue in dir's project via the testenv daemon.
+// Returns the issue number from the response. Reused across destructive-ladder
+// tests so each test doesn't have to resolve the project ID itself.
+func createIssueViaHTTP(t *testing.T, env *testenv.Env, dir, title string) int64 {
+	t.Helper()
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	body, err := json.Marshal(map[string]any{"actor": "tester", "title": title})
+	require.NoError(t, err)
+	resp, err := http.Post(env.URL+"/api/v1/projects/"+itoa(pid)+"/issues",
+		"application/json", bytes.NewReader(body)) //nolint:gosec,noctx // test-only loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var b struct {
+		Issue struct {
+			Number int64 `json:"number"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	return b.Issue.Number
+}
 
 // resetFlags restores global flag state for cobra tests. Use t.Cleanup so
 // LIFO ordering plays nicely with other cleanups.
