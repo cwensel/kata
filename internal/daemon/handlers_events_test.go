@@ -369,6 +369,40 @@ func TestSSE_CursorConflict(t *testing.T) {
 	assert.Contains(t, body, `"code":"cursor_conflict"`)
 }
 
+// TestSSE_CursorConflictPresenceBased pins the rule that detection is on
+// query/header *key presence*, not on a non-empty value. A request with both
+// Last-Event-ID and a present-but-empty ?after_id= must surface
+// cursor_conflict, not silently win for the header.
+func TestSSE_CursorConflictPresenceBased(t *testing.T) {
+	env := testenv.New(t)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		env.URL+"/api/v1/events/stream?after_id=", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Last-Event-ID", "5")
+	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	bs, _ := io.ReadAll(resp.Body)
+	body := string(bs)
+	_ = resp.Body.Close()
+	assert.Equal(t, 400, resp.StatusCode)
+	assert.Contains(t, body, `"code":"cursor_conflict"`)
+}
+
+// TestSSE_NonGETReturnsAllowHeader pins that 405 responses include `Allow: GET`
+// so a misrouted client can recover without scraping the message.
+func TestSSE_NonGETReturnsAllowHeader(t *testing.T) {
+	env := testenv.New(t)
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		req, _ := http.NewRequestWithContext(context.Background(), method,
+			env.URL+"/api/v1/events/stream", nil)
+		resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode, "method=%s", method)
+		assert.Equal(t, http.MethodGet, resp.Header.Get("Allow"), "method=%s", method)
+	}
+}
+
 func TestSSE_HandshakeWritesConnectedComment(t *testing.T) {
 	env := testenv.New(t)
 	resp := openSSE(t, env, "", nil)
@@ -502,6 +536,15 @@ func TestSSE_LiveResetClosesStream(t *testing.T) {
 	reset, ok := framer.Next(t, 2*time.Second)
 	require.True(t, ok, "reset frame should arrive after purge")
 	assert.Equal(t, "sync.reset_required", reset.event)
+
+	// Reset frames are terminal: the handler returns and the body must EOF.
+	// Without this assertion, a regression that keeps the SSE connection open
+	// after sync.reset_required would still pass.
+	select {
+	case <-framer.doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not close after reset frame")
+	}
 }
 
 func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {

@@ -39,11 +39,17 @@ until SIGINT/SIGTERM. Reconnects with exponential backoff on disconnect.`,
 				return &cliError{Message: "--all-projects and --project-id are mutually exclusive", ExitCode: ExitUsage}
 			}
 			if tail {
+				if lastEventID < 0 {
+					return &cliError{Message: "--last-event-id must be a non-negative integer", ExitCode: ExitUsage}
+				}
 				return runEventsTail(cmd, eventsTailOptions{
 					ProjectIDArg: projectIDArg,
 					AllProjects:  allProjects,
 					LastEventID:  lastEventID,
 				})
+			}
+			if afterID < 0 {
+				return &cliError{Message: "--after must be a non-negative integer", ExitCode: ExitUsage}
 			}
 			return runEventsPoll(cmd, eventsPollOptions{
 				ProjectIDArg: projectIDArg,
@@ -192,7 +198,10 @@ func runEventsTail(cmd *cobra.Command, opts eventsTailOptions) error {
 	if err != nil {
 		return err
 	}
-	client, err := httpClientFor(ctx, baseURL)
+	// SSE bodies are long-lived; httpClientFor's 5s overall timeout would
+	// terminate a healthy stream on every quiet period. Use a streaming
+	// client and rely on ctx cancellation.
+	client, err := streamingClientFor(ctx, baseURL)
 	if err != nil {
 		return err
 	}

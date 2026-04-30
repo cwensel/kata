@@ -174,6 +174,7 @@ func nextAfterID(rows []db.Event, afterID int64) int64 {
 func sseHandler(cfg ServerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
 			api.WriteEnvelope(w, http.StatusMethodNotAllowed, "method_not_allowed",
 				"events stream only accepts GET")
 			return
@@ -184,18 +185,19 @@ func sseHandler(cfg ServerConfig) http.HandlerFunc {
 			return
 		}
 
-		// cursor_conflict is checked on header/query *presence* before parsing
-		// values; otherwise a malformed Last-Event-ID alongside a valid
-		// ?after_id would surface as validation rather than the documented
-		// cursor_conflict.
-		hadHeader := r.Header.Get("Last-Event-ID") != ""
-		hadQuery := r.URL.Query().Get("after_id") != ""
+		// cursor_conflict is checked on header/query *key presence* before
+		// parsing values. A request with `Last-Event-ID: 5` plus `?after_id=`
+		// (empty) or `?after_id=&after_id=5` (multi-value) would otherwise
+		// bypass detection if we asked Get(), which only returns the first
+		// non-empty value.
+		_, hadHeader := r.Header[http.CanonicalHeaderKey("Last-Event-ID")]
+		_, hadQuery := r.URL.Query()["after_id"]
 		if hadHeader && hadQuery {
 			renderAPIError(w, api.NewError(400, "cursor_conflict",
 				"pass either Last-Event-ID or ?after_id, not both", "", nil))
 			return
 		}
-		cursor, _, _, perr := parseSSECursor(r)
+		cursor, perr := parseSSECursor(r)
 		if perr != nil {
 			renderAPIError(w, perr)
 			return
@@ -355,28 +357,38 @@ func acceptableForSSE(accept string) bool {
 	return false
 }
 
-func parseSSECursor(r *http.Request) (cursor int64, hadHeader, hadQuery bool, err error) {
-	if v := r.Header.Get("Last-Event-ID"); v != "" {
-		hadHeader = true
+// parseSSECursor parses the SSE resume cursor from Last-Event-ID and/or
+// ?after_id. Both are presence-based (per CursorConflict semantics): a
+// present-but-empty value is a 400 validation error rather than a silent
+// "no cursor". Caller is responsible for checking the cursor_conflict
+// case (both present) before invoking this.
+func parseSSECursor(r *http.Request) (int64, error) {
+	var cursor int64
+	if vs, ok := r.Header[http.CanonicalHeaderKey("Last-Event-ID")]; ok {
+		v := ""
+		if len(vs) > 0 {
+			v = vs[0]
+		}
 		n, perr := strconv.ParseInt(v, 10, 64)
 		if perr != nil || n < 0 {
-			err = api.NewError(400, "validation",
+			return 0, api.NewError(400, "validation",
 				"Last-Event-ID must be a non-negative integer", "", nil)
-			return
 		}
 		cursor = n
 	}
-	if v := r.URL.Query().Get("after_id"); v != "" {
-		hadQuery = true
+	if vs, ok := r.URL.Query()["after_id"]; ok {
+		v := ""
+		if len(vs) > 0 {
+			v = vs[0]
+		}
 		n, perr := strconv.ParseInt(v, 10, 64)
 		if perr != nil || n < 0 {
-			err = api.NewError(400, "validation",
+			return 0, api.NewError(400, "validation",
 				"after_id must be a non-negative integer", "", nil)
-			return
 		}
 		cursor = n
 	}
-	return
+	return cursor, nil
 }
 
 func renderAPIError(w http.ResponseWriter, e error) {

@@ -161,6 +161,36 @@ func TestEvents_TailEmitsNDJSON(t *testing.T) {
 	}
 }
 
+func TestEvents_NegativeAfterRejected(t *testing.T) {
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"events", "--all-projects", "--after=-1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	var ce *cliError
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, ExitUsage, ce.ExitCode)
+	assert.Contains(t, ce.Message, "non-negative")
+}
+
+func TestEvents_NegativeLastEventIDRejected(t *testing.T) {
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"events", "--all-projects", "--tail", "--last-event-id=-1"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	var ce *cliError
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, ExitUsage, ce.ExitCode)
+	assert.Contains(t, ce.Message, "non-negative")
+}
+
 func TestEvents_TailFollowsResetRequired(t *testing.T) {
 	resetFlags(t)
 	env := testenv.New(t)

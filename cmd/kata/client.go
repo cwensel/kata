@@ -133,8 +133,19 @@ func unixTransport(path string) *http.Transport {
 //
 //nolint:unused // consumed by upcoming command implementations (Tasks 22-27)
 func httpClientFor(ctx context.Context, baseURL string) (*http.Client, error) {
+	return newDaemonClient(ctx, baseURL, 5*time.Second)
+}
+
+// streamingClientFor is httpClientFor but with no overall Client.Timeout, so
+// long-lived SSE bodies are not torn down mid-stream. Cancellation must come
+// from the request context. The unix-socket transport is preserved.
+func streamingClientFor(ctx context.Context, baseURL string) (*http.Client, error) {
+	return newDaemonClient(ctx, baseURL, 0)
+}
+
+func newDaemonClient(ctx context.Context, baseURL string, timeout time.Duration) (*http.Client, error) {
 	if !strings.HasPrefix(baseURL, "http://kata.invalid") {
-		return &http.Client{Timeout: 5 * time.Second}, nil
+		return &http.Client{Timeout: timeout}, nil
 	}
 	ns, err := daemon.NewNamespace()
 	if err != nil {
@@ -153,7 +164,7 @@ func httpClientFor(ctx context.Context, baseURL string) (*http.Client, error) {
 		if !pingOK(ctx, probe, "http://kata.invalid") {
 			continue
 		}
-		return &http.Client{Transport: unixTransport(path), Timeout: 5 * time.Second}, nil
+		return &http.Client{Transport: unixTransport(path), Timeout: timeout}, nil
 	}
 	return nil, errors.New("no unix-socket daemon found")
 }

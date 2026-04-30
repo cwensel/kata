@@ -521,9 +521,11 @@ func pollNextAfterID(t *testing.T, client *http.Client, url string) int64 {
 	return b.NextAfterID
 }
 
-// openSSEAt opens an SSE GET with Accept: text/event-stream and skips the
-// initial ": connected" preamble comment so subsequent reads start at the
-// first data frame.
+// openSSEAt opens an SSE GET with Accept: text/event-stream. The body is
+// returned with the connection's full byte stream intact — smokeFramer's
+// per-line scanner skips comment lines (": connected\n\n", heartbeats), so
+// callers can wrap with newSmokeFramer without a fixed-byte preamble skip
+// (which used to over- or under-consume bytes when frames raced the comment).
 func openSSEAt(t *testing.T, client *http.Client, url string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
@@ -532,9 +534,6 @@ func openSSEAt(t *testing.T, client *http.Client, url string) *http.Response {
 	resp, err := client.Do(req) //nolint:gosec // G107: test-only loopback
 	require.NoError(t, err)
 	require.Equal(t, 200, resp.StatusCode)
-	// Eat the ": connected\n\n" preamble so subsequent reads start at the first frame.
-	preamble := make([]byte, 16)
-	_, _ = resp.Body.Read(preamble)
 	return resp
 }
 
