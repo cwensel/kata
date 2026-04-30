@@ -65,6 +65,7 @@ func newRootCmd() *cobra.Command {
 		newLabelsCmd(),
 		newAssignCmd(),
 		newUnassignCmd(),
+		newReadyCmd(),
 		newWhoamiCmd(),
 		newHealthCmd(),
 		newProjectsCmd(),
