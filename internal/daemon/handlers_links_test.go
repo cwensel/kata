@@ -191,6 +191,72 @@ func TestCreateLink_ParentReplaceUnlinkEventPointsToOldParent(t *testing.T) {
 	assert.Equal(t, p1, pl.ToNumber, "unlink event must reference the old parent's number")
 }
 
+// TestCreateLink_ParentReplaceSelfLinkLeavesNoMutation verifies that a
+// self-link rejected on the parent --replace path returns 400 BEFORE deleting
+// the existing parent. If the existing parent had been deleted as a side
+// effect of a self-link attempt, a subsequent valid replace would no-op (no
+// event), because there'd be nothing to replace.
+func TestCreateLink_ParentReplaceSelfLinkLeavesNoMutation(t *testing.T) {
+	env := testenv.New(t)
+	pid, child, p1 := setupTwoIssues(t, env)
+	postLink(t, env, pid, child, "parent", p1)
+
+	body, _ := json.Marshal(map[string]any{
+		"actor":     "tester",
+		"type":      "parent",
+		"to_number": child,
+		"replace":   true,
+	})
+	resp, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
+			"/issues/"+strconv.FormatInt(child, 10)+"/links",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, 400, resp.StatusCode, "self-link must be rejected before mutation")
+
+	// If the original parent had been deleted by the failed self-link
+	// attempt, this second --replace would no-op (no event, changed=false)
+	// because there'd be nothing to replace. Observing event != nil and
+	// changed=true confirms p1 was still attached.
+	p2 := createIssueViaHTTP(t, env, pid, "p2")
+	body, _ = json.Marshal(map[string]any{
+		"actor":     "tester",
+		"type":      "parent",
+		"to_number": p2,
+		"replace":   true,
+	})
+	resp2, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
+			"/issues/"+strconv.FormatInt(child, 10)+"/links",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	require.Equal(t, 200, resp2.StatusCode)
+	var out linkResp
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&out))
+	require.NotNil(t, out.Event, "if original parent had been deleted, replace would no-op")
+	assert.Equal(t, "issue.linked", out.Event.Type)
+	assert.True(t, out.Changed)
+}
+
+func TestCreateLink_SelfLinkIs400(t *testing.T) {
+	env := testenv.New(t)
+	pid, a, _ := setupTwoIssues(t, env)
+	body, _ := json.Marshal(map[string]any{
+		"actor":     "tester",
+		"type":      "blocks",
+		"to_number": a,
+	})
+	resp, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
+			"/issues/"+strconv.FormatInt(a, 10)+"/links",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
 func TestDeleteLink_RemovesAndEmitsUnlink(t *testing.T) {
 	env := testenv.New(t)
 	pid, a, b := setupTwoIssues(t, env)
@@ -215,6 +281,27 @@ func TestDeleteLink_RemovesAndEmitsUnlink(t *testing.T) {
 	require.NotNil(t, out.Event)
 	assert.Equal(t, "issue.unlinked", out.Event.Type)
 	assert.True(t, out.Changed)
+}
+
+// TestDeleteLink_NotAttachedToURLIssueIs404 verifies that a DELETE on
+// /issues/{c}/links/{link_id} where the link is between (a, b) — neither of
+// which is c — returns 404 instead of mutating the wrong issue's link and
+// emitting a misattributed unlink event.
+func TestDeleteLink_NotAttachedToURLIssueIs404(t *testing.T) {
+	env := testenv.New(t)
+	pid, a, b := setupTwoIssues(t, env)
+	c := createIssueViaHTTP(t, env, pid, "c")
+	created := postLink(t, env, pid, a, "blocks", b)
+
+	req, err := http.NewRequest("DELETE",
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
+			"/issues/"+strconv.FormatInt(c, 10)+
+			"/links/"+strconv.FormatInt(created.Link.ID, 10)+"?actor=tester", nil)
+	require.NoError(t, err)
+	resp, err := env.HTTP.Do(req) //nolint:gosec // test-only, loopback URL
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 404, resp.StatusCode)
 }
 
 func TestDeleteLink_AbsentIs200NoOp(t *testing.T) {

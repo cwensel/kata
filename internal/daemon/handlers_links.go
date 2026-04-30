@@ -52,6 +52,16 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 
+		// Reject self-link before mutating state. The DB will catch this anyway,
+		// but in the --replace path we delete the existing parent before we'd
+		// see that error from CreateLinkAndEvent — leaving us with an
+		// unlinked-but-unreplaced parent and a fired issue.unlinked event.
+		// Cross-project links are already prevented by routing (both source and
+		// target are looked up via the same in.ProjectID).
+		if from.ID == to.ID {
+			return nil, api.NewError(400, "validation", "cannot link an issue to itself", "", nil)
+		}
+
 		// Storage endpoints: canonical (from < to) for related; otherwise as-is.
 		// canonicalFromNum/canonicalToNum match the Link row's actual columns
 		// and feed the LinkOut wire projection (so the response shows the
@@ -166,6 +176,13 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 		}
 		if link.ProjectID != in.ProjectID {
 			return nil, api.NewError(404, "link_not_found", "link not in this project", "", nil)
+		}
+		// The URL says we're operating on issue {number}'s links. Reject if
+		// the link's two endpoints don't include this issue — defends against
+		// URL manipulation that would otherwise emit an event attributed to
+		// the wrong issue.
+		if link.FromIssueID != from.ID && link.ToIssueID != from.ID {
+			return nil, api.NewError(404, "link_not_found", "link not attached to this issue", "", nil)
 		}
 
 		// Resolve numbers for the event payload before deleting.
