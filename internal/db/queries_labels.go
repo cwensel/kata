@@ -83,6 +83,15 @@ func (d *DB) HasLabel(ctx context.Context, issueID int64, label string) (bool, e
 	return n == 1, nil
 }
 
+// LabelByEndpoints fetches the label row for (issueID, label). Returns
+// ErrNotFound when the label is not attached to the issue.
+func (d *DB) LabelByEndpoints(ctx context.Context, issueID int64, label string) (IssueLabel, error) {
+	row := d.QueryRowContext(ctx,
+		labelSelect+` WHERE issue_id = ? AND label = ?`,
+		issueID, label)
+	return scanLabel(row)
+}
+
 // LabelsByIssue returns every label attached to issueID, ordered alphabetically.
 func (d *DB) LabelsByIssue(ctx context.Context, issueID int64) ([]IssueLabel, error) {
 	rows, err := d.QueryContext(ctx,

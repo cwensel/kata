@@ -53,16 +53,9 @@ func addLabelHandler(cfg ServerConfig) func(context.Context, *api.AddLabelReques
 		switch {
 		case errors.Is(err, db.ErrLabelExists):
 			// No-op: re-fetch existing row to populate the response.
-			labels, lerr := cfg.DB.LabelsByIssue(ctx, issue.ID)
+			existing, lerr := cfg.DB.LabelByEndpoints(ctx, issue.ID, in.Body.Label)
 			if lerr != nil {
 				return nil, api.NewError(500, "internal", lerr.Error(), "", nil)
-			}
-			var existing db.IssueLabel
-			for _, l := range labels {
-				if l.Label == in.Body.Label {
-					existing = l
-					break
-				}
 			}
 			out := &api.AddLabelResponse{}
 			out.Body.Issue = issue

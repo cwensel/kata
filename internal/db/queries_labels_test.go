@@ -101,6 +101,25 @@ func TestAddLabel_BlankAuthorIsNotMisreportedAsInvalidLabel(t *testing.T) {
 		"blank author must not surface as ErrLabelInvalid, got %v", err)
 }
 
+func TestLabelByEndpoints_FindsExisting(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+
+	created, err := d.AddLabel(ctx, i.ID, "bug", "tester")
+	require.NoError(t, err)
+
+	got, err := d.LabelByEndpoints(ctx, i.ID, "bug")
+	require.NoError(t, err)
+	assert.Equal(t, created.IssueID, got.IssueID)
+	assert.Equal(t, created.Label, got.Label)
+
+	_, err = d.LabelByEndpoints(ctx, i.ID, "never-attached")
+	assert.True(t, errors.Is(err, db.ErrNotFound))
+}
+
 func TestLabelCounts_AggregatesPerProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
