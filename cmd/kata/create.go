@@ -24,6 +24,8 @@ func newCreateCmd() *cobra.Command {
 		Short: "create a new issue",
 		Args:  cobra.ExactArgs(1),
 	}
+	var idempotencyKey string
+	var forceNew bool
 	cmd.Flags().StringVar(&src.Body, "body", "", "issue body")
 	cmd.Flags().StringVar(&src.File, "body-file", "", "read body from file")
 	cmd.Flags().BoolVar(&src.Stdin, "body-stdin", false, "read body from stdin")
@@ -31,6 +33,8 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().Int64Var(&parent, "parent", 0, "initial parent link target (issue number)")
 	cmd.Flags().Int64SliceVar(&blocks, "blocks", nil, "initial blocks link target (issue number, repeatable)")
 	cmd.Flags().StringVar(&owner, "owner", "", "initial owner")
+	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "send Idempotency-Key header for safe retry")
+	cmd.Flags().BoolVar(&forceNew, "force-new", false, "bypass look-alike soft-block (idempotency still wins)")
 
 	// RunE is set after flag registration so we can reference cmd.Flags().Changed.
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
@@ -86,10 +90,17 @@ func newCreateCmd() *cobra.Command {
 		if len(links) > 0 {
 			req["links"] = links
 		}
+		if forceNew {
+			req["force_new"] = true
+		}
+		headers := map[string]string{}
+		if idempotencyKey != "" {
+			headers["Idempotency-Key"] = idempotencyKey
+		}
 
-		status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
+		status, bs, err := httpDoJSONWithHeader(ctx, client, http.MethodPost,
 			fmt.Sprintf("%s/api/v1/projects/%d/issues", baseURL, projectID),
-			req)
+			headers, req)
 		if err != nil {
 			return err
 		}

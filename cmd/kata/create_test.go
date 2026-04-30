@@ -96,3 +96,49 @@ func TestCreate_WithInitialLabelsAndParent(t *testing.T) {
 	assert.True(t, sawParent, "parent link from #3 to #1 must be persisted")
 	assert.True(t, sawBlocks, "blocks link from #3 to #2 must be persisted")
 }
+
+func TestCreate_WithIdempotencyKeyReusesOnRepeat(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+
+	// First call.
+	cmd := newRootCmd()
+	var buf1 bytes.Buffer
+	cmd.SetOut(&buf1)
+	cmd.SetArgs([]string{"--workspace", dir, "--quiet", "create",
+		"first issue", "--idempotency-key", "K1"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	first := strings.TrimSpace(buf1.String())
+	assert.Equal(t, "1", first)
+
+	// Repeat with the same key + same fingerprint → reuse, same number.
+	resetFlags(t)
+	cmd = newRootCmd()
+	var buf2 bytes.Buffer
+	cmd.SetOut(&buf2)
+	cmd.SetArgs([]string{"--workspace", dir, "--quiet", "create",
+		"first issue", "--idempotency-key", "K1"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	second := strings.TrimSpace(buf2.String())
+	assert.Equal(t, "1", second, "same key + fingerprint must return existing issue number")
+}
+
+func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	createIssueViaHTTP(t, env, dir, "fix login crash on Safari")
+
+	// Without --force-new the daemon would 409 on look-alike. With it, a new issue lands.
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--workspace", dir, "--quiet", "create",
+		"fix login crash Safari", "--force-new"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, "2", strings.TrimSpace(buf.String()))
+}
