@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/testenv"
 )
 
@@ -20,7 +21,13 @@ import (
 type httptestServerHandle struct {
 	ts  any // *httptest.Server, but kept generic to avoid import cycles in helpers
 	dir string
+	db  *db.DB
 }
+
+// DB returns the *db.DB the test server is wired against, so a test can
+// reach below the HTTP surface to set up state (e.g. soft-delete an issue
+// before retrying create-with-idempotency-key).
+func (h *httptestServerHandle) DB() *db.DB { return h.db }
 
 // bootstrapProject spins up a fresh server + git workspace and runs `kata
 // init` against it, returning the handle and the project rowid. Used as a
@@ -263,6 +270,49 @@ func TestCreate_IdempotencyMismatch(t *testing.T) {
 		map[string]any{"actor": "agent-1", "title": "different title", "body": "different body"})
 	require.Equal(t, 409, second.status, string(second.body))
 	assert.Contains(t, string(second.body), `"code":"idempotency_mismatch"`)
+	// Decode the response and pin the original_issue_number echo so a future
+	// regression that drops the data field surfaces immediately. The wire
+	// envelope is {status, error: {code, message, data: {...}}}.
+	var errBody struct {
+		Error struct {
+			Data struct {
+				OriginalIssueNumber int64 `json:"original_issue_number"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(second.body, &errBody), string(second.body))
+	assert.EqualValues(t, 1, errBody.Error.Data.OriginalIssueNumber,
+		"mismatch payload must echo the original issue's number")
+}
+
+// TestCreate_IdempotencyDeletedIs409 verifies the §3.6 deleted-issue branch:
+// when the idempotent-matched issue has been soft-deleted, retrying with the
+// same key yields 409 idempotency_deleted with a restore hint.
+func TestCreate_IdempotencyDeletedIs409(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+
+	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K-DEL"},
+		map[string]any{"actor": "agent-1", "title": "soft delete me", "body": "details"})
+	requireOK(t, first)
+	var firstResp struct {
+		Issue struct{ ID int64 } `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(first.body, &firstResp))
+
+	// Soft-delete the issue at the DB layer (Task 5 ships SoftDeleteIssue;
+	// the daemon wraps it in Task 10. We can call DB directly because the
+	// test server shares the same *db.DB as the handler.)
+	_, _, _, err := h.DB().SoftDeleteIssue(t.Context(), firstResp.Issue.ID, "agent-1")
+	require.NoError(t, err)
+
+	second := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K-DEL"},
+		map[string]any{"actor": "agent-1", "title": "soft delete me", "body": "details"})
+	require.Equal(t, 409, second.status, string(second.body))
+	assert.Contains(t, string(second.body), `"code":"idempotency_deleted"`)
+	assert.Contains(t, string(second.body), `kata restore 1`,
+		"hint must point at the restore command")
 }
 
 // TestCreate_LookalikeSoftBlock verifies that a near-identical second create

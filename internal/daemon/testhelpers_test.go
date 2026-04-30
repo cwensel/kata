@@ -49,7 +49,7 @@ func newServerWithGitWorkspace(t *testing.T, originURL string) *httptestServerHa
 	srv := daemon.NewServer(daemon.ServerConfig{DB: d.db, StartedAt: d.now})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &httptestServerHandle{ts: ts, dir: dir}
+	return &httptestServerHandle{ts: ts, dir: dir, db: d.db}
 }
 
 // patchJSON issues a PATCH request with a JSON body and returns the response

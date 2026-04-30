@@ -39,66 +39,17 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			links = append(links, db.InitialLink{Type: l.Type, ToNumber: l.ToNumber})
 		}
 
-		// Idempotency check (spec §3.6). Wins over force_new per §3.7.
-		var idempotencyFingerprint string
-		if in.IdempotencyKey != "" {
-			idempotencyFingerprint = db.Fingerprint(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links)
-			since := time.Now().Add(-idempotencyWindow)
-			match, err := cfg.DB.LookupIdempotency(ctx, in.ProjectID, in.IdempotencyKey, since)
-			if err != nil {
-				return nil, api.NewError(500, "internal", err.Error(), "", nil)
-			}
-			if match != nil {
-				if match.Fingerprint != idempotencyFingerprint {
-					return nil, api.NewError(409, "idempotency_mismatch",
-						"idempotency key matched a prior issue with a different fingerprint",
-						"either use a fresh key, or send the exact same fields as the original",
-						map[string]any{"original_issue_number": match.IssueNumber})
-				}
-				existing, err := cfg.DB.IssueByID(ctx, match.IssueID)
-				if err != nil {
-					return nil, api.NewError(500, "internal", err.Error(), "", nil)
-				}
-				if existing.DeletedAt != nil {
-					return nil, api.NewError(409, "idempotency_deleted",
-						"idempotency key matched a soft-deleted issue",
-						"run `kata restore "+formatNumber(existing.Number)+"` or use a fresh key",
-						map[string]any{"original_issue_number": existing.Number})
-				}
-				out := &api.MutationResponse{}
-				out.Body.Issue = existing
-				out.Body.Event = nil
-				origCopy := match.Event
-				out.Body.OriginalEvent = &origCopy
-				out.Body.Changed = false
-				out.Body.Reused = true
-				return out, nil
-			}
+		// Idempotency runs before look-alike so it wins over force_new (§3.7).
+		idempotencyFingerprint, reuse, err := tryIdempotencyMatch(ctx, cfg, in, links)
+		if err != nil {
+			return nil, err
 		}
-
-		// Look-alike soft-block (spec §3.7). Skipped on force_new.
+		if reuse != nil {
+			return reuse, nil
+		}
 		if !in.Body.ForceNew {
-			q := strings.TrimSpace(in.Body.Title + " " + in.Body.Body)
-			candidates, err := cfg.DB.SearchFTS(ctx, in.ProjectID, q, 20, false)
-			if err != nil {
-				return nil, api.NewError(500, "internal", err.Error(), "", nil)
-			}
-			matched := []map[string]any{}
-			for _, c := range candidates {
-				score := similarity.Score(in.Body.Title, in.Body.Body, c.Issue.Title, c.Issue.Body)
-				if score >= similarityThreshold {
-					matched = append(matched, map[string]any{
-						"number": c.Issue.Number,
-						"title":  c.Issue.Title,
-						"score":  score,
-					})
-				}
-			}
-			if len(matched) > 0 {
-				return nil, api.NewError(409, "duplicate_candidates",
-					formatDuplicateMessage(matched),
-					"comment on an existing issue, or pass force_new=true to create anyway",
-					map[string]any{"candidates": matched})
+			if err := runLookalikeCheck(ctx, cfg, in); err != nil {
+				return nil, err
 			}
 		}
 
@@ -296,8 +247,82 @@ const (
 	similarityThreshold = 0.7
 )
 
-// formatNumber renders an issue number for inclusion in human-facing hints.
-func formatNumber(n int64) string { return strconv.FormatInt(n, 10) }
+// tryIdempotencyMatch runs the §3.6 idempotency lookup. Returns the fingerprint
+// (so the caller can fold it into the issue.created event payload) and, when a
+// prior issue exists for the key, a complete reuse-envelope MutationResponse
+// (the caller should return it directly). Returns the relevant 409 wire error
+// for mismatch / soft-deleted cases. When IdempotencyKey is empty, returns
+// ("", nil, nil) so the caller falls through to the look-alike check.
+func tryIdempotencyMatch(ctx context.Context, cfg ServerConfig, in *api.CreateIssueRequest,
+	links []db.InitialLink) (string, *api.MutationResponse, error) {
+	if in.IdempotencyKey == "" {
+		return "", nil, nil
+	}
+	fp := db.Fingerprint(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links)
+	since := time.Now().Add(-idempotencyWindow)
+	match, err := cfg.DB.LookupIdempotency(ctx, in.ProjectID, in.IdempotencyKey, since)
+	if err != nil {
+		return "", nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if match == nil {
+		return fp, nil, nil
+	}
+	if match.Fingerprint != fp {
+		return "", nil, api.NewError(409, "idempotency_mismatch",
+			"idempotency key matched a prior issue with a different fingerprint",
+			"either use a fresh key, or send the exact same fields as the original",
+			map[string]any{"original_issue_number": match.IssueNumber})
+	}
+	existing, err := cfg.DB.IssueByID(ctx, match.IssueID)
+	if err != nil {
+		return "", nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if existing.DeletedAt != nil {
+		return "", nil, api.NewError(409, "idempotency_deleted",
+			"idempotency key matched a soft-deleted issue",
+			"run `kata restore "+strconv.FormatInt(existing.Number, 10)+"` or use a fresh key",
+			map[string]any{"original_issue_number": existing.Number})
+	}
+	// Copy the Event off the *IdempotencyMatch struct so OriginalEvent has a
+	// stable address that doesn't alias the lookup result.
+	origCopy := match.Event
+	out := &api.MutationResponse{}
+	out.Body.Issue = existing
+	out.Body.Event = nil
+	out.Body.OriginalEvent = &origCopy
+	out.Body.Changed = false
+	out.Body.Reused = true
+	return fp, out, nil
+}
+
+// runLookalikeCheck runs the §3.7 soft-block: SearchFTS over title+body, scores
+// each candidate via similarity.Score, and returns a 409 duplicate_candidates
+// error if any candidate is at or above the 0.7 threshold. nil means proceed.
+func runLookalikeCheck(ctx context.Context, cfg ServerConfig, in *api.CreateIssueRequest) error {
+	q := strings.TrimSpace(in.Body.Title + " " + in.Body.Body)
+	candidates, err := cfg.DB.SearchFTS(ctx, in.ProjectID, q, 20, false)
+	if err != nil {
+		return api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	matched := []map[string]any{}
+	for _, c := range candidates {
+		score := similarity.Score(in.Body.Title, in.Body.Body, c.Issue.Title, c.Issue.Body)
+		if score >= similarityThreshold {
+			matched = append(matched, map[string]any{
+				"number": c.Issue.Number,
+				"title":  c.Issue.Title,
+				"score":  score,
+			})
+		}
+	}
+	if len(matched) == 0 {
+		return nil
+	}
+	return api.NewError(409, "duplicate_candidates",
+		formatDuplicateMessage(matched),
+		"comment on an existing issue, or pass force_new=true to create anyway",
+		map[string]any{"candidates": matched})
+}
 
 // formatDuplicateMessage produces a singular/plural-aware human message for
 // the duplicate_candidates 409 response.
