@@ -212,6 +212,127 @@ func TestCreateIssue_InitialSelfLinkIs400(t *testing.T) {
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
+// TestCreate_IdempotencyReuse_SameFingerprint verifies that a second create
+// with the same Idempotency-Key + same body returns the reuse envelope: no
+// fresh event, the original_event populated, changed=false, reused=true.
+func TestCreate_IdempotencyReuse_SameFingerprint(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+	body := map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"}
+
+	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"}, body)
+	requireOK(t, first)
+	var firstOut struct {
+		Issue struct{ Number int64 } `json:"issue"`
+		Event struct{ ID int64 }     `json:"event"`
+	}
+	require.NoError(t, json.Unmarshal(first.body, &firstOut))
+	require.NotZero(t, firstOut.Event.ID)
+
+	second := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"}, body)
+	requireOK(t, second)
+	var secondOut struct {
+		Issue         struct{ Number int64 } `json:"issue"`
+		Event         *struct{ ID int64 }    `json:"event"`
+		OriginalEvent *struct{ ID int64 }    `json:"original_event"`
+		Changed       bool                   `json:"changed"`
+		Reused        bool                   `json:"reused"`
+	}
+	require.NoError(t, json.Unmarshal(second.body, &secondOut))
+	assert.Equal(t, firstOut.Issue.Number, secondOut.Issue.Number)
+	assert.Nil(t, secondOut.Event, "reuse must omit fresh event")
+	require.NotNil(t, secondOut.OriginalEvent, "reuse must populate original_event")
+	assert.Equal(t, firstOut.Event.ID, secondOut.OriginalEvent.ID)
+	assert.False(t, secondOut.Changed)
+	assert.True(t, secondOut.Reused)
+}
+
+// TestCreate_IdempotencyMismatch verifies that reusing the same Idempotency-Key
+// with a different fingerprint (different title) is a 409 idempotency_mismatch.
+func TestCreate_IdempotencyMismatch(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+
+	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"},
+		map[string]any{"actor": "agent-1", "title": "first title", "body": "first body"})
+	requireOK(t, first)
+
+	second := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"},
+		map[string]any{"actor": "agent-1", "title": "different title", "body": "different body"})
+	require.Equal(t, 409, second.status, string(second.body))
+	assert.Contains(t, string(second.body), `"code":"idempotency_mismatch"`)
+}
+
+// TestCreate_LookalikeSoftBlock verifies that a near-identical second create
+// (same title+body) without Idempotency-Key and without force_new is rejected
+// as 409 duplicate_candidates.
+func TestCreate_LookalikeSoftBlock(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+	body := map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"}
+
+	first := postWithHeader(t, ts, path, nil, body)
+	requireOK(t, first)
+
+	second := postWithHeader(t, ts, path, nil, body)
+	require.Equal(t, 409, second.status, string(second.body))
+	assert.Contains(t, string(second.body), `"code":"duplicate_candidates"`)
+	assert.Contains(t, string(second.body), `"candidates"`)
+}
+
+// TestCreate_ForceNewBypassesLookalike verifies that force_new=true on a body
+// that would otherwise trip the look-alike check creates a new issue (200).
+func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+
+	first := postWithHeader(t, ts, path, nil,
+		map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"})
+	requireOK(t, first)
+
+	second := postWithHeader(t, ts, path, nil,
+		map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here", "force_new": true})
+	requireOK(t, second)
+	var out struct {
+		Issue struct{ Number int64 } `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(second.body, &out))
+	assert.EqualValues(t, 2, out.Issue.Number, "force_new must yield a new issue, not reuse")
+}
+
+// TestCreate_IdempotencyWinsOverForceNew verifies the spec §3.7 ordering: an
+// idempotent match returns reuse even when force_new=true is also set.
+func TestCreate_IdempotencyWinsOverForceNew(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+	body := map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"}
+
+	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"}, body)
+	requireOK(t, first)
+	var firstOut struct {
+		Issue struct{ Number int64 } `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(first.body, &firstOut))
+
+	bodyForceNew := map[string]any{
+		"actor": "agent-1", "title": "fix login crash", "body": "stack trace here", "force_new": true,
+	}
+	second := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"}, bodyForceNew)
+	requireOK(t, second)
+	var secondOut struct {
+		Issue  struct{ Number int64 } `json:"issue"`
+		Reused bool                   `json:"reused"`
+	}
+	require.NoError(t, json.Unmarshal(second.body, &secondOut))
+	assert.Equal(t, firstOut.Issue.Number, secondOut.Issue.Number, "idempotency wins: same number returned")
+	assert.True(t, secondOut.Reused)
+}
+
 func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	env := testenv.New(t)
 	pid, parent, child := setupTwoIssues(t, env)

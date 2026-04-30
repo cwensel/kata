@@ -179,6 +179,12 @@ type CreateIssueParams struct {
 	Labels []string
 	Links  []InitialLink
 	Owner  *string
+
+	// Optional. When non-empty, both fields are folded into the issue.created
+	// event payload so future LookupIdempotency calls can find the row via
+	// idx_events_idempotency.
+	IdempotencyKey         string
+	IdempotencyFingerprint string
 }
 
 // ErrInitialLinkTargetNotFound is returned when an InitialLink's to_number
@@ -296,7 +302,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		}
 	}
 
-	payload := buildCreatedPayload(labels, links, owner)
+	payload := buildCreatedPayload(labels, links, owner, p.IdempotencyKey, p.IdempotencyFingerprint)
 
 	evt, err := insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       p.ProjectID,
@@ -325,15 +331,17 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 // buildCreatedPayload returns the issue.created event payload as JSON. Empty
 // initial state → "{}". Otherwise emits keys for whichever components are set,
 // preserving determinism (sorted labels) so events are byte-stable.
-func buildCreatedPayload(labels []string, links []InitialLink, owner *string) string {
+func buildCreatedPayload(labels []string, links []InitialLink, owner *string, idempotencyKey, idempotencyFingerprint string) string {
 	type linkOut struct {
 		Type     string `json:"type"`
 		ToNumber int64  `json:"to_number"`
 	}
 	type out struct {
-		Labels []string  `json:"labels,omitempty"`
-		Links  []linkOut `json:"links,omitempty"`
-		Owner  string    `json:"owner,omitempty"`
+		Labels                 []string  `json:"labels,omitempty"`
+		Links                  []linkOut `json:"links,omitempty"`
+		Owner                  string    `json:"owner,omitempty"`
+		IdempotencyKey         string    `json:"idempotency_key,omitempty"`
+		IdempotencyFingerprint string    `json:"idempotency_fingerprint,omitempty"`
 	}
 	var o out
 	if len(labels) > 0 {
@@ -351,6 +359,8 @@ func buildCreatedPayload(labels []string, links []InitialLink, owner *string) st
 	if owner != nil {
 		o.Owner = *owner
 	}
+	o.IdempotencyKey = idempotencyKey
+	o.IdempotencyFingerprint = idempotencyFingerprint
 	bs, err := json.Marshal(o)
 	if err != nil {
 		return "{}"

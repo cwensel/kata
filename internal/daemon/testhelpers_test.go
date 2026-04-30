@@ -96,3 +96,38 @@ func getStatusBody(t *testing.T, ts *httptest.Server, path string) (*http.Respon
 	require.NoError(t, err)
 	return resp, bs
 }
+
+// httpResp is a status+body pair captured by postWithHeader. The bytes are
+// already drained, so callers can read the body multiple times.
+type httpResp struct {
+	status int
+	body   []byte
+}
+
+// postWithHeader is like postJSON but allows setting custom headers (e.g. the
+// Idempotency-Key header tested by the createIssue handler).
+func postWithHeader(t *testing.T, ts *httptest.Server, path string, headers map[string]string, body any) httpResp {
+	t.Helper()
+	bs, err := json.Marshal(body)
+	require.NoError(t, err)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		ts.URL+path, bytes.NewReader(bs))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704: test request to httptest server URL
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	out, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return httpResp{status: resp.StatusCode, body: out}
+}
+
+// requireOK asserts that the captured response was a 200 OK; surfaces the body
+// in the failure message so callers don't need to repeat the wrap.
+func requireOK(t *testing.T, r httpResp) {
+	t.Helper()
+	require.Equalf(t, 200, r.status, "expected 200, got %d: %s", r.status, string(r.body))
+}

@@ -85,7 +85,7 @@ type ShowProjectResponse struct {
 // idempotent match (idempotency wins per spec §3.7).
 type CreateIssueRequest struct {
 	ProjectID      int64  `path:"project_id" required:"true"`
-	IdempotencyKey string `header:"Idempotency-Key,omitempty"`
+	IdempotencyKey string `header:"Idempotency-Key"`
 	Body           struct {
 		Actor    string                  `json:"actor" required:"true"`
 		Title    string                  `json:"title" required:"true"`

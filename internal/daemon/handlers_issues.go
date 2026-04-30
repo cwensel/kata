@@ -3,11 +3,15 @@ package daemon
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/wesm/kata/internal/api"
 	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/similarity"
 )
 
 // registerIssuesHandlers installs the four issue routes (create/list/show/edit)
@@ -35,14 +39,79 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			links = append(links, db.InitialLink{Type: l.Type, ToNumber: l.ToNumber})
 		}
 
+		// Idempotency check (spec §3.6). Wins over force_new per §3.7.
+		var idempotencyFingerprint string
+		if in.IdempotencyKey != "" {
+			idempotencyFingerprint = db.Fingerprint(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links)
+			since := time.Now().Add(-idempotencyWindow)
+			match, err := cfg.DB.LookupIdempotency(ctx, in.ProjectID, in.IdempotencyKey, since)
+			if err != nil {
+				return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			}
+			if match != nil {
+				if match.Fingerprint != idempotencyFingerprint {
+					return nil, api.NewError(409, "idempotency_mismatch",
+						"idempotency key matched a prior issue with a different fingerprint",
+						"either use a fresh key, or send the exact same fields as the original",
+						map[string]any{"original_issue_number": match.IssueNumber})
+				}
+				existing, err := cfg.DB.IssueByID(ctx, match.IssueID)
+				if err != nil {
+					return nil, api.NewError(500, "internal", err.Error(), "", nil)
+				}
+				if existing.DeletedAt != nil {
+					return nil, api.NewError(409, "idempotency_deleted",
+						"idempotency key matched a soft-deleted issue",
+						"run `kata restore "+formatNumber(existing.Number)+"` or use a fresh key",
+						map[string]any{"original_issue_number": existing.Number})
+				}
+				out := &api.MutationResponse{}
+				out.Body.Issue = existing
+				out.Body.Event = nil
+				origCopy := match.Event
+				out.Body.OriginalEvent = &origCopy
+				out.Body.Changed = false
+				out.Body.Reused = true
+				return out, nil
+			}
+		}
+
+		// Look-alike soft-block (spec §3.7). Skipped on force_new.
+		if !in.Body.ForceNew {
+			q := strings.TrimSpace(in.Body.Title + " " + in.Body.Body)
+			candidates, err := cfg.DB.SearchFTS(ctx, in.ProjectID, q, 20, false)
+			if err != nil {
+				return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			}
+			matched := []map[string]any{}
+			for _, c := range candidates {
+				score := similarity.Score(in.Body.Title, in.Body.Body, c.Issue.Title, c.Issue.Body)
+				if score >= similarityThreshold {
+					matched = append(matched, map[string]any{
+						"number": c.Issue.Number,
+						"title":  c.Issue.Title,
+						"score":  score,
+					})
+				}
+			}
+			if len(matched) > 0 {
+				return nil, api.NewError(409, "duplicate_candidates",
+					formatDuplicateMessage(matched),
+					"comment on an existing issue, or pass force_new=true to create anyway",
+					map[string]any{"candidates": matched})
+			}
+		}
+
 		issue, evt, err := cfg.DB.CreateIssue(ctx, db.CreateIssueParams{
-			ProjectID: in.ProjectID,
-			Title:     in.Body.Title,
-			Body:      in.Body.Body,
-			Author:    in.Body.Actor,
-			Owner:     in.Body.Owner,
-			Labels:    in.Body.Labels,
-			Links:     links,
+			ProjectID:              in.ProjectID,
+			Title:                  in.Body.Title,
+			Body:                   in.Body.Body,
+			Author:                 in.Body.Actor,
+			Owner:                  in.Body.Owner,
+			Labels:                 in.Body.Labels,
+			Links:                  links,
+			IdempotencyKey:         in.IdempotencyKey,
+			IdempotencyFingerprint: idempotencyFingerprint,
 		})
 		switch {
 		case errors.Is(err, db.ErrInitialLinkInvalidType):
@@ -105,6 +174,12 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		}
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		if issue.DeletedAt != nil && !in.IncludeDeleted {
+			return nil, api.NewError(404, "issue_not_found",
+				"issue not found",
+				"pass include_deleted=true to view soft-deleted issues",
+				nil)
 		}
 		comments, err := listComments(ctx, cfg.DB, issue.ID)
 		if err != nil {
@@ -212,4 +287,24 @@ func listComments(ctx context.Context, store *db.DB, issueID int64) ([]db.Commen
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+const (
+	// idempotencyWindow is the 7-day lookback per spec §3.6.
+	idempotencyWindow = 7 * 24 * time.Hour
+	// similarityThreshold is the soft-block trigger per spec §3.7.
+	similarityThreshold = 0.7
+)
+
+// formatNumber renders an issue number for inclusion in human-facing hints.
+func formatNumber(n int64) string { return strconv.FormatInt(n, 10) }
+
+// formatDuplicateMessage produces a singular/plural-aware human message for
+// the duplicate_candidates 409 response.
+func formatDuplicateMessage(matched []map[string]any) string {
+	n := len(matched)
+	if n == 1 {
+		return "1 open issue matches this title"
+	}
+	return strconv.Itoa(n) + " open issues match this title"
 }
