@@ -221,66 +221,83 @@ type sseFrame struct {
 	data  string
 }
 
+// sseFramer streams SSE frames from a single response body. Use Next() to
+// pull one frame at a time so tests can synchronize between frames (e.g.,
+// "wait for the drain frame before issuing the live mutation"). A single
+// long-lived goroutine owns the bufio.Reader; concurrent ReadString on the
+// same reader is undefined behavior.
+type sseFramer struct {
+	framesCh chan sseFrame
+	doneCh   chan struct{}
+}
+
+func newSSEFramer(body io.Reader) *sseFramer {
+	f := &sseFramer{
+		framesCh: make(chan sseFrame, 8),
+		doneCh:   make(chan struct{}),
+	}
+	go func() {
+		defer close(f.framesCh)
+		defer close(f.doneCh)
+		rd := bufio.NewReader(body)
+		cur := sseFrame{}
+		for {
+			s, err := rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			line := strings.TrimRight(s, "\r\n")
+			switch {
+			case line == "":
+				if cur.id != "" || cur.event != "" || cur.data != "" {
+					f.framesCh <- cur
+					cur = sseFrame{}
+				}
+			case strings.HasPrefix(line, ":"):
+				// comment / heartbeat — ignore
+			case strings.HasPrefix(line, "id: "):
+				cur.id = strings.TrimPrefix(line, "id: ")
+			case strings.HasPrefix(line, "event: "):
+				cur.event = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				cur.data = strings.TrimPrefix(line, "data: ")
+			}
+		}
+	}()
+	return f
+}
+
+func (f *sseFramer) Next(t *testing.T, timeout time.Duration) (sseFrame, bool) {
+	t.Helper()
+	select {
+	case fr, ok := <-f.framesCh:
+		return fr, ok
+	case <-time.After(timeout):
+		return sseFrame{}, false
+	}
+}
+
+// readSSEFramesUntilN is kept for tests that don't need per-frame
+// synchronization (e.g., simple drain assertions). Internally it builds an
+// sseFramer and pulls n frames or until the deadline.
 func readSSEFramesUntilN(t *testing.T, body interface {
 	Read([]byte) (int, error)
 	Close() error
 }, n int, timeout time.Duration) []sseFrame {
 	t.Helper()
-	var frames []sseFrame
-	cur := sseFrame{}
+	framer := newSSEFramer(body)
 	deadline := time.Now().Add(timeout)
-
-	// A single long-lived goroutine owns the bufio.Reader; the test loop
-	// pulls lines from lineCh. Concurrent ReadString on the same reader
-	// would be undefined behavior, and a goroutine-per-line design would
-	// leak the in-flight ReadString on timeout.
-	type lineResult struct {
-		line string
-		err  error
-	}
-	lineCh := make(chan lineResult)
-	go func() {
-		defer close(lineCh)
-		rd := bufio.NewReader(body)
-		for {
-			s, err := rd.ReadString('\n')
-			lineCh <- lineResult{s, err}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	for len(frames) < n && time.Now().Before(deadline) {
-		var lr lineResult
-		var ok bool
-		select {
-		case lr, ok = <-lineCh:
-			if !ok {
-				return frames
-			}
-		case <-time.After(time.Until(deadline)):
+	var frames []sseFrame
+	for len(frames) < n {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			return frames
 		}
-		if lr.err != nil {
+		fr, ok := framer.Next(t, remaining)
+		if !ok {
 			return frames
 		}
-		line := strings.TrimRight(lr.line, "\r\n")
-		switch {
-		case line == "":
-			if cur.id != "" || cur.event != "" || cur.data != "" {
-				frames = append(frames, cur)
-				cur = sseFrame{}
-			}
-		case strings.HasPrefix(line, ":"):
-			// comment / heartbeat — ignore but keep reading
-		case strings.HasPrefix(line, "id: "):
-			cur.id = strings.TrimPrefix(line, "id: ")
-		case strings.HasPrefix(line, "event: "):
-			cur.event = strings.TrimPrefix(line, "event: ")
-		case strings.HasPrefix(line, "data: "):
-			cur.data = strings.TrimPrefix(line, "data: ")
-		}
+		frames = append(frames, fr)
 	}
 	return frames
 }
@@ -424,16 +441,18 @@ func TestSSE_DrainFollowedByLiveBroadcast(t *testing.T) {
 
 	resp := openSSE(t, env, "after_id=0", nil)
 	defer func() { _ = resp.Body.Close() }()
+	framer := newSSEFramer(resp.Body)
 
-	// Start reading frames in the background before triggering the live broadcast.
-	// We expect 2 frames total: one drained (issue.created for "first") and one
-	// live (issue.created for "second").
-	framesCh := make(chan []sseFrame, 1)
-	go func() {
-		framesCh <- readSSEFramesUntilN(t, resp.Body, 2, 5*time.Second)
-	}()
+	// Wait for the drain frame BEFORE creating the second issue. Otherwise
+	// the second issue's commit could land before the SSE handler queries
+	// EventsAfter, putting both events in the drain phase and not exercising
+	// the live broadcast path.
+	first, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok, "drain frame should arrive")
+	assert.Equal(t, "1", first.id)
+	assert.Equal(t, "issue.created", first.event)
 
-	// Create a second issue via HTTP so the handler fires the broadcast.
+	// Now create a second issue via HTTP so the handler fires a live broadcast.
 	pidStr := strconv.FormatInt(pid, 10)
 	issueURL := env.URL + "/api/v1/projects/" + pidStr + "/issues"
 	issueReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, issueURL,
@@ -445,12 +464,10 @@ func TestSSE_DrainFollowedByLiveBroadcast(t *testing.T) {
 	_ = issueResp.Body.Close()
 	require.Equal(t, 200, issueResp.StatusCode)
 
-	frames := <-framesCh
-	require.Len(t, frames, 2)
-	assert.Equal(t, "1", frames[0].id)
-	assert.Equal(t, "issue.created", frames[0].event)
-	assert.Equal(t, "2", frames[1].id)
-	assert.Equal(t, "issue.created", frames[1].event)
+	second, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok, "live frame should arrive after the broadcast")
+	assert.Equal(t, "2", second.id)
+	assert.Equal(t, "issue.created", second.event)
 }
 
 func TestSSE_LiveResetClosesStream(t *testing.T) {
@@ -461,13 +478,15 @@ func TestSSE_LiveResetClosesStream(t *testing.T) {
 
 	resp := openSSE(t, env, "after_id=0", nil)
 	defer func() { _ = resp.Body.Close() }()
+	framer := newSSEFramer(resp.Body)
 
-	// Start reading frames in the background. We expect 2: the drain frame
-	// (issue.created for "doomed") and the live reset frame.
-	framesCh := make(chan []sseFrame, 1)
-	go func() {
-		framesCh <- readSSEFramesUntilN(t, resp.Body, 2, 5*time.Second)
-	}()
+	// Wait for the drain frame to be observed BEFORE issuing the purge.
+	// Otherwise the purge cascade might delete the issue.created event row
+	// before the drain query runs, so drain returns empty and the test only
+	// sees the reset frame instead of the documented {drain, reset} pair.
+	first, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok, "drain frame should arrive")
+	assert.Equal(t, "issue.created", first.event)
 
 	purgeURL := env.URL + "/api/v1/projects/" + pidStr + "/issues/" + strconv.FormatInt(is.Number, 10) + "/actions/purge"
 	purgeReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, purgeURL,
@@ -480,10 +499,9 @@ func TestSSE_LiveResetClosesStream(t *testing.T) {
 	_ = purgeResp.Body.Close()
 	require.Equal(t, 200, purgeResp.StatusCode)
 
-	frames := <-framesCh
-	require.Len(t, frames, 2)
-	assert.Equal(t, "issue.created", frames[0].event)
-	assert.Equal(t, "sync.reset_required", frames[1].event)
+	reset, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok, "reset frame should arrive after purge")
+	assert.Equal(t, "sync.reset_required", reset.event)
 }
 
 func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {

@@ -24,20 +24,30 @@ func TestSSE_OutOfOrderBroadcastsEmitInIDOrder(t *testing.T) {
 	project, err := env.DB.CreateProject(context.Background(), "github.com/test/a", "a")
 	require.NoError(t, err)
 
+	// Sentinel: insert + broadcast a setup event before the test events. We
+	// wait for its frame to confirm the SSE handler has finished its drain
+	// phase and entered the live wakeup loop. Without this anchor, the test
+	// events could land in the drain (which delivers in id order trivially)
+	// instead of exercising the wakeup-and-requery path under test.
+	_, sentinel, err := env.DB.CreateIssue(context.Background(), db.CreateIssueParams{
+		ProjectID: project.ID, Title: "sentinel", Author: "tester",
+	})
+	require.NoError(t, err)
+
 	hwm, err := env.DB.MaxEventID(context.Background())
 	require.NoError(t, err)
-	resp := openSSE(t, env, "after_id="+strconv.FormatInt(hwm, 10), nil)
+	resp := openSSE(t, env, "after_id="+strconv.FormatInt(hwm-1, 10), nil)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, 200, resp.StatusCode)
 
-	// Drain the : connected\n\n preamble.
-	preamble := make([]byte, 16)
-	_, err = resp.Body.Read(preamble)
-	require.NoError(t, err)
+	framer := newSSEFramer(resp.Body)
+	sentinelFrame, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok, "sentinel drain frame should arrive")
+	require.Equal(t, strconv.FormatInt(sentinel.ID, 10), sentinelFrame.id)
 
-	// Insert two events directly via DB so the handler-side broadcast does NOT
-	// fire (testenv.DB.CreateIssue bypasses HTTP). We'll Broadcast manually in
-	// inverted order below.
+	// Now in live phase. Insert two events directly via DB so the handler-side
+	// broadcast does NOT fire; broadcast manually in inverted order to pin the
+	// wakeup-and-requery ordering claim.
 	_, evt1, err := env.DB.CreateIssue(context.Background(), db.CreateIssueParams{
 		ProjectID: project.ID, Title: "first", Author: "tester",
 	})
@@ -55,11 +65,13 @@ func TestSSE_OutOfOrderBroadcastsEmitInIDOrder(t *testing.T) {
 		Kind: "event", Event: &evt1, ProjectID: project.ID,
 	})
 
-	frames := readSSEFramesUntilN(t, resp.Body, 2, 2*time.Second)
-	require.Len(t, frames, 2)
-	assert.Equal(t, strconv.FormatInt(evt1.ID, 10), frames[0].id,
+	first, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok)
+	second, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok)
+	assert.Equal(t, strconv.FormatInt(evt1.ID, 10), first.id,
 		"first frame must be the lower id, regardless of broadcast order")
-	assert.Equal(t, strconv.FormatInt(evt2.ID, 10), frames[1].id)
+	assert.Equal(t, strconv.FormatInt(evt2.ID, 10), second.id)
 }
 
 // TestBroadcaster_ConcurrentSubscribeBroadcastUnsub is a -race fuzz of

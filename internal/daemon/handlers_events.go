@@ -173,20 +173,31 @@ func nextAfterID(rows []db.Event, afterID int64) int64 {
 // committed before parse is captured by PurgeResetCheck. See spec §5.3.
 func sseHandler(cfg ServerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			api.WriteEnvelope(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				"events stream only accepts GET")
+			return
+		}
 		if !acceptableForSSE(r.Header.Get("Accept")) {
 			api.WriteEnvelope(w, http.StatusNotAcceptable, "not_acceptable",
 				"Accept must be text/event-stream")
 			return
 		}
 
-		cursor, hadHeader, hadQuery, perr := parseSSECursor(r)
-		if perr != nil {
-			renderAPIError(w, perr)
-			return
-		}
+		// cursor_conflict is checked on header/query *presence* before parsing
+		// values; otherwise a malformed Last-Event-ID alongside a valid
+		// ?after_id would surface as validation rather than the documented
+		// cursor_conflict.
+		hadHeader := r.Header.Get("Last-Event-ID") != ""
+		hadQuery := r.URL.Query().Get("after_id") != ""
 		if hadHeader && hadQuery {
 			renderAPIError(w, api.NewError(400, "cursor_conflict",
 				"pass either Last-Event-ID or ?after_id, not both", "", nil))
+			return
+		}
+		cursor, _, _, perr := parseSSECursor(r)
+		if perr != nil {
+			renderAPIError(w, perr)
 			return
 		}
 
@@ -302,19 +313,29 @@ func runLivePhase(ctx context.Context, deps livePhaseDeps, projectID, lastSent i
 				if msg.Event == nil {
 					continue
 				}
-				rows, err := deps.cfg.DB.EventsAfter(ctx, db.EventsAfterParams{
-					AfterID:   lastSent,
-					ProjectID: projectID,
-					ThroughID: msg.Event.ID,
-					Limit:     sseLiveBatch,
-				})
-				if err != nil {
-					return
-				}
-				for _, ev := range rows {
-					writeEventFrame(deps.w, ev)
-					deps.flusher.Flush()
-					lastSent = ev.ID
+				// Loop until we've drained every row at or below the wakeup's
+				// id. Without this, a single broadcast carrying >sseLiveBatch
+				// pending events would leave the tail in the DB until the next
+				// wakeup, leaving consumers indefinitely behind.
+				through := msg.Event.ID
+				for {
+					rows, err := deps.cfg.DB.EventsAfter(ctx, db.EventsAfterParams{
+						AfterID:   lastSent,
+						ProjectID: projectID,
+						ThroughID: through,
+						Limit:     sseLiveBatch,
+					})
+					if err != nil {
+						return
+					}
+					for _, ev := range rows {
+						writeEventFrame(deps.w, ev)
+						deps.flusher.Flush()
+						lastSent = ev.ID
+					}
+					if len(rows) < sseLiveBatch {
+						break
+					}
 				}
 			}
 		}
