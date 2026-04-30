@@ -2,14 +2,6 @@ package main
 
 import "github.com/spf13/cobra"
 
-func newShowCmd() *cobra.Command {
-	return &cobra.Command{Use: "show <number>", Short: "show issue"}
-}
-
-func newListCmd() *cobra.Command {
-	return &cobra.Command{Use: "list", Short: "list issues"}
-}
-
 func newEditCmd() *cobra.Command {
 	return &cobra.Command{Use: "edit <number>", Short: "edit issue"}
 }

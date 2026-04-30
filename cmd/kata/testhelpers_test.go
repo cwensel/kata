@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 	"time"
 
@@ -79,3 +80,21 @@ func initBoundWorkspace(t *testing.T, baseURL, origin string) string {
 	require.Equal(t, 200, resp.StatusCode)
 	return dir
 }
+
+// resolvePIDViaHTTP calls POST /api/v1/projects/resolve with start_path and
+// returns the resolved project ID.
+func resolvePIDViaHTTP(t *testing.T, baseURL, startPath string) int64 {
+	t.Helper()
+	body := []byte(`{"start_path":"` + startPath + `"}`)
+	resp, err := http.Post(baseURL+"/api/v1/projects/resolve", "application/json", bytes.NewReader(body)) //nolint:gosec,noctx // test-only
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var b struct {
+		Project struct{ ID int64 } `json:"project"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	return b.Project.ID
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
