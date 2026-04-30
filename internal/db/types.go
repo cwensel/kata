@@ -95,3 +95,13 @@ type SearchCandidate struct {
 	Score     float64  `json:"score"` // BM25, negated; higher = better match
 	MatchedIn []string `json:"matched_in"`
 }
+
+// IdempotencyMatch is the payload returned by LookupIdempotency. The Event row
+// is included so the handler can populate `original_event` in the reuse-case
+// MutationResponse without a second query.
+type IdempotencyMatch struct {
+	IssueID     int64
+	IssueNumber int64
+	Fingerprint string
+	Event       Event
+}

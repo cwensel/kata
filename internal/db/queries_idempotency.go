@@ -1,0 +1,107 @@
+package db
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/wesm/kata/internal/similarity"
+)
+
+// Fingerprint returns the lowercase hex SHA-256 of the canonical concatenation
+// of (title, body, owner, sorted labels, sorted links) per spec §3.6. The
+// fingerprint is order-independent for labels and links: both are sorted before
+// hashing. Owner is canonicalized as "" when nil or empty. Labels are
+// alphabetized. Links are sorted by (type, to_number).
+func Fingerprint(title, body string, owner *string, labels []string, links []InitialLink) string {
+	ownerStr := ""
+	if owner != nil {
+		ownerStr = *owner
+	}
+	sortedLabels := append([]string(nil), labels...)
+	sort.Strings(sortedLabels)
+	sortedLinks := append([]InitialLink(nil), links...)
+	sort.Slice(sortedLinks, func(i, j int) bool {
+		if sortedLinks[i].Type != sortedLinks[j].Type {
+			return sortedLinks[i].Type < sortedLinks[j].Type
+		}
+		return sortedLinks[i].ToNumber < sortedLinks[j].ToNumber
+	})
+	// Use a fixed JSON form for the links portion so cross-language clients
+	// can reproduce the same bytes. Each entry is {"type":"…","other_number":N}
+	// per spec §3.6 ("two-element record with a fixed JSON form").
+	type linkRec struct {
+		Type        string `json:"type"`
+		OtherNumber int64  `json:"other_number"`
+	}
+	linkRecs := make([]linkRec, 0, len(sortedLinks))
+	for _, l := range sortedLinks {
+		linkRecs = append(linkRecs, linkRec{Type: l.Type, OtherNumber: l.ToNumber})
+	}
+	linksJSON, _ := json.Marshal(linkRecs) // never errors on this shape
+
+	var b strings.Builder
+	b.WriteString("title=")
+	b.WriteString(similarity.Canonical(title))
+	b.WriteString("\nbody=")
+	b.WriteString(similarity.Canonical(body))
+	b.WriteString("\nowner=")
+	b.WriteString(similarity.Canonical(ownerStr))
+	b.WriteString("\nlabels=")
+	b.WriteString(strings.Join(sortedLabels, ","))
+	b.WriteString("\nlinks=")
+	b.WriteString(similarity.Canonical(string(linksJSON)))
+
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+// LookupIdempotency searches `events` for an `issue.created` row in the given
+// project whose payload's `idempotency_key` equals key and whose created_at is
+// at-or-after `since`. Returns nil when no match. Uses the partial index
+// idx_events_idempotency declared in 0001_init.sql.
+func (d *DB) LookupIdempotency(ctx context.Context, projectID int64, key string, since time.Time) (*IdempotencyMatch, error) {
+	const q = `
+		SELECT e.id, e.project_id, e.project_identity, e.issue_id, e.issue_number,
+		       e.related_issue_id, e.type, e.actor, e.payload, e.created_at,
+		       json_extract(e.payload, '$.idempotency_fingerprint')
+		FROM events e
+		WHERE e.type = 'issue.created'
+		  AND e.project_id = ?
+		  AND json_extract(e.payload, '$.idempotency_key') = ?
+		  AND e.created_at >= ?
+		ORDER BY e.id DESC
+		LIMIT 1`
+	row := d.QueryRowContext(ctx, q, projectID, key, since.UTC().Format("2006-01-02T15:04:05.000Z"))
+
+	var (
+		evt Event
+		fp  sql.NullString
+	)
+	err := row.Scan(&evt.ID, &evt.ProjectID, &evt.ProjectIdentity, &evt.IssueID,
+		&evt.IssueNumber, &evt.RelatedIssueID, &evt.Type, &evt.Actor,
+		&evt.Payload, &evt.CreatedAt, &fp)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup idempotency: %w", err)
+	}
+	if evt.IssueID == nil || evt.IssueNumber == nil {
+		// Defensive: an issue.created event without an issue_id is malformed.
+		return nil, fmt.Errorf("idempotency match has no issue_id")
+	}
+	return &IdempotencyMatch{
+		IssueID:     *evt.IssueID,
+		IssueNumber: *evt.IssueNumber,
+		Fingerprint: fp.String,
+		Event:       evt,
+	}, nil
+}
