@@ -61,3 +61,14 @@ type Event struct {
 	Payload         string    `json:"payload"`
 	CreatedAt       time.Time `json:"created_at"`
 }
+
+// Link mirrors a row in links.
+type Link struct {
+	ID          int64     `json:"id"`
+	ProjectID   int64     `json:"project_id"`
+	FromIssueID int64     `json:"from_issue_id"`
+	ToIssueID   int64     `json:"to_issue_id"`
+	Type        string    `json:"type"`
+	Author      string    `json:"author"`
+	CreatedAt   time.Time `json:"created_at"`
+}
