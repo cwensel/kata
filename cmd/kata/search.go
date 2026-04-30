@@ -18,11 +18,15 @@ func newSearchCmd() *cobra.Command {
 	var limit int
 	var includeDeleted bool
 	cmd := &cobra.Command{
-		Use:   "search <query>",
+		Use:   "search <query>...",
 		Short: "search issues by title/body/comments",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			query := args[0]
+			// Join unquoted args with spaces so `kata search login Safari`
+			// behaves the same as `kata search "login Safari"` — the BM25
+			// implicit-AND splits on whitespace anyway, and quoting every
+			// multi-term query is needless friction.
+			query := strings.Join(args, " ")
 			if strings.TrimSpace(query) == "" {
 				return &cliError{Message: "query must be non-empty", ExitCode: ExitValidation}
 			}
