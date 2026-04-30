@@ -731,7 +731,13 @@ func (d *DB) UpdateOwner(ctx context.Context, issueID int64, newOwner *string, a
 	payload := "{}"
 	if newOwner != nil {
 		eventType = "issue.assigned"
-		payload = fmt.Sprintf(`{"owner":%q}`, *newOwner)
+		bs, marshalErr := json.Marshal(struct {
+			Owner string `json:"owner"`
+		}{Owner: *newOwner})
+		if marshalErr != nil {
+			return Issue{}, nil, false, fmt.Errorf("marshal assigned payload: %w", marshalErr)
+		}
+		payload = string(bs)
 	}
 	evt, err := insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
