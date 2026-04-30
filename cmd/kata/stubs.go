@@ -2,10 +2,6 @@ package main
 
 import "github.com/spf13/cobra"
 
-func newInitCmd() *cobra.Command {
-	return &cobra.Command{Use: "init", Short: "bind workspace to a project"}
-}
-
 func newCreateCmd() *cobra.Command {
 	return &cobra.Command{Use: "create <title>", Short: "create issue"}
 }

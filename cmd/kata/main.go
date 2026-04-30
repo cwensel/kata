@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -58,6 +59,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
+		var cli *cliError
+		if errors.As(err, &cli) {
+			fmt.Fprintln(os.Stderr, "kata:", cli.Message)
+			os.Exit(cli.ExitCode)
+		}
 		fmt.Fprintln(os.Stderr, "kata:", err)
 		os.Exit(ExitInternal)
 	}
