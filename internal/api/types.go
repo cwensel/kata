@@ -79,15 +79,21 @@ type ShowProjectResponse struct {
 }
 
 // CreateIssueRequest is POST /api/v1/projects/{id}/issues.
+//
+// IdempotencyKey is read from the Idempotency-Key HTTP header (spec §4.4).
+// Body.ForceNew bypasses look-alike soft-block but is overridden by an
+// idempotent match (idempotency wins per spec §3.7).
 type CreateIssueRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Body      struct {
-		Actor  string                  `json:"actor" required:"true"`
-		Title  string                  `json:"title" required:"true"`
-		Body   string                  `json:"body,omitempty"`
-		Owner  *string                 `json:"owner,omitempty"`
-		Labels []string                `json:"labels,omitempty"`
-		Links  []CreateInitialLinkBody `json:"links,omitempty"`
+	ProjectID      int64  `path:"project_id" required:"true"`
+	IdempotencyKey string `header:"Idempotency-Key,omitempty"`
+	Body           struct {
+		Actor    string                  `json:"actor" required:"true"`
+		Title    string                  `json:"title" required:"true"`
+		Body     string                  `json:"body,omitempty"`
+		Owner    *string                 `json:"owner,omitempty"`
+		Labels   []string                `json:"labels,omitempty"`
+		Links    []CreateInitialLinkBody `json:"links,omitempty"`
+		ForceNew bool                    `json:"force_new,omitempty"`
 	}
 }
 
@@ -97,13 +103,16 @@ type CreateInitialLinkBody struct {
 	ToNumber int64  `json:"to_number"`
 }
 
-// MutationResponse is the standard mutation envelope (§4.5).
+// MutationResponse is the standard mutation envelope (§4.5). OriginalEvent is
+// non-nil only on idempotent reuse — the issue.created event row of the prior
+// creation, so clients can correlate the reuse to the original mutation.
 type MutationResponse struct {
 	Body struct {
-		Issue   db.Issue  `json:"issue"`
-		Event   *db.Event `json:"event"`
-		Changed bool      `json:"changed"`
-		Reused  bool      `json:"reused,omitempty"`
+		Issue         db.Issue  `json:"issue"`
+		Event         *db.Event `json:"event"`
+		OriginalEvent *db.Event `json:"original_event,omitempty"`
+		Changed       bool      `json:"changed"`
+		Reused        bool      `json:"reused,omitempty"`
 	}
 }
 
@@ -122,9 +131,12 @@ type ListIssuesResponse struct {
 }
 
 // ShowIssueRequest is GET /api/v1/projects/{id}/issues/{number}.
+// IncludeDeleted=true allows fetching soft-deleted issues; default returns 404
+// for them.
 type ShowIssueRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID      int64 `path:"project_id" required:"true"`
+	Number         int64 `path:"number" required:"true"`
+	IncludeDeleted bool  `query:"include_deleted,omitempty"`
 }
 
 // ShowIssueResponse is the per-issue read payload (Plan 2: + links, + labels).
@@ -295,5 +307,60 @@ type LabelsListRequest struct {
 type LabelsListResponse struct {
 	Body struct {
 		Labels []db.LabelCount `json:"labels"`
+	}
+}
+
+// DestructiveActionRequest is POST /api/v1/projects/{id}/issues/{number}/actions/delete
+// and .../actions/purge. Confirm is read from the X-Kata-Confirm header per
+// spec §4.4 and must equal the exact strings "DELETE #N" / "PURGE #N".
+type DestructiveActionRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Number    int64  `path:"number" required:"true"`
+	Confirm   string `header:"X-Kata-Confirm,omitempty"`
+	Body      struct {
+		Actor  string `json:"actor" required:"true"`
+		Reason string `json:"reason,omitempty"` // purge only; lands in purge_log.reason
+	}
+}
+
+// RestoreRequest is POST /api/v1/projects/{id}/issues/{number}/actions/restore.
+// No confirmation header — restore is reversible and idempotent.
+type RestoreRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor string `json:"actor" required:"true"`
+	}
+}
+
+// PurgeResponse extends the standard envelope with the purge_log row so callers
+// see the captured counts and reserved SSE cursor without a follow-up GET.
+type PurgeResponse struct {
+	Body struct {
+		PurgeLog db.PurgeLog `json:"purge_log"`
+	}
+}
+
+// SearchRequest is GET /api/v1/projects/{id}/search?q=...&limit=...&include_deleted=...
+type SearchRequest struct {
+	ProjectID      int64  `path:"project_id" required:"true"`
+	Query          string `query:"q" required:"true"`
+	Limit          int    `query:"limit,omitempty"`
+	IncludeDeleted bool   `query:"include_deleted,omitempty"`
+}
+
+// SearchHit is one row in SearchResponse. Score is the negated raw BM25
+// (higher = better match), MatchedIn is the FTS columns that contributed.
+type SearchHit struct {
+	Issue     db.Issue `json:"issue"`
+	Score     float64  `json:"score"`
+	MatchedIn []string `json:"matched_in"`
+}
+
+// SearchResponse mirrors spec §4.10.
+type SearchResponse struct {
+	Body struct {
+		Query   string      `json:"query"`
+		Results []SearchHit `json:"results"`
 	}
 }
