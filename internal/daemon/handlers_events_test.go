@@ -229,23 +229,36 @@ func readSSEFramesUntilN(t *testing.T, body interface {
 	var frames []sseFrame
 	cur := sseFrame{}
 	deadline := time.Now().Add(timeout)
-	rd := bufio.NewReader(body)
 
+	// A single long-lived goroutine owns the bufio.Reader; the test loop
+	// pulls lines from lineCh. Concurrent ReadString on the same reader
+	// would be undefined behavior, and a goroutine-per-line design would
+	// leak the in-flight ReadString on timeout.
 	type lineResult struct {
 		line string
 		err  error
 	}
-	lineCh := make(chan lineResult, 1)
-	readLine := func() {
-		s, err := rd.ReadString('\n')
-		lineCh <- lineResult{s, err}
-	}
+	lineCh := make(chan lineResult)
+	go func() {
+		defer close(lineCh)
+		rd := bufio.NewReader(body)
+		for {
+			s, err := rd.ReadString('\n')
+			lineCh <- lineResult{s, err}
+			if err != nil {
+				return
+			}
+		}
+	}()
 
 	for len(frames) < n && time.Now().Before(deadline) {
-		go readLine()
 		var lr lineResult
+		var ok bool
 		select {
-		case lr = <-lineCh:
+		case lr, ok = <-lineCh:
+			if !ok {
+				return frames
+			}
 		case <-time.After(time.Until(deadline)):
 			return frames
 		}
