@@ -161,7 +161,19 @@ func newDaemonClient(ctx context.Context, baseURL string, opts daemonClientOpts)
 	if !strings.HasPrefix(baseURL, "http://kata.invalid") {
 		c := &http.Client{Timeout: opts.timeout}
 		if opts.responseHeaderTimeout > 0 {
-			c.Transport = &http.Transport{ResponseHeaderTimeout: opts.responseHeaderTimeout}
+			// Clone http.DefaultTransport instead of building a bare
+			// *http.Transport so we keep ProxyFromEnvironment, dial
+			// timeouts, TLS handshake timeout, and HTTP/2 negotiation —
+			// streaming clients have no overall Client.Timeout, so a
+			// dropped DNS/TCP/TLS default would let those phases hang
+			// indefinitely before ResponseHeaderTimeout could fire.
+			t, ok := http.DefaultTransport.(*http.Transport)
+			if !ok {
+				return nil, errors.New("http.DefaultTransport is not *http.Transport")
+			}
+			clone := t.Clone()
+			clone.ResponseHeaderTimeout = opts.responseHeaderTimeout
+			c.Transport = clone
 		}
 		return c, nil
 	}
