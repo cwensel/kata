@@ -263,13 +263,17 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev Link
 		ev.EventIssueID); err != nil {
 		return Link{}, Event{}, fmt.Errorf("touch issue: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return Link{}, Event{}, fmt.Errorf("commit: %w", err)
+
+	// Re-fetch the inserted row INSIDE the TX so a post-commit failure
+	// (context cancellation, concurrent deletion) can't leave the caller with
+	// a 500 after the mutation has already committed.
+	link, err := scanLink(tx.QueryRowContext(ctx, linkSelect+` WHERE id = ?`, linkID))
+	if err != nil {
+		return Link{}, Event{}, fmt.Errorf("re-fetch link inside tx: %w", err)
 	}
 
-	link, err := d.LinkByID(ctx, linkID)
-	if err != nil {
-		return Link{}, Event{}, err
+	if err := tx.Commit(); err != nil {
+		return Link{}, Event{}, fmt.Errorf("commit: %w", err)
 	}
 	return link, evt, nil
 }

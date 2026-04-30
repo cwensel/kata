@@ -193,14 +193,18 @@ func (d *DB) AddLabelAndEvent(ctx context.Context, issueID int64, ev LabelEventP
 		issueID); err != nil {
 		return IssueLabel{}, Event{}, fmt.Errorf("touch issue: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return IssueLabel{}, Event{}, fmt.Errorf("commit: %w", err)
+
+	// Re-fetch the inserted row INSIDE the TX so a post-commit failure
+	// (context cancellation, concurrent removal) can't leave the caller with
+	// a 500 after the mutation has already committed.
+	out, err := scanLabel(tx.QueryRowContext(ctx,
+		labelSelect+` WHERE issue_id = ? AND label = ?`, issueID, ev.Label))
+	if err != nil {
+		return IssueLabel{}, Event{}, fmt.Errorf("re-fetch label inside tx: %w", err)
 	}
 
-	row := d.QueryRowContext(ctx, labelSelect+` WHERE issue_id = ? AND label = ?`, issueID, ev.Label)
-	out, err := scanLabel(row)
-	if err != nil {
-		return IssueLabel{}, Event{}, fmt.Errorf("re-fetch label: %w", err)
+	if err := tx.Commit(); err != nil {
+		return IssueLabel{}, Event{}, fmt.Errorf("commit: %w", err)
 	}
 	return out, evt, nil
 }
