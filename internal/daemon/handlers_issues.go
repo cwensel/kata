@@ -253,6 +253,13 @@ const (
 // (the caller should return it directly). Returns the relevant 409 wire error
 // for mismatch / soft-deleted cases. When IdempotencyKey is empty, returns
 // ("", nil, nil) so the caller falls through to the look-alike check.
+//
+// Known limitation: the lookup → CreateIssue is not atomic. Two concurrent
+// requests with the same Idempotency-Key can both miss the lookup and both
+// insert a fresh issue. Closing the race requires either a daemon-level
+// per-key mutex with bounded GC, or restructuring CreateIssue around
+// BEGIN IMMEDIATE with an in-TX re-lookup. Deferred from Plan 3 — small
+// in single-user CLI usage. Tracked under roborev Job 16791-1.
 func tryIdempotencyMatch(ctx context.Context, cfg ServerConfig, in *api.CreateIssueRequest,
 	links []db.InitialLink) (string, *api.MutationResponse, error) {
 	if in.IdempotencyKey == "" {

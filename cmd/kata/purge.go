@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -19,6 +16,7 @@ import (
 func newPurgeCmd() *cobra.Command {
 	var force bool
 	var confirm string
+	var reason string
 	cmd := &cobra.Command{
 		Use:   "purge <number>",
 		Short: "irreversibly remove an issue + all its rows",
@@ -36,46 +34,20 @@ func newPurgeCmd() *cobra.Command {
 				}
 			}
 			expected := fmt.Sprintf("PURGE #%d", n)
-			confirm, err = resolvePurgeConfirm(cmd, confirm, expected)
+			confirm, err = resolveConfirm(cmd, confirm, expected,
+				fmt.Sprintf("Type %q to confirm: ", expected), confirmPromptFull)
 			if err != nil {
 				return err
 			}
-			return runDestructive(cmd, n, "purge", confirm, nil)
+			var extra map[string]any
+			if reason != "" {
+				extra = map[string]any{"reason": reason}
+			}
+			return runDestructive(cmd, n, "purge", confirm, extra)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "required to perform the purge")
 	cmd.Flags().StringVar(&confirm, "confirm", "", `exact confirmation string ("PURGE #N")`)
+	cmd.Flags().StringVar(&reason, "reason", "", "free-text reason recorded in purge_log.reason")
 	return cmd
-}
-
-// resolvePurgeConfirm is like resolveConfirm (delete.go) but the interactive
-// prompt requires the full "PURGE #N" string per spec §3.5; the asymmetry
-// with delete (which only prompts for the bare number) is by design.
-func resolvePurgeConfirm(cmd *cobra.Command, flagVal, expected string) (string, error) {
-	if flagVal != "" {
-		return flagVal, nil
-	}
-	if !isTTY(os.Stdin) {
-		return "", &cliError{
-			Message:  "no TTY: pass --confirm \"" + expected + "\" to proceed noninteractively",
-			Code:     "confirm_required",
-			ExitCode: ExitConfirm,
-		}
-	}
-	if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Type %q to confirm: ", expected); err != nil {
-		return "", err
-	}
-	r := bufio.NewReader(cmd.InOrStdin())
-	//nolint:errcheck // ReadString returns the data read up to EOF; an EOF here
-	// just means the user closed stdin, which we treat as an empty mismatch.
-	line, _ := r.ReadString('\n')
-	line = strings.TrimSpace(line)
-	if line != expected {
-		return "", &cliError{
-			Message:  "confirmation input did not match",
-			Code:     "confirm_mismatch",
-			ExitCode: ExitConfirm,
-		}
-	}
-	return expected, nil
 }

@@ -407,13 +407,17 @@ func sortStrings(in []string) {
 	sort.Strings(in)
 }
 
-// IssueByID fetches an issue by rowid.
+// IssueByID fetches an issue by rowid. Includes soft-deleted rows; callers
+// that want only live issues must filter on the returned issue's DeletedAt.
+// (The destructive ladder and the idempotency-deleted path both need to see
+// soft-deleted rows, which is why the filter isn't pushed into the query.)
 func (d *DB) IssueByID(ctx context.Context, id int64) (Issue, error) {
 	row := d.QueryRowContext(ctx, issueSelect+` WHERE id = ?`, id)
 	return scanIssue(row)
 }
 
-// IssueByNumber fetches an issue by (project_id, number).
+// IssueByNumber fetches an issue by (project_id, number). Includes
+// soft-deleted rows; see IssueByID for the rationale.
 func (d *DB) IssueByNumber(ctx context.Context, projectID, number int64) (Issue, error) {
 	row := d.QueryRowContext(ctx, issueSelect+` WHERE project_id = ? AND number = ?`, projectID, number)
 	return scanIssue(row)

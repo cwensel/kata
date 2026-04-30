@@ -151,8 +151,6 @@ func emitJSON(w io.Writer, v any) error {
 }
 
 // httpDoJSON sends a request body, returns (status, response body bytes).
-//
-//nolint:unused // used by upcoming CLI command tasks (T21-T27)
 func httpDoJSON(ctx context.Context, client *http.Client, method, url string, body any) (int, []byte, error) {
 	var rdr io.Reader
 	if body != nil {

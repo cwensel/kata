@@ -41,7 +41,8 @@ func newDeleteCmd() *cobra.Command {
 				}
 			}
 			expected := fmt.Sprintf("DELETE #%d", n)
-			confirm, err = resolveConfirm(cmd, confirm, expected)
+			confirm, err = resolveConfirm(cmd, confirm, expected,
+				"Type the issue number to confirm: ", confirmPromptNumber)
 			if err != nil {
 				return err
 			}
@@ -53,12 +54,32 @@ func newDeleteCmd() *cobra.Command {
 	return cmd
 }
 
+// confirmMatcher decides whether the user's TTY input satisfies the prompt.
+// Two implementations exist: confirmPromptNumber (delete: just the bare
+// number) and confirmPromptFull (purge: the full "VERB #N" string). The
+// asymmetry is intentional per spec §3.5.
+type confirmMatcher func(line, expected string) bool
+
+// confirmPromptNumber accepts input matching just the issue number portion
+// of expected — used by `kata delete` per §3.5's lower-friction prompt.
+func confirmPromptNumber(line, expected string) bool {
+	_, num, _ := strings.Cut(expected, "#")
+	return line == num
+}
+
+// confirmPromptFull accepts only the exact expected string — used by
+// `kata purge` per §3.5's higher-friction prompt for the irreversible verb.
+func confirmPromptFull(line, expected string) bool {
+	return line == expected
+}
+
 // resolveConfirm returns the X-Kata-Confirm value the daemon expects:
 //   - if --confirm was passed, use it as-is (the daemon validates exact match);
-//   - otherwise, if stdin is a TTY, prompt for the issue number and build the
-//     full string;
+//   - otherwise, if stdin is a TTY, prompt with `prompt` and accept input that
+//     `match` says satisfies the verb's friction rule;
 //   - otherwise, exit 6 confirm_required.
-func resolveConfirm(cmd *cobra.Command, flagVal, expected string) (string, error) {
+func resolveConfirm(cmd *cobra.Command, flagVal, expected, prompt string,
+	match confirmMatcher) (string, error) {
 	if flagVal != "" {
 		return flagVal, nil
 	}
@@ -69,7 +90,7 @@ func resolveConfirm(cmd *cobra.Command, flagVal, expected string) (string, error
 			ExitCode: ExitConfirm,
 		}
 	}
-	if _, err := fmt.Fprint(cmd.ErrOrStderr(), "Type the issue number to confirm: "); err != nil {
+	if _, err := fmt.Fprint(cmd.ErrOrStderr(), prompt); err != nil {
 		return "", err
 	}
 	r := bufio.NewReader(cmd.InOrStdin())
@@ -77,11 +98,9 @@ func resolveConfirm(cmd *cobra.Command, flagVal, expected string) (string, error
 	// just means the user closed stdin, which we treat as an empty mismatch.
 	line, _ := r.ReadString('\n')
 	line = strings.TrimSpace(line)
-	// Pull the number out of "DELETE #N" / "PURGE #N".
-	_, num, _ := strings.Cut(expected, "#")
-	if line != num {
+	if !match(line, expected) {
 		return "", &cliError{
-			Message:  "confirmation input did not match issue number",
+			Message:  "confirmation input did not match",
 			Code:     "confirm_mismatch",
 			ExitCode: ExitConfirm,
 		}
