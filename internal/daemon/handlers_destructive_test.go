@@ -127,3 +127,44 @@ func TestPurge_RequiresConfirmHeaderAndRemovesAllRows(t *testing.T) {
 	respShow, _ := getStatusBody(t, ts, "/api/v1/projects/"+pidStr+"/issues/1?include_deleted=true")
 	assert.Equal(t, 404, respShow.StatusCode)
 }
+
+// TestDelete_UnknownIssueIs404 covers the handler-level translation of
+// db.ErrNotFound into the 404 issue_not_found wire envelope. The DB layer
+// has its own no-op tests; this pins the handler edge.
+func TestDelete_UnknownIssueIs404(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	pidStr := strconv.FormatInt(pid, 10)
+
+	resp := postWithHeader(t, ts, "/api/v1/projects/"+pidStr+"/issues/9999/actions/delete",
+		map[string]string{"X-Kata-Confirm": "DELETE #9999"},
+		map[string]any{"actor": "agent"})
+	require.Equal(t, 404, resp.status, string(resp.body))
+	assert.Contains(t, string(resp.body), `"issue_not_found"`)
+}
+
+// TestRestore_UnknownIssueIs404 mirrors TestDelete_UnknownIssueIs404 for the
+// restore route (no confirm header gate, but the lookup still 404s).
+func TestRestore_UnknownIssueIs404(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	pidStr := strconv.FormatInt(pid, 10)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/issues/9999/actions/restore",
+		map[string]any{"actor": "agent"})
+	require.Equal(t, 404, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"issue_not_found"`)
+}
+
+// TestPurge_UnknownIssueIs404 mirrors the delete/restore 404 pin for purge.
+func TestPurge_UnknownIssueIs404(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	pidStr := strconv.FormatInt(pid, 10)
+
+	resp := postWithHeader(t, ts, "/api/v1/projects/"+pidStr+"/issues/9999/actions/purge",
+		map[string]string{"X-Kata-Confirm": "PURGE #9999"},
+		map[string]any{"actor": "agent"})
+	require.Equal(t, 404, resp.status, string(resp.body))
+	assert.Contains(t, string(resp.body), `"issue_not_found"`)
+}
