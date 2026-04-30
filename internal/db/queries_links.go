@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -159,4 +160,159 @@ func scanLink(r rowScanner) (Link, error) {
 		return Link{}, fmt.Errorf("scan link: %w", err)
 	}
 	return l, nil
+}
+
+// CreateLinkAndEvent inserts a link, emits the matching issue.linked event,
+// and bumps the source issue's updated_at — all in one TX. Returns the new
+// link, the event row, and the source issue's refreshed fields. Typed errors
+// (ErrLinkExists, ErrParentAlreadySet, ErrSelfLink, ErrCrossProjectLink)
+// flow up unchanged from the underlying INSERT classification.
+//
+// Used by the daemon's POST /links handler so the link insert and its event
+// are atomic — there's no window where the row exists without an event.
+func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, eventType string, fromIssueID, fromNumber, toNumber int64, actor string) (Link, Event, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return Link{}, Event{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO links(project_id, from_issue_id, to_issue_id, type, author)
+		 VALUES(?, ?, ?, ?, ?)`,
+		p.ProjectID, p.FromIssueID, p.ToIssueID, p.Type, p.Author)
+	if err != nil {
+		classified := classifyLinkInsertError(err)
+		// Same exact-duplicate-parent disambiguation as the non-TX CreateLink:
+		// the partial-parent UNIQUE index produces the same error text whether
+		// it's a different parent (409) or the exact same parent (200 no-op).
+		// Re-query to tell them apart inside the same TX.
+		if errors.Is(classified, ErrParentAlreadySet) && p.Type == "parent" {
+			var n int
+			qErr := tx.QueryRowContext(ctx,
+				`SELECT 1 FROM links WHERE from_issue_id = ? AND to_issue_id = ? AND type = ?`,
+				p.FromIssueID, p.ToIssueID, p.Type).Scan(&n)
+			if qErr == nil {
+				return Link{}, Event{}, ErrLinkExists
+			}
+		}
+		return Link{}, Event{}, classified
+	}
+	linkID, err := res.LastInsertId()
+	if err != nil {
+		return Link{}, Event{}, fmt.Errorf("last insert id: %w", err)
+	}
+
+	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, fromIssueID)
+	if err != nil {
+		return Link{}, Event{}, err
+	}
+	relatedID := p.ToIssueID
+	if relatedID == fromIssueID {
+		relatedID = p.FromIssueID
+	}
+	payload, err := json.Marshal(map[string]any{
+		"link_id":     linkID,
+		"type":        p.Type,
+		"from_number": fromNumber,
+		"to_number":   toNumber,
+	})
+	if err != nil {
+		return Link{}, Event{}, fmt.Errorf("marshal link payload: %w", err)
+	}
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       p.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &issue.ID,
+		IssueNumber:     &issue.Number,
+		RelatedIssueID:  &relatedID,
+		Type:            eventType,
+		Actor:           actor,
+		Payload:         string(payload),
+	})
+	if err != nil {
+		return Link{}, Event{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE issues SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		fromIssueID); err != nil {
+		return Link{}, Event{}, fmt.Errorf("touch issue: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Link{}, Event{}, fmt.Errorf("commit: %w", err)
+	}
+
+	link, err := d.LinkByID(ctx, linkID)
+	if err != nil {
+		return Link{}, Event{}, err
+	}
+	return link, evt, nil
+}
+
+// DeleteLinkAndEvent deletes a link and emits the matching issue.unlinked
+// event in one TX. fromIssueID/fromIssueNumber identify the URL's {number}
+// issue (the event's issue_id/issue_number); fromNumber/toNumber describe
+// the link's two endpoints in the payload (which may differ from the URL's
+// issue when the URL's issue is the link's *to* endpoint). Returns
+// ErrNotFound if the link is already gone — caller maps to 200 no-op
+// envelope per spec §4.5.
+func (d *DB) DeleteLinkAndEvent(ctx context.Context, linkID, fromIssueID, fromIssueNumber, fromNumber, toNumber int64, linkType string, link Link, actor string) (Event, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return Event{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, linkID)
+	if err != nil {
+		return Event{}, fmt.Errorf("delete link: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Event{}, fmt.Errorf("delete link rows affected: %w", err)
+	}
+	if n == 0 {
+		return Event{}, ErrNotFound
+	}
+
+	_, projectIdentity, err := lookupIssueForEvent(ctx, tx, fromIssueID)
+	if err != nil {
+		return Event{}, err
+	}
+	relatedID := link.ToIssueID
+	if relatedID == fromIssueID {
+		relatedID = link.FromIssueID
+	}
+	payload, err := json.Marshal(map[string]any{
+		"link_id":     link.ID,
+		"type":        linkType,
+		"from_number": fromNumber,
+		"to_number":   toNumber,
+	})
+	if err != nil {
+		return Event{}, fmt.Errorf("marshal unlink payload: %w", err)
+	}
+	evt, err := insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       link.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &fromIssueID,
+		IssueNumber:     &fromIssueNumber,
+		RelatedIssueID:  &relatedID,
+		Type:            "issue.unlinked",
+		Actor:           actor,
+		Payload:         string(payload),
+	})
+	if err != nil {
+		return Event{}, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE issues SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		fromIssueID); err != nil {
+		return Event{}, fmt.Errorf("touch issue: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Event{}, fmt.Errorf("commit: %w", err)
+	}
+	return evt, nil
 }
