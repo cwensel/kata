@@ -193,12 +193,25 @@ var ErrInitialLinkInvalidType = errors.New("invalid initial link type")
 // and appends a single issue.created event whose payload describes the initial
 // state. All steps run in one TX.
 func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event, error) {
+	// Normalize: a non-nil pointer to "" is treated as no owner. The payload
+	// already drops empty owner via omitempty; making the DB column NULL keeps
+	// the two views consistent and matches the unassigned semantic.
+	owner := p.Owner
+	if owner != nil && *owner == "" {
+		owner = nil
+	}
+
+	// Dedupe links by (type, to_number) before validation so the validation
+	// switch still rejects bad types and downstream insertion + payload both
+	// reflect the same deduped slice.
+	links := dedupeLinks(p.Links)
+
 	// Link types are validated client-side (small fixed set) so a bad type
 	// returns immediately without opening a transaction. Label charset is
 	// validated server-side via classifyLabelInsertError because mirroring
 	// the schema's GLOB pattern in Go would risk drift; a bad label rolls
 	// back the whole TX, which is acceptable for an all-or-nothing create.
-	for _, l := range p.Links {
+	for _, l := range links {
 		switch l.Type {
 		case "parent", "blocks", "related":
 		default:
@@ -232,7 +245,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO issues(project_id, number, title, body, author, owner)
 		 VALUES(?, ?, ?, ?, ?, ?)`,
-		p.ProjectID, nextNum, p.Title, p.Body, p.Author, p.Owner)
+		p.ProjectID, nextNum, p.Title, p.Body, p.Author, owner)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("insert issue: %w", err)
 	}
@@ -257,7 +270,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	// excluding soft-deleted targets. The schema's same-project trigger
 	// enforces the cross-project check, but we'd rather surface a typed
 	// not-found than a generic constraint failure.
-	for _, l := range p.Links {
+	for _, l := range links {
 		var toIssueID int64
 		err := tx.QueryRowContext(ctx,
 			`SELECT id FROM issues
@@ -283,7 +296,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		}
 	}
 
-	payload := buildCreatedPayload(labels, p.Links, p.Owner)
+	payload := buildCreatedPayload(labels, links, owner)
 
 	evt, err := insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       p.ProjectID,
@@ -354,6 +367,28 @@ func dedupeStrings(in []string) []string {
 		}
 		seen[s] = struct{}{}
 		out = append(out, s)
+	}
+	return out
+}
+
+// dedupeLinks removes repeated (type, to_number) entries while preserving
+// first-occurrence order. Used by CreateIssue to avoid hitting the schema's
+// links UNIQUE on duplicate initial links and to keep the issue.created
+// event payload aligned with what was actually inserted.
+func dedupeLinks(in []InitialLink) []InitialLink {
+	type key struct {
+		Type     string
+		ToNumber int64
+	}
+	seen := make(map[key]struct{}, len(in))
+	out := make([]InitialLink, 0, len(in))
+	for _, l := range in {
+		k := key(l)
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, l)
 	}
 	return out
 }

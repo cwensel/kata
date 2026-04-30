@@ -149,6 +149,54 @@ func TestCreateIssue_NoInitialStateEmitsEmptyPayload(t *testing.T) {
 	assert.Equal(t, "{}", evt.Payload)
 }
 
+func TestCreateIssue_DuplicateInitialLinksAreDeduped(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
+
+	child, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "child", Author: "tester",
+		Links: []db.InitialLink{
+			{Type: "parent", ToNumber: parent.Number},
+			{Type: "parent", ToNumber: parent.Number}, // exact dup
+		},
+	})
+	require.NoError(t, err, "duplicate initial links must not roll back")
+
+	// Only one link row inserted.
+	links, err := d.LinksByIssue(ctx, child.ID)
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+
+	// Payload reflects the deduped list.
+	var payload struct {
+		Links []struct {
+			Type     string `json:"type"`
+			ToNumber int64  `json:"to_number"`
+		} `json:"links"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(evt.Payload), &payload))
+	assert.Len(t, payload.Links, 1)
+}
+
+func TestCreateIssue_EmptyStringOwnerNormalizesToNil(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	empty := ""
+	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+		Owner: &empty,
+	})
+	require.NoError(t, err)
+	assert.Nil(t, issue.Owner, "empty-string owner must persist as NULL")
+	assert.Equal(t, "{}", evt.Payload, "payload must agree: no owner")
+}
+
 func TestCreateIssue_WithAllInitialState(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
