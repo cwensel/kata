@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -233,6 +234,14 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 
 	alias, err := attachAlias(ctx, store, project.ID, aliasInfo, req.Body.Reassign)
 	if err != nil {
+		// Concurrent init can race past the preflight: a parallel request can
+		// insert the alias between our preflight check and our attach. The
+		// preflight catches the no-race case; here we clean up the orphan
+		// project row so retries observe consistent state regardless of which
+		// failure we hit.
+		if created {
+			_, _ = store.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, project.ID)
+		}
 		return nil, false, err
 	}
 
@@ -381,6 +390,16 @@ func attachAlias(ctx context.Context, store *db.DB, projectID int64, info config
 	}
 	a, err := store.AttachAlias(ctx, projectID, info.Identity, info.Kind, info.RootPath)
 	if err != nil {
+		// A UNIQUE constraint failure on alias_identity means a concurrent
+		// init beat us to the insert. Surface it as the documented 409 so the
+		// client sees a stable error code instead of an internal-error envelope.
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: project_aliases.alias_identity") {
+			return db.ProjectAlias{}, api.NewError(http.StatusConflict, "project_alias_conflict",
+				"alias already attached to a different project",
+				"pass reassign=true to move it", map[string]any{
+					"alias_identity": info.Identity,
+				})
+		}
 		return db.ProjectAlias{}, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	return a, nil

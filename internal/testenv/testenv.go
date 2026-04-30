@@ -4,6 +4,7 @@ package testenv
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -35,25 +36,25 @@ func New(t *testing.T) *Env {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 
-	// Pick a free port up front so we have a stable URL.
+	// Bind the listener once and hand it directly to Server.Serve so no other
+	// process can grab the port between bind and serve (the close-then-reopen
+	// pattern has a TOCTOU race).
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	addr := l.Addr().(*net.TCPAddr).String() //nolint:forcetypeassert // net.Listen("tcp",...) always returns *net.TCPAddr
-	require.NoError(t, l.Close())
 
 	srv := daemon.NewServer(daemon.ServerConfig{
 		DB:        d,
 		StartedAt: time.Now().UTC(),
-		Endpoint:  daemon.TCPEndpoint(addr),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = srv.Run(ctx)
+		_ = srv.Serve(ctx, l)
 	}()
-	// Cleanup must wait for Run to return (Shutdown drained) before the DB is
+	// Cleanup must wait for Serve to return (Shutdown drained) before the DB is
 	// closed, otherwise in-flight handlers can race against d.Close. t.Cleanup
 	// is LIFO, so this fires before the d.Close cleanup registered above.
 	t.Cleanup(func() {
@@ -61,9 +62,10 @@ func New(t *testing.T) *Env {
 		<-done
 	})
 
-	// Wait for /ping to answer; if the daemon never becomes ready, fail loudly
-	// at New rather than letting the test report a confusing connection-refused
-	// on its first real request.
+	// Wait for /ping to answer with 200; if the daemon never becomes ready, or
+	// if some other service won the port and answered with a non-200, fail
+	// loudly at New rather than letting the test report a confusing failure on
+	// its first real request.
 	url := "http://" + addr
 	deadline := time.Now().Add(2 * time.Second)
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -72,11 +74,16 @@ func New(t *testing.T) *Env {
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(url + "/api/v1/ping") //nolint:noctx // polling loop; context would add noise without benefit
 		if err == nil {
+			status := resp.StatusCode
 			_ = resp.Body.Close()
-			ready = true
-			break
+			if status == http.StatusOK {
+				ready = true
+				break
+			}
+			lastErr = fmt.Errorf("unexpected /ping status %d", status)
+		} else {
+			lastErr = err
 		}
-		lastErr = err
 		time.Sleep(20 * time.Millisecond)
 	}
 	require.Truef(t, ready, "daemon did not become ready within 2s: %v", lastErr)

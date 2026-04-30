@@ -55,16 +55,26 @@ func newRootCmd() *cobra.Command {
 func main() {
 	// Wire SIGINT/SIGTERM into cobra's command context so long-running
 	// subcommands (notably `kata daemon start`) can shut down gracefully via
-	// their deferred cleanups instead of being torn down mid-syscall.
+	// their deferred cleanups instead of being torn down mid-syscall. Once the
+	// first signal arrives, restore default handling so a second ctrl-C
+	// escalates to a hard kill (e.g. if a deferred cleanup hangs).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
 		var cli *cliError
 		if errors.As(err, &cli) {
 			fmt.Fprintln(os.Stderr, "kata:", cli.Message)
 			os.Exit(cli.ExitCode)
 		}
+		// Cobra's argument-parsing failures (unknown command, missing
+		// required flag, bad value) reach here as plain errors. Map them to
+		// ExitUsage; reserve ExitInternal for RunE errors that surface as
+		// *cliError with that code explicitly.
 		fmt.Fprintln(os.Stderr, "kata:", err)
-		os.Exit(ExitInternal)
+		os.Exit(ExitUsage)
 	}
 }

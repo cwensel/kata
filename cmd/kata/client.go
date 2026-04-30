@@ -72,48 +72,60 @@ func tryDiscover(ctx context.Context, dataDir string) (string, bool) {
 	return "", false
 }
 
+// pingAddress probes /api/v1/ping at the given runtime-file address. Returns
+// the base URL the caller should use to reach it. The probe only succeeds on
+// a 200 response, so a 404/500 from a wrong service that happened to bind
+// the same port is rejected as not-our-daemon.
 func pingAddress(ctx context.Context, address string) (string, bool) {
 	if strings.HasPrefix(address, "unix://") {
 		path := strings.TrimPrefix(address, "unix://")
-		client := &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return (&net.Dialer{}).DialContext(ctx, "unix", path)
-				},
-			},
-			Timeout: 1 * time.Second,
-		}
+		client := &http.Client{Transport: unixTransport(path), Timeout: 1 * time.Second}
 		const base = "http://kata.invalid"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/ping", nil)
-		if err != nil {
-			return "", false
+		if pingOK(ctx, client, base) {
+			return base, true
 		}
-		resp, err := client.Do(req) //nolint:gosec // G704: address comes from our own runtime file, not user input
-		if err != nil {
-			return "", false
-		}
-		_ = resp.Body.Close()
-		return base, true
+		return "", false
 	}
 	url := "http://" + address
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/api/v1/ping", nil)
-	if err != nil {
-		return "", false
-	}
 	client := &http.Client{Timeout: 1 * time.Second}
-	resp, err := client.Do(req) //nolint:gosec // G704: address comes from our own runtime file, not user input
+	if pingOK(ctx, client, url) {
+		return url, true
+	}
+	return "", false
+}
+
+// pingOK is true when GET base+/api/v1/ping returns 200.
+func pingOK(ctx context.Context, client *http.Client, base string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/ping", nil)
 	if err != nil {
-		return "", false
+		return false
+	}
+	resp, err := client.Do(req) //nolint:gosec // G704: base built from our own runtime file
+	if err != nil {
+		return false
 	}
 	_ = resp.Body.Close()
-	return url, true
+	return resp.StatusCode == http.StatusOK
+}
+
+// unixTransport builds a *http.Transport whose DialContext talks to the named
+// Unix socket. Used by both pingAddress and httpClientFor.
+func unixTransport(path string) *http.Transport {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", path)
+		},
+	}
 }
 
 // httpClientFor returns an *http.Client whose transport understands unix://
-// addresses. Pair with the URL returned by ensureDaemon.
+// addresses. Pair with the URL returned by ensureDaemon. We filter by
+// ProcessAlive and prefer the first record that also passes a /ping probe so
+// a stale unix:// runtime file listed before the live one cannot redirect us
+// to a dead socket.
 //
 //nolint:unused // consumed by upcoming command implementations (Tasks 22-27)
-func httpClientFor(baseURL string) (*http.Client, error) {
+func httpClientFor(ctx context.Context, baseURL string) (*http.Client, error) {
 	if !strings.HasPrefix(baseURL, "http://kata.invalid") {
 		return &http.Client{Timeout: 5 * time.Second}, nil
 	}
@@ -126,17 +138,15 @@ func httpClientFor(baseURL string) (*http.Client, error) {
 		return nil, err
 	}
 	for _, r := range recs {
-		if strings.HasPrefix(r.Address, "unix://") {
-			path := strings.TrimPrefix(r.Address, "unix://")
-			return &http.Client{
-				Transport: &http.Transport{
-					DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-						return (&net.Dialer{}).DialContext(ctx, "unix", path)
-					},
-				},
-				Timeout: 5 * time.Second,
-			}, nil
+		if !daemon.ProcessAlive(r.PID) || !strings.HasPrefix(r.Address, "unix://") {
+			continue
 		}
+		path := strings.TrimPrefix(r.Address, "unix://")
+		probe := &http.Client{Transport: unixTransport(path), Timeout: 1 * time.Second}
+		if !pingOK(ctx, probe, "http://kata.invalid") {
+			continue
+		}
+		return &http.Client{Transport: unixTransport(path), Timeout: 5 * time.Second}, nil
 	}
 	return nil, errors.New("no unix-socket daemon found")
 }

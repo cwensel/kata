@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -71,6 +72,13 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.Serve(ctx, l)
+}
+
+// Serve runs the http server on the provided listener until ctx is cancelled.
+// Useful for tests that bind their own loopback listener (avoiding the
+// listener-close-then-reopen TOCTOU window).
+func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	httpSrv := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,

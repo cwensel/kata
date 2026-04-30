@@ -88,7 +88,10 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 		reqBody["reassign"] = true
 	}
 
-	client := &http.Client{}
+	client, err := httpClientFor(ctx, baseURL)
+	if err != nil {
+		return "", fmt.Errorf("client: %w", err)
+	}
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost, baseURL+"/api/v1/projects", reqBody)
 	if err != nil {
 		return "", fmt.Errorf("POST /api/v1/projects: %w", err)

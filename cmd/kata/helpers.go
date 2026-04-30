@@ -26,11 +26,16 @@ const (
 	ExitDaemonUnavail = 7
 )
 
-// BodySources is the parsed --body / --body-file / --body-stdin trio.
+// BodySources is the parsed --body / --body-file / --body-stdin trio. The
+// *Set fields capture explicit flag presence (via cmd.Flags().Changed) so
+// `--body ""` is treated as a deliberate empty body rather than absent. Stdin
+// is its own bool, so presence is implicit.
 type BodySources struct {
-	Body  string
-	File  string
-	Stdin bool
+	Body    string
+	BodySet bool
+	File    string
+	FileSet bool
+	Stdin   bool
 }
 
 // gitUserFn is a function signature for resolveActor's git fallback so tests
@@ -38,13 +43,15 @@ type BodySources struct {
 type gitUserFn func() (string, error)
 
 // resolveBody returns the resolved body text. Mutually exclusive sources;
-// returns error otherwise. Empty result allowed when no source set.
+// returns error otherwise. An explicit empty --body or --body-file is
+// honored as a deliberate empty body — only no flag at all returns the
+// no-source default.
 func resolveBody(b BodySources, stdin io.Reader) (string, error) {
 	count := 0
-	if b.Body != "" {
+	if b.BodySet {
 		count++
 	}
-	if b.File != "" {
+	if b.FileSet {
 		count++
 	}
 	if b.Stdin {
@@ -54,9 +61,9 @@ func resolveBody(b BodySources, stdin io.Reader) (string, error) {
 		return "", errors.New("must pass exactly one of --body, --body-file, --body-stdin")
 	}
 	switch {
-	case b.Body != "":
+	case b.BodySet:
 		return b.Body, nil
-	case b.File != "":
+	case b.FileSet:
 		//nolint:gosec // user-supplied path is the whole point of --body-file
 		bs, err := os.ReadFile(b.File)
 		if err != nil {
@@ -120,7 +127,15 @@ func emitJSON(w io.Writer, v any) error {
 	if len(payload) < 2 || payload[0] != '{' || payload[len(payload)-1] != '}' {
 		return fmt.Errorf("emitJSON: top-level value must be a JSON object, got %T", v)
 	}
-	if bytes.Contains(payload, []byte(`"kata_api_version"`)) {
+	// Decode keys structurally — the JSON decoder unescapes \uXXXX sequences,
+	// so "kata_api_version" is caught the same as a literal
+	// "kata_api_version". A raw bytes.Contains check would miss the escaped
+	// form and let the splice produce a duplicate key downstream.
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &keys); err != nil {
+		return fmt.Errorf("emitJSON: payload must be a JSON object: %w", err)
+	}
+	if _, taken := keys["kata_api_version"]; taken {
 		return errors.New(`emitJSON: payload must not include "kata_api_version" key`)
 	}
 
