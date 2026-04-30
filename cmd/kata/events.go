@@ -169,6 +169,23 @@ const (
 	tailBackoffMax   = 30 * time.Second
 )
 
+// streamResult is the typed return shape from streamOnce. Exactly one of
+// {Reset, Progress} is set on a successful return.
+type streamResult struct {
+	Reset    *streamResetSignal
+	Progress streamProgress
+}
+
+type streamResetSignal struct{ newCursor int64 }
+type streamProgress struct{ lastID int64 }
+
+// resetEnvelope is the NDJSON shape emitted on sync.reset_required so
+// downstream tooling can match on `reset_required:true`.
+type resetEnvelope struct {
+	ResetRequired bool  `json:"reset_required"`
+	ResetAfterID  int64 `json:"reset_after_id"`
+}
+
 func runEventsTail(cmd *cobra.Command, opts eventsTailOptions) error {
 	ctx := cmd.Context()
 	baseURL, err := ensureDaemon(ctx)
@@ -186,52 +203,111 @@ func runEventsTail(cmd *cobra.Command, opts eventsTailOptions) error {
 	out := cmd.OutOrStdout()
 	cursor := opts.LastEventID
 	backoff := tailBackoffStart
-
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return nil
-		default:
 		}
-		readAny, err := streamOnce(ctx, client, url, cursor, out)
-		if err != nil {
-			if !flags.Quiet {
-				fmt.Fprintln(os.Stderr, "kata: stream error:", err, "(reconnecting in", backoff.Round(time.Second), ")")
-			}
+		res, sErr := streamOnce(ctx, client, url, cursor, out)
+		if sErr != nil && !flags.Quiet {
+			fmt.Fprintln(os.Stderr, "kata: stream error:", sErr,
+				"(reconnecting in", backoff.Round(time.Second), ")")
 		}
-		switch v := readAny.(type) {
-		case streamResetSignal:
-			cursor = v.newCursor
-			backoff = tailBackoffStart
+		next, reset := applyAttemptResult(res, cursor, backoff)
+		cursor = next.cursor
+		if reset {
+			backoff = next.backoff
 			continue
-		case streamProgress:
-			if v.lastID > cursor {
-				cursor = v.lastID
-				backoff = tailBackoffStart
-			}
 		}
-
-		select {
-		case <-ctx.Done():
+		if waitErr := waitBackoff(ctx, next.backoff); waitErr != nil {
 			return nil
-		case <-time.After(backoff):
 		}
-		if backoff < tailBackoffMax {
-			backoff *= 2
-			if backoff > tailBackoffMax {
-				backoff = tailBackoffMax
-			}
-		}
+		backoff = nextBackoff(next.backoff)
 	}
 }
 
-type streamResetSignal struct{ newCursor int64 }
-type streamProgress struct{ lastID int64 }
+type tailState struct {
+	cursor  int64
+	backoff time.Duration
+}
 
-func streamOnce(ctx context.Context, client *http.Client, baseURL string, cursor int64, out io.Writer) (any, error) {
+// applyAttemptResult folds streamOnce's typed result into (next cursor,
+// next backoff). The bool return is true iff the stream signalled a reset
+// (caller should skip the backoff wait and retry immediately).
+func applyAttemptResult(res streamResult, cursor int64, backoff time.Duration) (tailState, bool) {
+	if res.Reset != nil {
+		return tailState{cursor: res.Reset.newCursor, backoff: tailBackoffStart}, true
+	}
+	if res.Progress.lastID > cursor {
+		return tailState{cursor: res.Progress.lastID, backoff: tailBackoffStart}, false
+	}
+	return tailState{cursor: cursor, backoff: backoff}, false
+}
+
+func waitBackoff(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+func nextBackoff(cur time.Duration) time.Duration {
+	if cur >= tailBackoffMax {
+		return tailBackoffMax
+	}
+	doubled := cur * 2
+	if doubled > tailBackoffMax {
+		return tailBackoffMax
+	}
+	return doubled
+}
+
+// frameState accumulates the lines of a single SSE frame and drains them
+// into NDJSON output when the frame terminator (blank line) arrives.
+type frameState struct {
+	id    string
+	event string
+	data  string
+}
+
+func (f *frameState) reset() { f.id, f.event, f.data = "", "", "" }
+func (f *frameState) empty() bool {
+	return f.id == "" && f.event == "" && f.data == ""
+}
+
+// flush writes the frame to out and returns the typed result. Callers
+// must call reset() afterward (deferred by the caller, not here, so the
+// return path is single-purpose).
+func (f *frameState) flush(out io.Writer) (streamResult, error) {
+	if f.event == "sync.reset_required" {
+		var r struct {
+			ResetAfterID int64 `json:"reset_after_id"`
+		}
+		if err := json.Unmarshal([]byte(f.data), &r); err != nil {
+			return streamResult{}, fmt.Errorf("parse reset frame: %w", err)
+		}
+		env := resetEnvelope{ResetRequired: true, ResetAfterID: r.ResetAfterID}
+		body, err := json.Marshal(env)
+		if err != nil {
+			return streamResult{}, fmt.Errorf("encode reset envelope: %w", err)
+		}
+		if _, err := fmt.Fprintln(out, string(body)); err != nil {
+			return streamResult{}, err
+		}
+		return streamResult{Reset: &streamResetSignal{newCursor: r.ResetAfterID}}, nil
+	}
+	if _, err := fmt.Fprintln(out, f.data); err != nil {
+		return streamResult{}, err
+	}
+	n, _ := strconv.ParseInt(f.id, 10, 64)
+	return streamResult{Progress: streamProgress{lastID: n}}, nil
+}
+
+func streamOnce(ctx context.Context, client *http.Client, baseURL string, cursor int64, out io.Writer) (streamResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL, nil)
 	if err != nil {
-		return streamProgress{lastID: cursor}, err
+		return streamResult{Progress: streamProgress{lastID: cursor}}, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	if cursor > 0 {
@@ -239,84 +315,57 @@ func streamOnce(ctx context.Context, client *http.Client, baseURL string, cursor
 	}
 	resp, err := client.Do(req) //nolint:gosec // baseURL comes from daemon discovery
 	if err != nil {
-		return streamProgress{lastID: cursor}, err
+		return streamResult{Progress: streamProgress{lastID: cursor}}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		bs, _ := io.ReadAll(resp.Body)
-		return streamProgress{lastID: cursor}, fmt.Errorf("http %d: %s", resp.StatusCode, string(bs))
+		return streamResult{Progress: streamProgress{lastID: cursor}},
+			fmt.Errorf("http %d: %s", resp.StatusCode, string(bs))
 	}
+	return parseSSEStream(bufio.NewReader(resp.Body), cursor, out)
+}
 
-	rd := bufio.NewReader(resp.Body)
-	var (
-		curID    string
-		curEvent string
-		curData  string
-	)
-	flushFrame := func() (any, bool, error) {
-		defer func() { curID, curEvent, curData = "", "", "" }()
-		if curEvent == "" && curData == "" && curID == "" {
-			return nil, false, nil
-		}
-		switch curEvent {
-		case "sync.reset_required":
-			var r struct {
-				ResetAfterID int64 `json:"reset_after_id"`
-			}
-			if err := json.Unmarshal([]byte(curData), &r); err != nil {
-				return nil, false, fmt.Errorf("parse reset frame: %w", err)
-			}
-			env := map[string]any{
-				"reset_required": true,
-				"reset_after_id": r.ResetAfterID,
-			}
-			line, _ := json.Marshal(env)
-			if _, err := fmt.Fprintln(out, string(line)); err != nil {
-				return nil, false, err
-			}
-			return streamResetSignal{newCursor: r.ResetAfterID}, true, nil
-		default:
-			if _, err := fmt.Fprintln(out, curData); err != nil {
-				return nil, false, err
-			}
-			n, _ := strconv.ParseInt(curID, 10, 64)
-			return streamProgress{lastID: n}, false, nil
-		}
-	}
-
+// parseSSEStream pulls SSE frames off rd until EOF or a reset frame and
+// emits each event's data: line as NDJSON via flushFrame on out.
+func parseSSEStream(rd *bufio.Reader, cursor int64, out io.Writer) (streamResult, error) {
+	var f frameState
 	progress := streamProgress{lastID: cursor}
 	for {
 		line, err := rd.ReadString('\n')
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return progress, nil
+				return streamResult{Progress: progress}, nil
 			}
-			return progress, err
+			return streamResult{Progress: progress}, err
 		}
 		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			if f.empty() {
+				continue
+			}
+			res, ferr := f.flush(out)
+			f.reset()
+			if ferr != nil {
+				return streamResult{Progress: progress}, ferr
+			}
+			if res.Reset != nil {
+				return res, nil
+			}
+			if res.Progress.lastID > 0 {
+				progress = res.Progress
+			}
+			continue
+		}
 		switch {
-		case line == "":
-			res, terminal, err := flushFrame()
-			if err != nil {
-				return progress, err
-			}
-			if reset, ok := res.(streamResetSignal); ok {
-				return reset, nil
-			}
-			if p, ok := res.(streamProgress); ok && p.lastID > 0 {
-				progress = p
-			}
-			if terminal {
-				return progress, nil
-			}
 		case strings.HasPrefix(line, ":"):
 			// comment / heartbeat — ignore
 		case strings.HasPrefix(line, "id: "):
-			curID = strings.TrimPrefix(line, "id: ")
+			f.id = strings.TrimPrefix(line, "id: ")
 		case strings.HasPrefix(line, "event: "):
-			curEvent = strings.TrimPrefix(line, "event: ")
+			f.event = strings.TrimPrefix(line, "event: ")
 		case strings.HasPrefix(line, "data: "):
-			curData = strings.TrimPrefix(line, "data: ")
+			f.data = strings.TrimPrefix(line, "data: ")
 		}
 	}
 }
