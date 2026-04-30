@@ -61,6 +61,8 @@ func newRootCmd() *cobra.Command {
 		newUnblockCmd(),
 		newRelateCmd(),
 		newUnrelateCmd(),
+		newLabelCmd(),
+		newLabelsCmd(),
 		newWhoamiCmd(),
 		newHealthCmd(),
 		newProjectsCmd(),
