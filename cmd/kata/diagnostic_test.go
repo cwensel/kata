@@ -12,6 +12,7 @@ import (
 )
 
 func TestWhoami_FlagOverride(t *testing.T) {
+	resetFlags(t)
 	cmd := newRootCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -23,6 +24,7 @@ func TestWhoami_FlagOverride(t *testing.T) {
 }
 
 func TestHealth_PrintsSchemaVersion(t *testing.T) {
+	resetFlags(t)
 	env := testenv.New(t)
 	cmd := newRootCmd()
 	var buf bytes.Buffer
@@ -34,6 +36,7 @@ func TestHealth_PrintsSchemaVersion(t *testing.T) {
 }
 
 func TestProjectsList_PrintsKnown(t *testing.T) {
+	resetFlags(t)
 	env := testenv.New(t)
 	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
 	_ = dir

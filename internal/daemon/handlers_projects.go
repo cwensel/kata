@@ -360,49 +360,59 @@ func upsertAliasFor(ctx context.Context, store *db.DB, projectID int64, disc con
 func attachAlias(ctx context.Context, store *db.DB, projectID int64, info config.AliasInfo, reassign bool) (db.ProjectAlias, error) {
 	existing, err := store.AliasByIdentity(ctx, info.Identity)
 	if err == nil {
-		if existing.ProjectID == projectID {
-			if err := store.TouchAlias(ctx, existing.ID, info.RootPath); err != nil && !errors.Is(err, db.ErrNotFound) {
-				return db.ProjectAlias{}, api.NewError(500, "internal", err.Error(), "", nil)
-			}
-			refreshed, _ := store.AliasByIdentity(ctx, info.Identity)
-			return refreshed, nil
-		}
-		if !reassign {
-			return db.ProjectAlias{}, api.NewError(http.StatusConflict, "project_alias_conflict",
-				"alias already attached to a different project",
-				"pass reassign=true to move it", map[string]any{
-					"alias_identity":      info.Identity,
-					"existing_project_id": existing.ProjectID,
-				})
-		}
-		if _, execErr := store.ExecContext(ctx,
-			`UPDATE project_aliases
-			 SET project_id = ?, root_path = ?, last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-			 WHERE id = ?`,
-			projectID, info.RootPath, existing.ID); execErr != nil {
-			return db.ProjectAlias{}, api.NewError(500, "internal", execErr.Error(), "", nil)
-		}
-		refreshed, _ := store.AliasByIdentity(ctx, info.Identity)
-		return refreshed, nil
+		return applyExistingAlias(ctx, store, projectID, info, existing, reassign)
 	}
 	if !errors.Is(err, db.ErrNotFound) {
 		return db.ProjectAlias{}, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	a, err := store.AttachAlias(ctx, projectID, info.Identity, info.Kind, info.RootPath)
 	if err != nil {
-		// A UNIQUE constraint failure on alias_identity means a concurrent
-		// init beat us to the insert. Surface it as the documented 409 so the
-		// client sees a stable error code instead of an internal-error envelope.
+		// A UNIQUE constraint failure on alias_identity means a concurrent init
+		// beat us to the insert. Refetch the now-existing alias and apply the
+		// same existing-alias logic: idempotent if it points to this project,
+		// conflict or reassign otherwise.
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: project_aliases.alias_identity") {
-			return db.ProjectAlias{}, api.NewError(http.StatusConflict, "project_alias_conflict",
-				"alias already attached to a different project",
-				"pass reassign=true to move it", map[string]any{
-					"alias_identity": info.Identity,
-				})
+			raced, refetchErr := store.AliasByIdentity(ctx, info.Identity)
+			if refetchErr != nil {
+				return db.ProjectAlias{}, api.NewError(500, "internal",
+					"alias UNIQUE conflict but refetch failed: "+refetchErr.Error(), "", nil)
+			}
+			return applyExistingAlias(ctx, store, projectID, info, raced, reassign)
 		}
 		return db.ProjectAlias{}, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	return a, nil
+}
+
+// applyExistingAlias handles the case where an alias row already exists.
+// If the alias belongs to projectID it is touched (last_seen updated) and
+// returned — enabling idempotent concurrent inits. Otherwise the alias is
+// either moved (reassign=true) or a 409 is returned.
+func applyExistingAlias(ctx context.Context, store *db.DB, projectID int64, info config.AliasInfo, existing db.ProjectAlias, reassign bool) (db.ProjectAlias, error) {
+	if existing.ProjectID == projectID {
+		if err := store.TouchAlias(ctx, existing.ID, info.RootPath); err != nil && !errors.Is(err, db.ErrNotFound) {
+			return db.ProjectAlias{}, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		refreshed, _ := store.AliasByIdentity(ctx, info.Identity)
+		return refreshed, nil
+	}
+	if !reassign {
+		return db.ProjectAlias{}, api.NewError(http.StatusConflict, "project_alias_conflict",
+			"alias already attached to a different project",
+			"pass reassign=true to move it", map[string]any{
+				"alias_identity":      info.Identity,
+				"existing_project_id": existing.ProjectID,
+			})
+	}
+	if _, execErr := store.ExecContext(ctx,
+		`UPDATE project_aliases
+		 SET project_id = ?, root_path = ?, last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		 WHERE id = ?`,
+		projectID, info.RootPath, existing.ID); execErr != nil {
+		return db.ProjectAlias{}, api.NewError(500, "internal", execErr.Error(), "", nil)
+	}
+	refreshed, _ := store.AliasByIdentity(ctx, info.Identity)
+	return refreshed, nil
 }
 
 // preflightAliasConflict returns 409 project_alias_conflict when an existing

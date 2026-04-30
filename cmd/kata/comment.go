@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -33,9 +34,13 @@ func newCommentCmd() *cobra.Command {
 		}
 		body, err := resolveBody(src, cmd.InOrStdin())
 		if err != nil {
-			return &cliError{Message: err.Error(), ExitCode: ExitValidation}
+			code := ExitValidation
+			if strings.HasPrefix(err.Error(), "must pass exactly one of") {
+				code = ExitUsage
+			}
+			return &cliError{Message: err.Error(), ExitCode: code}
 		}
-		if body == "" {
+		if strings.TrimSpace(body) == "" {
 			return &cliError{Message: "comment body is required (--body, --body-file, --body-stdin)", ExitCode: ExitValidation}
 		}
 		start, err := resolveStartPath(flags.Workspace)
@@ -72,8 +77,11 @@ func newCommentCmd() *cobra.Command {
 			_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
 			return err
 		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), "comment appended")
-		return err
+		if !flags.Quiet {
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), "comment appended")
+			return err
+		}
+		return nil
 	}
 	return cmd
 }

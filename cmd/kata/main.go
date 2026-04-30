@@ -70,11 +70,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, "kata:", cli.Message)
 			os.Exit(cli.ExitCode)
 		}
-		// Cobra's argument-parsing failures (unknown command, missing
-		// required flag, bad value) reach here as plain errors. Map them to
-		// ExitUsage; reserve ExitInternal for RunE errors that surface as
-		// *cliError with that code explicitly.
+		// Operational RunE failures (daemon startup, HTTP transport, filesystem)
+		// and cobra parsing failures both reach here. Default to ExitInternal so
+		// a network or daemon failure isn't masked as ExitUsage. Subcommands that
+		// detect explicit usage problems (bad flag value, missing required input)
+		// should return *cliError{ExitCode: ExitUsage} themselves.
 		fmt.Fprintln(os.Stderr, "kata:", err)
-		os.Exit(ExitUsage)
+		os.Exit(ExitInternal)
 	}
 }

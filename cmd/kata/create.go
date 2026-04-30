@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -26,6 +27,11 @@ func newCreateCmd() *cobra.Command {
 		src.BodySet = cmd.Flags().Changed("body")
 		src.FileSet = cmd.Flags().Changed("body-file")
 
+		title := args[0]
+		if strings.TrimSpace(title) == "" {
+			return &cliError{Message: "title must not be empty", ExitCode: ExitValidation}
+		}
+
 		ctx := cmd.Context()
 		start, err := resolveStartPath(flags.Workspace)
 		if err != nil {
@@ -41,7 +47,11 @@ func newCreateCmd() *cobra.Command {
 		}
 		body, err := resolveBody(src, cmd.InOrStdin())
 		if err != nil {
-			return &cliError{Message: err.Error(), ExitCode: ExitValidation}
+			code := ExitValidation
+			if strings.HasPrefix(err.Error(), "must pass exactly one of") {
+				code = ExitUsage
+			}
+			return &cliError{Message: err.Error(), ExitCode: code}
 		}
 		actor, _ := resolveActor(flags.As, nil)
 		client, err := httpClientFor(ctx, baseURL)
@@ -50,7 +60,7 @@ func newCreateCmd() *cobra.Command {
 		}
 		status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
 			fmt.Sprintf("%s/api/v1/projects/%d/issues", baseURL, projectID),
-			map[string]any{"actor": actor, "title": args[0], "body": body})
+			map[string]any{"actor": actor, "title": title, "body": body})
 		if err != nil {
 			return err
 		}

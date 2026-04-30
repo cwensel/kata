@@ -13,6 +13,7 @@ import (
 )
 
 func TestComment_AppendsToIssue(t *testing.T) {
+	resetFlags(t)
 	env := testenv.New(t)
 	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
 	pid := resolvePIDViaHTTP(t, env.URL, dir)

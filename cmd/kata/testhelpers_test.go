@@ -73,7 +73,8 @@ func initBoundWorkspace(t *testing.T, baseURL, origin string) string {
 	cmd.Dir = dir
 	require.NoError(t, cmd.Run())
 
-	body := []byte(`{"start_path":"` + dir + `"}`)
+	body, err := json.Marshal(map[string]string{"start_path": dir})
+	require.NoError(t, err)
 	resp, err := http.Post(baseURL+"/api/v1/projects", "application/json", bytes.NewReader(body)) //nolint:gosec,noctx // test-only
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -85,7 +86,8 @@ func initBoundWorkspace(t *testing.T, baseURL, origin string) string {
 // returns the resolved project ID.
 func resolvePIDViaHTTP(t *testing.T, baseURL, startPath string) int64 {
 	t.Helper()
-	body := []byte(`{"start_path":"` + startPath + `"}`)
+	body, err := json.Marshal(map[string]string{"start_path": startPath})
+	require.NoError(t, err)
 	resp, err := http.Post(baseURL+"/api/v1/projects/resolve", "application/json", bytes.NewReader(body)) //nolint:gosec,noctx // test-only
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -98,3 +100,12 @@ func resolvePIDViaHTTP(t *testing.T, baseURL, startPath string) int64 {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// resetFlags restores global flag state for cobra tests. Use t.Cleanup so
+// LIFO ordering plays nicely with other cleanups.
+func resetFlags(t *testing.T) {
+	t.Helper()
+	saved := flags
+	flags = globalFlags{}
+	t.Cleanup(func() { flags = saved })
+}

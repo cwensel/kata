@@ -13,6 +13,7 @@ import (
 )
 
 func TestList_DefaultsToOpenIssuesInProject(t *testing.T) {
+	resetFlags(t)
 	env := testenv.New(t)
 	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
 
