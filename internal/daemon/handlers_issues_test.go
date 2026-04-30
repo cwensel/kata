@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -124,6 +125,72 @@ func TestEditIssue_BlankActorIs400(t *testing.T) {
 		map[string]any{"actor": "   ", "title": "new"})
 	assert.Equal(t, 400, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"code":"validation"`)
+}
+
+func TestCreateIssue_WithInitialState(t *testing.T) {
+	env := testenv.New(t)
+	pid, parent, _ := setupTwoIssues(t, env)
+
+	body, _ := json.Marshal(map[string]any{
+		"actor":  "tester",
+		"title":  "child",
+		"owner":  "alice",
+		"labels": []string{"bug", "needs-review"},
+		"links":  []map[string]any{{"type": "parent", "to_number": parent}},
+	})
+	resp, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var out struct {
+		Issue struct {
+			Number int64   `json:"number"`
+			Owner  *string `json:"owner"`
+		} `json:"issue"`
+		Event struct {
+			Type    string `json:"type"`
+			Payload string `json:"payload"`
+		} `json:"event"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.NotNil(t, out.Issue.Owner)
+	assert.Equal(t, "alice", *out.Issue.Owner)
+	assert.Equal(t, "issue.created", out.Event.Type)
+	assert.Contains(t, out.Event.Payload, `"labels":["bug","needs-review"]`)
+	assert.Contains(t, out.Event.Payload, `"owner":"alice"`)
+	assert.Contains(t, out.Event.Payload, `"type":"parent"`)
+}
+
+func TestCreateIssue_InitialLinkToMissingTargetIs404(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	body, _ := json.Marshal(map[string]any{
+		"actor": "tester", "title": "child",
+		"links": []map[string]any{{"type": "parent", "to_number": 99}},
+	})
+	resp, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 404, resp.StatusCode)
+}
+
+func TestCreateIssue_InvalidLabelIs400(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	body, _ := json.Marshal(map[string]any{
+		"actor": "tester", "title": "x",
+		"labels": []string{"BadCase"},
+	})
+	resp, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 400, resp.StatusCode)
 }
 
 func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {

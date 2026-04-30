@@ -29,13 +29,35 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			}
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+
+		links := make([]db.InitialLink, 0, len(in.Body.Links))
+		for _, l := range in.Body.Links {
+			links = append(links, db.InitialLink{Type: l.Type, ToNumber: l.ToNumber})
+		}
+
 		issue, evt, err := cfg.DB.CreateIssue(ctx, db.CreateIssueParams{
 			ProjectID: in.ProjectID,
 			Title:     in.Body.Title,
 			Body:      in.Body.Body,
 			Author:    in.Body.Actor,
+			Owner:     in.Body.Owner,
+			Labels:    in.Body.Labels,
+			Links:     links,
 		})
-		if err != nil {
+		switch {
+		case errors.Is(err, db.ErrInitialLinkInvalidType):
+			return nil, api.NewError(400, "validation",
+				"link.type must be parent|blocks|related", "", nil)
+		case errors.Is(err, db.ErrInitialLinkTargetNotFound):
+			return nil, api.NewError(404, "issue_not_found",
+				"initial link target not found in this project", "", nil)
+		case errors.Is(err, db.ErrLabelInvalid):
+			return nil, api.NewError(400, "validation",
+				"label must match charset [a-z0-9._:-] and length 1..64", "", nil)
+		case errors.Is(err, db.ErrParentAlreadySet):
+			return nil, api.NewError(409, "parent_already_set",
+				"duplicate parent in initial links", "pass at most one parent link", nil)
+		case err != nil:
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		out := &api.MutationResponse{}
