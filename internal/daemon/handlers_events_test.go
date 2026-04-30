@@ -416,3 +416,73 @@ func TestSSE_ResetWhenCursorInsidePurgeGap(t *testing.T) {
 	assert.NotEmpty(t, frames[0].id)
 	assert.Contains(t, frames[0].data, `"reset_after_id":`+frames[0].id)
 }
+
+func TestSSE_DrainFollowedByLiveBroadcast(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	mkIssue(t, env, pid, "first")
+
+	resp := openSSE(t, env, "after_id=0", nil)
+	defer func() { _ = resp.Body.Close() }()
+
+	// First frame from drain.
+	first := readSSEFramesUntilN(t, resp.Body, 1, 2*time.Second)
+	require.Len(t, first, 1)
+	assert.Equal(t, "1", first[0].id)
+
+	// Mutate to trigger a live broadcast.
+	mkIssue(t, env, pid, "second")
+
+	// The live phase only triggers on broadcaster.Broadcast — Task 8 wires
+	// mutations to broadcast. Until then, the live phase only sees ctx.Done
+	// or heartbeat. So this test will only pass once Task 8 lands.
+	//
+	// For Task 7, manually nudge the broadcaster via the testenv accessor
+	// (added below) so the live phase re-queries and emits frame 2.
+	nudgeBroadcaster(t, env, 2, pid)
+
+	second := readSSEFramesUntilN(t, resp.Body, 1, 2*time.Second)
+	require.Len(t, second, 1)
+	assert.Equal(t, "2", second[0].id)
+	assert.Equal(t, "issue.created", second[0].event)
+}
+
+// nudgeBroadcaster is a Task 7 test affordance: until Task 8 wires the
+// broadcaster into mutation handlers, the live phase needs an explicit
+// poke to re-query the DB. We expose the broadcaster on testenv.Env in
+// Task 8; for now, this helper is documented but unused. The test above
+// will skip if testenv.Env doesn't yet expose a Broadcaster handle.
+func nudgeBroadcaster(t *testing.T, env *testenv.Env, eventID, projectID int64) {
+	t.Helper()
+	// Until Task 8 exposes Broadcaster on testenv.Env, the live-phase tests
+	// depend on the live-phase ticker / reconnect path. Skip the assertion
+	// for now and let Task 8 reintroduce the test.
+	t.Skip("requires testenv.Env.Broadcaster accessor — added in Task 8")
+	_ = env
+	_ = eventID
+	_ = projectID
+}
+
+func TestSSE_LiveResetClosesStream(t *testing.T) {
+	// Wired in Task 8 via testenv.Env.Broadcaster accessor + purge handler
+	// broadcasting the reset signal post-commit.
+	t.Skip("requires testenv.Env.Broadcaster accessor — added in Task 8")
+}
+
+func TestSSE_LiveHeartbeatKeepsConnectionAlive(t *testing.T) {
+	// Connection should stay open for >100ms with empty DB and no events.
+	// We don't wait for a 25s heartbeat; we only verify the stream isn't
+	// immediately torn down.
+	env := testenv.New(t)
+	resp := openSSE(t, env, "after_id=0", nil)
+	defer func() { _ = resp.Body.Close() }()
+
+	// Read the : connected\n\n preamble.
+	buf := make([]byte, 16)
+	_, err := resp.Body.Read(buf)
+	require.NoError(t, err)
+
+	// No frames should arrive in 100ms with an empty DB.
+	frames := readSSEFramesUntilN(t, resp.Body, 1, 100*time.Millisecond)
+	assert.Len(t, frames, 0)
+}

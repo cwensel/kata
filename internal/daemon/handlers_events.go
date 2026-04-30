@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -26,7 +27,11 @@ const (
 	sseDrainCap = 10000
 	// sseLiveBatch caps each live-phase re-query at this many rows. A single
 	// wakeup typically returns 1; we still cap to avoid pathological cases.
-	sseLiveBatch = 1000 //nolint:unused // used by Task 7 runLivePhase implementation
+	sseLiveBatch = 1000
+
+	// heartbeatInterval is the SSE keepalive period. Comments are no-ops per the
+	// SSE spec; their purpose is to keep TCP connections alive through middleboxes.
+	heartbeatInterval = 25 * time.Second
 )
 
 func registerEventsHandlers(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
@@ -262,14 +267,58 @@ type livePhaseDeps struct {
 	ch      <-chan StreamMsg
 }
 
-// runLivePhase is implemented in Task 7. The Task 6 stub blocks on ctx so
-// the existing tests (drain only) pass without seeing immediate stream
-// closure.
+// runLivePhase delivers events from deps.ch in canonical DB order. Each event
+// wakeup triggers EventsAfter(lastSent, projectID, ThroughID: msg.Event.ID),
+// which catches reordered broadcasts and coalesces bursts. Resets are
+// terminal: emit the frame and return.
+//
+// lastSent enters as the id of the last drained frame (or cursor when the
+// drain was empty). It tracks server-side state for de-duplication; the
+// client's Last-Event-ID only advances on frames the client actually
+// receives.
 func runLivePhase(ctx context.Context, deps livePhaseDeps, projectID, lastSent int64) {
-	<-ctx.Done()
-	_ = deps
-	_ = projectID
-	_ = lastSent
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := io.WriteString(deps.w, ": keepalive\n\n"); err != nil {
+				return
+			}
+			deps.flusher.Flush()
+		case msg, ok := <-deps.ch:
+			if !ok {
+				return // overflow disconnect
+			}
+			switch msg.Kind {
+			case "reset":
+				writeResetFrame(deps.w, msg.ResetID)
+				deps.flusher.Flush()
+				return
+			case "event":
+				if msg.Event == nil {
+					continue
+				}
+				rows, err := deps.cfg.DB.EventsAfter(ctx, db.EventsAfterParams{
+					AfterID:   lastSent,
+					ProjectID: projectID,
+					ThroughID: msg.Event.ID,
+					Limit:     sseLiveBatch,
+				})
+				if err != nil {
+					return
+				}
+				for _, ev := range rows {
+					writeEventFrame(deps.w, ev)
+					deps.flusher.Flush()
+					lastSent = ev.ID
+				}
+			}
+		}
+	}
 }
 
 func acceptableForSSE(accept string) bool {
