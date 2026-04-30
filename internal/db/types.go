@@ -105,3 +105,27 @@ type IdempotencyMatch struct {
 	Fingerprint string
 	Event       Event
 }
+
+// PurgeLog mirrors a row in purge_log. Snapshots the issue identity at purge
+// time so audits survive any future project rename. EventsDeletedMinID/MaxID
+// and PurgeResetAfterEventID are nullable: NULL when no events were attached
+// to the purged issue.
+type PurgeLog struct {
+	ID                     int64     `json:"id"`
+	ProjectID              int64     `json:"project_id"`
+	PurgedIssueID          int64     `json:"purged_issue_id"`
+	ProjectIdentity        string    `json:"project_identity"`
+	IssueNumber            int64     `json:"issue_number"`
+	IssueTitle             string    `json:"issue_title"`
+	IssueAuthor            string    `json:"issue_author"`
+	CommentCount           int64     `json:"comment_count"`
+	LinkCount              int64     `json:"link_count"`
+	LabelCount             int64     `json:"label_count"`
+	EventCount             int64     `json:"event_count"`
+	EventsDeletedMinID     *int64    `json:"events_deleted_min_id,omitempty"`
+	EventsDeletedMaxID     *int64    `json:"events_deleted_max_id,omitempty"`
+	PurgeResetAfterEventID *int64    `json:"purge_reset_after_event_id,omitempty"`
+	Actor                  string    `json:"actor"`
+	Reason                 *string   `json:"reason,omitempty"`
+	PurgedAt               time.Time `json:"purged_at"`
+}

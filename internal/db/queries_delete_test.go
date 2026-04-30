@@ -187,3 +187,148 @@ func TestSoftDeleteIssue_ScopesByIssueID(t *testing.T) {
 	require.NotNil(t, updated.DeletedAt)
 	assert.Equal(t, p2.ID, updated.ProjectID, "deleted issue belongs to p2")
 }
+
+func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	require.NoError(t, err)
+	target, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "delete me", Body: "body", Author: "tester",
+	})
+	require.NoError(t, err)
+	keeper, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "keep me", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	// Add a comment, a label (with event), and a link from keeper → target so
+	// cascade removes a non-trivial set of dependents.
+	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: target.ID, Author: "tester", Body: "comment body",
+	})
+	require.NoError(t, err)
+	_, _, err = d.AddLabelAndEvent(ctx, target.ID, db.LabelEventParams{
+		EventType: "issue.labeled", Label: "bug", Actor: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: keeper.ID, ToIssueID: target.ID,
+		Type: "blocks", Author: "tester",
+	}, db.LinkEventParams{
+		EventType: "issue.linked", EventIssueID: keeper.ID, EventIssueNumber: keeper.Number,
+		FromNumber: keeper.Number, ToNumber: target.Number, Actor: "tester",
+	})
+	require.NoError(t, err)
+
+	pl, err := d.PurgeIssue(ctx, target.ID, "agent", nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, target.ID, pl.PurgedIssueID)
+	assert.Equal(t, "github.com/wesm/kata", pl.ProjectIdentity)
+	assert.Equal(t, target.Number, pl.IssueNumber)
+	assert.Equal(t, "delete me", pl.IssueTitle)
+	assert.Equal(t, "tester", pl.IssueAuthor)
+	assert.Equal(t, int64(1), pl.CommentCount)
+	assert.Equal(t, int64(1), pl.LinkCount)
+	assert.Equal(t, int64(1), pl.LabelCount)
+	// Events: issue.created + issue.commented + issue.labeled = 3 attached to target,
+	// plus 1 issue.linked attributed to target via related_issue_id (keeper's event).
+	// Total: 4.
+	assert.Equal(t, int64(4), pl.EventCount)
+	require.NotNil(t, pl.EventsDeletedMinID)
+	require.NotNil(t, pl.EventsDeletedMaxID)
+	require.NotNil(t, pl.PurgeResetAfterEventID, "events were deleted, reset cursor must be set")
+
+	// Verify rows actually gone.
+	var n int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM issues WHERE id = ?`, target.ID).Scan(&n))
+	assert.Equal(t, 0, n, "issue row removed")
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM comments WHERE issue_id = ?`, target.ID).Scan(&n))
+	assert.Equal(t, 0, n, "comments removed")
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM links WHERE from_issue_id = ? OR to_issue_id = ?`,
+		target.ID, target.ID).Scan(&n))
+	assert.Equal(t, 0, n, "links removed")
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM issue_labels WHERE issue_id = ?`, target.ID).Scan(&n))
+	assert.Equal(t, 0, n, "labels removed")
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE issue_id = ? OR related_issue_id = ?`,
+		target.ID, target.ID).Scan(&n))
+	assert.Equal(t, 0, n, "events removed")
+
+	// FTS row gone.
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM issues_fts WHERE rowid = ?`, target.ID).Scan(&n))
+	assert.Equal(t, 0, n, "FTS row removed")
+
+	// keeper's events.created is the only event attributed to keeper that
+	// survives — keeper's issue.linked was deleted because related_issue_id
+	// pointed to target.
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE issue_id = ?`, keeper.ID).Scan(&n))
+	assert.Equal(t, 1, n, "keeper's issue.created survives; its issue.linked was cascade-deleted via related_issue_id")
+}
+
+func TestPurgeIssue_NoEventsLeavesResetCursorNull(t *testing.T) {
+	// Manually craft an issue row with no events: insert directly so we
+	// bypass CreateIssue's automatic issue.created event. Verify that
+	// PurgeIssue sees zero attached events and leaves PurgeResetAfterEventID
+	// as nil (no SSE cursor reservation needed).
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	res, err := d.ExecContext(ctx,
+		`INSERT INTO issues(project_id, number, title, author) VALUES(?, 1, 'no-events', 'tester')`,
+		p.ID)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	pl, err := d.PurgeIssue(ctx, id, "agent", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), pl.EventCount)
+	assert.Nil(t, pl.EventsDeletedMinID)
+	assert.Nil(t, pl.EventsDeletedMaxID)
+	assert.Nil(t, pl.PurgeResetAfterEventID, "no events deleted → no reset cursor")
+}
+
+func TestPurgeIssue_ReservesSqliteSequenceAboveMaxEventID(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	target, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+	// Capture max events.id BEFORE purge.
+	var maxBefore int64
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(id), 0) FROM events`).Scan(&maxBefore))
+
+	pl, err := d.PurgeIssue(ctx, target.ID, "agent", nil)
+	require.NoError(t, err)
+	require.NotNil(t, pl.PurgeResetAfterEventID)
+	assert.Greater(t, *pl.PurgeResetAfterEventID, maxBefore,
+		"reserved cursor must exceed every events.id that existed at purge time")
+
+	// Now create another issue and verify the next events.id is strictly
+	// greater than the reserved cursor.
+	_, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "next", Author: "tester",
+	})
+	require.NoError(t, err)
+	assert.Greater(t, evt.ID, *pl.PurgeResetAfterEventID,
+		"next real events.id must continue from reserved+1")
+}
+
+func TestPurgeIssue_UnknownIssueIsErrNotFound(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.PurgeIssue(context.Background(), 9999, "agent", nil)
+	assert.True(t, errors.Is(err, db.ErrNotFound))
+}
