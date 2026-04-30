@@ -66,6 +66,9 @@ func NewEventBroadcaster() *EventBroadcaster {
 // Subscribe registers a new subscriber with the given filter. Returned
 // Subscription holds a read-only Ch and an Unsub closure that's safe to call
 // repeatedly.
+//
+// Callers must invoke Unsub (typically via defer) to release resources; the
+// only automatic cleanup is overflow eviction when the channel fills.
 func (b *EventBroadcaster) Subscribe(filter SubFilter) Subscription {
 	b.mu.Lock()
 	defer b.mu.Unlock()

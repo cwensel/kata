@@ -99,7 +99,6 @@ func TestBroadcaster_OverflowDisconnectsSlowSubscriberOnly(t *testing.T) {
 		case _, ok := <-slow.Ch:
 			if !ok {
 				closed = true
-				break
 			}
 		case <-time.After(20 * time.Millisecond):
 		}
@@ -128,6 +127,9 @@ loop:
 
 func TestBroadcaster_RaceFuzz(t *testing.T) {
 	// -race coverage for concurrent Subscribe/Broadcast/Unsub.
+	// The test asserts no goroutine leaks (every Unsub completes) and no
+	// data races (caught by -race). Without -race, the test still verifies
+	// the wg.Wait() returns within the deadline (no deadlock).
 	b := daemon.NewEventBroadcaster()
 	var wg sync.WaitGroup
 	const N = 200
@@ -136,13 +138,15 @@ func TestBroadcaster_RaceFuzz(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			sub := b.Subscribe(daemon.SubFilter{ProjectID: int64(i % 5)})
-			// drain whatever arrives without blocking
+			drain := make(chan struct{})
 			go func() {
-				for range sub.Ch {
+				for range sub.Ch { //nolint:revive // empty body: drain only, values discarded
 				}
+				close(drain)
 			}()
 			time.Sleep(time.Microsecond)
 			sub.Unsub()
+			<-drain
 		}(i)
 	}
 	for i := 0; i < N; i++ {
@@ -153,5 +157,12 @@ func TestBroadcaster_RaceFuzz(t *testing.T) {
 			b.Broadcast(daemon.StreamMsg{Kind: "event", Event: evt, ProjectID: evt.ProjectID})
 		}(i)
 	}
-	wg.Wait()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		// expected: all goroutines completed cleanly
+	case <-time.After(10 * time.Second):
+		t.Fatal("race fuzz did not complete within 10s — possible deadlock")
+	}
 }
