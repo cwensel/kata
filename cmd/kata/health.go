@@ -1,0 +1,55 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+
+	"github.com/spf13/cobra"
+)
+
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "health",
+		Short: "report daemon health",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			client, err := httpClientFor(ctx, baseURL)
+			if err != nil {
+				return err
+			}
+			status, bs, err := httpDoJSON(ctx, client, http.MethodGet, baseURL+"/api/v1/health", nil)
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			if flags.JSON {
+				var buf bytes.Buffer
+				if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
+					return err
+				}
+				_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
+				return err
+			}
+			var b struct {
+				OK            bool   `json:"ok"`
+				SchemaVersion int    `json:"schema_version"`
+				Uptime        string `json:"uptime"`
+				DBPath        string `json:"db_path"`
+			}
+			if err := json.Unmarshal(bs, &b); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "ok=%v schema_version=%d uptime=%s db=%s\n",
+				b.OK, b.SchemaVersion, b.Uptime, b.DBPath)
+			return err
+		},
+	}
+}
