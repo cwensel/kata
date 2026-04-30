@@ -7,7 +7,6 @@ package similarity
 import (
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -56,12 +55,18 @@ func Tokenize(s string) []string {
 		if cur.Len() == 0 {
 			return
 		}
-		tok := stem(cur.String())
+		// snapshot before Reset — strings.Builder.String() returns a view that
+		// would be invalidated otherwise.
+		tok := cur.String()
 		cur.Reset()
 		if len(tok) < 2 {
 			return
 		}
 		if _, isStop := stopWords[tok]; isStop {
+			return
+		}
+		tok = stem(tok)
+		if len(tok) < 2 {
 			return
 		}
 		out = append(out, tok)
@@ -131,9 +136,6 @@ func Score(titleA, bodyA, titleB, bodyB string) float64 {
 // firstRunes returns the first n runes of s. If s has fewer than n runes,
 // it's returned unchanged.
 func firstRunes(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
 	count := 0
 	for i := range s {
 		if count == n {

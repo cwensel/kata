@@ -98,3 +98,40 @@ func TestScore_Body500CharLimit(t *testing.T) {
 		"same", prefix+" beta-divergent")
 	assert.InDelta(t, 1.0, got, 1e-9, "divergence past 500 chars must not affect the score")
 }
+
+// TestTokenize_AllStopWordsAreFiltered guards against stopword/stem ordering
+// regressions. Spec §3.7: stopword removal must come BEFORE stemming so
+// "has" doesn't stem to "ha" and slip through.
+func TestTokenize_AllStopWordsAreFiltered(t *testing.T) {
+	stopWords := []string{
+		"a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+		"has", "have", "in", "is", "it", "of", "on", "or", "that", "the",
+		"this", "to", "was", "were", "will", "with",
+	}
+	for _, w := range stopWords {
+		t.Run(w, func(t *testing.T) {
+			got := similarity.Tokenize(w)
+			assert.Empty(t, got, "stopword %q must be filtered, got %v", w, got)
+		})
+	}
+}
+
+// TestTokenize_StopWordsBeforeStem verifies the spec's documented order: a
+// phrase containing only stopwords (some of which would stem to nonsense
+// tokens if processed in the wrong order) yields an empty token slice.
+func TestTokenize_StopWordsBeforeStem(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"this_was_a_bug", "this was a bug", []string{"bug"}},
+		{"all_stopwords_strippable", "this was has", nil},
+		{"mixed_phrase", "this issue has the login crash", []string{"issue", "login", "crash"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, similarity.Tokenize(tc.in))
+		})
+	}
+}
