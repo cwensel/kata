@@ -193,6 +193,25 @@ func TestCreateIssue_InvalidLabelIs400(t *testing.T) {
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
+// TestCreateIssue_InitialSelfLinkIs400 verifies that an initial link whose
+// to_number equals the issue being created (which lands as #1 in a fresh
+// project) surfaces as a 400 validation error, not a 500. The DB layer
+// catches this via ErrSelfLink and the handler must map it.
+func TestCreateIssue_InitialSelfLinkIs400(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	body, _ := json.Marshal(map[string]any{
+		"actor": "tester", "title": "self",
+		"links": []map[string]any{{"type": "parent", "to_number": 1}},
+	})
+	resp, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
 func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	env := testenv.New(t)
 	pid, parent, child := setupTwoIssues(t, env)

@@ -51,6 +51,9 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		case errors.Is(err, db.ErrInitialLinkTargetNotFound):
 			return nil, api.NewError(404, "issue_not_found",
 				"initial link target not found in this project", "", nil)
+		case errors.Is(err, db.ErrSelfLink):
+			return nil, api.NewError(400, "validation",
+				"cannot link an issue to itself", "", nil)
 		case errors.Is(err, db.ErrLabelInvalid):
 			return nil, api.NewError(400, "validation",
 				"label must match charset [a-z0-9._:-] and length 1..64", "", nil)
