@@ -1,11 +1,15 @@
 package daemon_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -209,4 +213,193 @@ func TestPollEvents_PerProject_UnknownProjectIs404(t *testing.T) {
 	assert.Equal(t, 404, resp.StatusCode)
 	bs, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(bs), `"code":"project_not_found"`)
+}
+
+type sseFrame struct {
+	id    string
+	event string
+	data  string
+}
+
+func readSSEFramesUntilN(t *testing.T, body interface {
+	Read([]byte) (int, error)
+	Close() error
+}, n int, timeout time.Duration) []sseFrame {
+	t.Helper()
+	var frames []sseFrame
+	cur := sseFrame{}
+	deadline := time.Now().Add(timeout)
+	rd := bufio.NewReader(body)
+
+	type lineResult struct {
+		line string
+		err  error
+	}
+	lineCh := make(chan lineResult, 1)
+	readLine := func() {
+		s, err := rd.ReadString('\n')
+		lineCh <- lineResult{s, err}
+	}
+
+	for len(frames) < n && time.Now().Before(deadline) {
+		go readLine()
+		var lr lineResult
+		select {
+		case lr = <-lineCh:
+		case <-time.After(time.Until(deadline)):
+			return frames
+		}
+		if lr.err != nil {
+			return frames
+		}
+		line := strings.TrimRight(lr.line, "\r\n")
+		switch {
+		case line == "":
+			if cur.id != "" || cur.event != "" || cur.data != "" {
+				frames = append(frames, cur)
+				cur = sseFrame{}
+			}
+		case strings.HasPrefix(line, ":"):
+			// comment / heartbeat — ignore but keep reading
+		case strings.HasPrefix(line, "id: "):
+			cur.id = strings.TrimPrefix(line, "id: ")
+		case strings.HasPrefix(line, "event: "):
+			cur.event = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			cur.data = strings.TrimPrefix(line, "data: ")
+		}
+	}
+	return frames
+}
+
+func openSSE(t *testing.T, env *testenv.Env, query string, header http.Header) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		env.URL+"/api/v1/events/stream?"+query, nil)
+	require.NoError(t, err)
+	for k, vv := range header {
+		req.Header[k] = vv
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "text/event-stream")
+	}
+	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	return resp
+}
+
+func TestSSE_AcceptNegotiation(t *testing.T) {
+	env := testenv.New(t)
+
+	// Missing Accept → 406
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		env.URL+"/api/v1/events/stream", nil)
+	req.Header.Del("Accept")
+	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	bs, _ := io.ReadAll(resp.Body)
+	body := string(bs)
+	_ = resp.Body.Close()
+	assert.Equal(t, 406, resp.StatusCode)
+	assert.Contains(t, body, `"code":"not_acceptable"`)
+
+	// Wrong Accept → 406
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet,
+		env.URL+"/api/v1/events/stream", nil)
+	req.Header.Set("Accept", "application/json")
+	resp, err = env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, 406, resp.StatusCode)
+
+	// Right Accept → 200
+	resp = openSSE(t, env, "", http.Header{"Accept": []string{"text/event-stream"}})
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+	// */* → 200
+	resp = openSSE(t, env, "", http.Header{"Accept": []string{"*/*"}})
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestSSE_CursorConflict(t *testing.T) {
+	env := testenv.New(t)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		env.URL+"/api/v1/events/stream?after_id=5", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Last-Event-ID", "10")
+	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	bs, _ := io.ReadAll(resp.Body)
+	body := string(bs)
+	_ = resp.Body.Close()
+	assert.Equal(t, 400, resp.StatusCode)
+	assert.Contains(t, body, `"code":"cursor_conflict"`)
+}
+
+func TestSSE_HandshakeWritesConnectedComment(t *testing.T) {
+	env := testenv.New(t)
+	resp := openSSE(t, env, "", nil)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "no-cache", resp.Header.Get("Cache-Control"))
+	assert.Equal(t, "keep-alive", resp.Header.Get("Connection"))
+	// Read first 16 bytes; should contain ": connected\n\n".
+	buf := make([]byte, 16)
+	_, err := resp.Body.Read(buf)
+	require.NoError(t, err)
+	assert.Contains(t, string(buf), ": connected")
+}
+
+func TestSSE_DrainEmitsExistingEventsInOrder(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	mkIssue(t, env, pid, "first")
+	mkIssue(t, env, pid, "second")
+	mkIssue(t, env, pid, "third")
+
+	resp := openSSE(t, env, "after_id=0", nil)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+
+	frames := readSSEFramesUntilN(t, resp.Body, 3, 2*time.Second)
+	require.Len(t, frames, 3)
+	assert.Equal(t, "1", frames[0].id)
+	assert.Equal(t, "issue.created", frames[0].event)
+	assert.Equal(t, "2", frames[1].id)
+	assert.Equal(t, "3", frames[2].id)
+}
+
+func TestSSE_PerProjectFilterExcludesOtherProjects(t *testing.T) {
+	env := testenv.New(t)
+	pa := mkProject(t, env, "github.com/test/a", "a")
+	pb := mkProject(t, env, "github.com/test/b", "b")
+	mkIssue(t, env, pa, "a1")
+	mkIssue(t, env, pb, "b1")
+
+	resp := openSSE(t, env, "project_id="+strconv.FormatInt(pa, 10)+"&after_id=0", nil)
+	defer func() { _ = resp.Body.Close() }()
+	frames := readSSEFramesUntilN(t, resp.Body, 1, 2*time.Second)
+	require.Len(t, frames, 1)
+	assert.Equal(t, "1", frames[0].id, "should see only project A's event 1, not project B's event 2")
+}
+
+func TestSSE_ResetWhenCursorInsidePurgeGap(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	is := mkIssue(t, env, pid, "doomed")
+	_, err := env.DB.PurgeIssue(context.Background(), is.ID, "tester", nil)
+	require.NoError(t, err)
+
+	resp := openSSE(t, env, "after_id=0", nil)
+	defer func() { _ = resp.Body.Close() }()
+
+	frames := readSSEFramesUntilN(t, resp.Body, 1, 2*time.Second)
+	require.Len(t, frames, 1)
+	assert.Equal(t, "sync.reset_required", frames[0].event)
+	assert.NotEmpty(t, frames[0].id)
+	assert.Contains(t, frames[0].data, `"reset_after_id":`+frames[0].id)
 }
