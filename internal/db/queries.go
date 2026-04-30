@@ -3,8 +3,10 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // ErrNotFound is returned when a single-row lookup matches zero rows.
@@ -157,26 +159,57 @@ func scanAlias(r rowScanner) (ProjectAlias, error) {
 // ErrNoFields is returned by EditIssue when no field is set.
 var ErrNoFields = errors.New("no fields to update")
 
+// InitialLink describes one of the optional links created in the same TX as
+// the issue itself. The to_number is resolved within the same project.
+type InitialLink struct {
+	Type     string // "parent" | "blocks" | "related"
+	ToNumber int64
+}
+
 // CreateIssueParams carries inputs for CreateIssue.
 type CreateIssueParams struct {
 	ProjectID int64
 	Title     string
 	Body      string
 	Author    string
+
+	// Optional initial state. Plan 2 fields. CreateIssue inserts label/link
+	// rows and applies the owner in the same TX, then folds them into the
+	// issue.created event payload (no separate labeled/linked/assigned events).
+	Labels []string
+	Links  []InitialLink
+	Owner  *string
 }
 
-// CreateIssue inserts an issue, allocates the next number atomically, and
-// appends an issue.created event in the same transaction.
+// ErrInitialLinkTargetNotFound is returned when an InitialLink's to_number
+// does not resolve to an existing, non-deleted issue in the same project.
+var ErrInitialLinkTargetNotFound = errors.New("initial link target not found")
+
+// ErrInitialLinkInvalidType is returned when an InitialLink's Type is not one
+// of {parent, blocks, related}.
+var ErrInitialLinkInvalidType = errors.New("invalid initial link type")
+
+// CreateIssue inserts an issue, applies optional initial labels/links/owner,
+// and appends a single issue.created event whose payload describes the initial
+// state. All steps run in one TX.
 func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event, error) {
+	// Validate link types client-side so we don't waste a roundtrip on the
+	// schema CHECK; the schema enforces the same set, but our typed error is
+	// cleaner for the handler to map.
+	for _, l := range p.Links {
+		switch l.Type {
+		case "parent", "blocks", "related":
+		default:
+			return Issue{}, Event{}, ErrInitialLinkInvalidType
+		}
+	}
+
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Atomic number allocation: bump next_issue_number first and capture the
-	// pre-bump value via RETURNING. Concurrent CreateIssue calls serialize on
-	// this UPDATE, so each one gets a distinct number.
 	var (
 		identity string
 		nextNum  int64
@@ -193,10 +226,11 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		return Issue{}, Event{}, fmt.Errorf("allocate issue number: %w", err)
 	}
 
+	// Insert issue + optional owner column in one statement.
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO issues(project_id, number, title, body, author)
-		 VALUES(?, ?, ?, ?, ?)`,
-		p.ProjectID, nextNum, p.Title, p.Body, p.Author)
+		`INSERT INTO issues(project_id, number, title, body, author, owner)
+		 VALUES(?, ?, ?, ?, ?, ?)`,
+		p.ProjectID, nextNum, p.Title, p.Body, p.Author, p.Owner)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("insert issue: %w", err)
 	}
@@ -205,6 +239,48 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		return Issue{}, Event{}, err
 	}
 
+	// Initial labels — dedupe (preserve first occurrence), then alphabetize
+	// for stable payload + storage order.
+	labels := dedupeStrings(p.Labels)
+	sortStrings(labels)
+	for _, label := range labels {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO issue_labels(issue_id, label, author) VALUES(?, ?, ?)`,
+			issueID, label, p.Author); err != nil {
+			return Issue{}, Event{}, classifyLabelInsertError(err)
+		}
+	}
+
+	// Initial links — resolve to_number → to_issue_id within the same project,
+	// excluding soft-deleted targets. The schema's same-project trigger
+	// enforces the cross-project check, but we'd rather surface a typed
+	// not-found than a generic constraint failure.
+	for _, l := range p.Links {
+		var toIssueID int64
+		err := tx.QueryRowContext(ctx,
+			`SELECT id FROM issues
+			 WHERE project_id = ? AND number = ? AND deleted_at IS NULL`,
+			p.ProjectID, l.ToNumber).Scan(&toIssueID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Issue{}, Event{}, ErrInitialLinkTargetNotFound
+		}
+		if err != nil {
+			return Issue{}, Event{}, fmt.Errorf("resolve initial link target: %w", err)
+		}
+		fromID, toID := issueID, toIssueID
+		if l.Type == "related" && fromID > toID {
+			fromID, toID = toID, fromID
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO links(project_id, from_issue_id, to_issue_id, type, author)
+			 VALUES(?, ?, ?, ?, ?)`,
+			p.ProjectID, fromID, toID, l.Type, p.Author); err != nil {
+			return Issue{}, Event{}, classifyLinkInsertError(err)
+		}
+	}
+
+	payload := buildCreatedPayload(labels, p.Links, p.Owner)
+
 	evt, err := insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       p.ProjectID,
 		ProjectIdentity: identity,
@@ -212,7 +288,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		IssueNumber:     &nextNum,
 		Type:            "issue.created",
 		Actor:           p.Author,
-		Payload:         "{}",
+		Payload:         payload,
 	})
 	if err != nil {
 		return Issue{}, Event{}, err
@@ -227,6 +303,56 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		return Issue{}, Event{}, err
 	}
 	return issue, evt, nil
+}
+
+// buildCreatedPayload returns the issue.created event payload as JSON. Empty
+// initial state → "{}". Otherwise emits keys for whichever components are set,
+// preserving determinism (sorted labels) so events are byte-stable.
+func buildCreatedPayload(labels []string, links []InitialLink, owner *string) string {
+	type linkOut struct {
+		Type     string `json:"type"`
+		ToNumber int64  `json:"to_number"`
+	}
+	type out struct {
+		Labels []string  `json:"labels,omitempty"`
+		Links  []linkOut `json:"links,omitempty"`
+		Owner  string    `json:"owner,omitempty"`
+	}
+	var o out
+	if len(labels) > 0 {
+		o.Labels = labels
+	}
+	if len(links) > 0 {
+		o.Links = make([]linkOut, 0, len(links))
+		for _, l := range links {
+			o.Links = append(o.Links, linkOut(l))
+		}
+	}
+	if owner != nil {
+		o.Owner = *owner
+	}
+	bs, err := json.Marshal(o)
+	if err != nil || string(bs) == "null" {
+		return "{}"
+	}
+	return string(bs)
+}
+
+func dedupeStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+func sortStrings(in []string) {
+	sort.Strings(in)
 }
 
 // IssueByID fetches an issue by rowid.
