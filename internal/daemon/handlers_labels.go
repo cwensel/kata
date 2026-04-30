@@ -36,6 +36,9 @@ func registerLabelsHandlers(humaAPI huma.API, cfg ServerConfig) {
 
 func addLabelHandler(cfg ServerConfig) func(context.Context, *api.AddLabelRequest) (*api.AddLabelResponse, error) {
 	return func(ctx context.Context, in *api.AddLabelRequest) (*api.AddLabelResponse, error) {
+		if err := validateActor(in.Body.Actor); err != nil {
+			return nil, err
+		}
 		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
@@ -85,6 +88,9 @@ func addLabelHandler(cfg ServerConfig) func(context.Context, *api.AddLabelReques
 
 func removeLabelHandler(cfg ServerConfig) func(context.Context, *api.RemoveLabelRequest) (*api.MutationResponse, error) {
 	return func(ctx context.Context, in *api.RemoveLabelRequest) (*api.MutationResponse, error) {
+		if err := validateActor(in.Actor); err != nil {
+			return nil, err
+		}
 		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)

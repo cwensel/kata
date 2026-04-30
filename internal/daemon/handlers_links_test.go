@@ -240,6 +240,38 @@ func TestCreateLink_ParentReplaceSelfLinkLeavesNoMutation(t *testing.T) {
 	assert.True(t, out.Changed)
 }
 
+func TestCreateLink_BlankActorIs400(t *testing.T) {
+	env := testenv.New(t)
+	pid, a, b := setupTwoIssues(t, env)
+	body, _ := json.Marshal(map[string]any{
+		"actor":     "   ",
+		"type":      "blocks",
+		"to_number": b,
+	})
+	resp, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
+			"/issues/"+strconv.FormatInt(a, 10)+"/links",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
+func TestDeleteLink_BlankActorIs400(t *testing.T) {
+	env := testenv.New(t)
+	pid, a, b := setupTwoIssues(t, env)
+	created := postLink(t, env, pid, a, "blocks", b)
+	req, err := http.NewRequest("DELETE",
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
+			"/issues/"+strconv.FormatInt(a, 10)+
+			"/links/"+strconv.FormatInt(created.Link.ID, 10)+"?actor=%20%20", nil)
+	require.NoError(t, err)
+	resp, err := env.HTTP.Do(req) //nolint:gosec // test-only, loopback URL
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
 func TestCreateLink_SelfLinkIs400(t *testing.T) {
 	env := testenv.New(t)
 	pid, a, _ := setupTwoIssues(t, env)

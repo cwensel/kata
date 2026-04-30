@@ -36,6 +36,9 @@ func registerLinksHandlers(humaAPI huma.API, cfg ServerConfig) {
 
 func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRequest) (*api.CreateLinkResponse, error) {
 	return func(ctx context.Context, in *api.CreateLinkRequest) (*api.CreateLinkResponse, error) {
+		if err := validateActor(in.Body.Actor); err != nil {
+			return nil, err
+		}
 		from, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
@@ -154,6 +157,9 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 
 func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRequest) (*api.MutationResponse, error) {
 	return func(ctx context.Context, in *api.DeleteLinkRequest) (*api.MutationResponse, error) {
+		if err := validateActor(in.Actor); err != nil {
+			return nil, err
+		}
 		from, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)

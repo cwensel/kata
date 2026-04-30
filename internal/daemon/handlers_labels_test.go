@@ -92,6 +92,32 @@ func TestRemoveLabel_AbsentIs200NoOp(t *testing.T) {
 	assert.False(t, out.Changed)
 }
 
+func TestAddLabel_BlankActorIs400(t *testing.T) {
+	env := testenv.New(t)
+	pid, n := setupOneIssue(t, env)
+	body, _ := json.Marshal(map[string]string{"actor": "   ", "label": "bug"})
+	resp, err := env.HTTP.Post(
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
+			"/issues/"+strconv.FormatInt(n, 10)+"/labels",
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
+func TestRemoveLabel_BlankActorIs400(t *testing.T) {
+	env := testenv.New(t)
+	pid, n := setupOneIssue(t, env)
+	req, err := http.NewRequest("DELETE",
+		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
+			"/issues/"+strconv.FormatInt(n, 10)+"/labels/bug?actor=%20%20", nil)
+	require.NoError(t, err)
+	resp, err := env.HTTP.Do(req) //nolint:gosec // test-only, loopback URL
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
 func TestLabelsList_ReturnsCounts(t *testing.T) {
 	env := testenv.New(t)
 	pid, a := setupOneIssue(t, env)

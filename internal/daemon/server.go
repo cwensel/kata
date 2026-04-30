@@ -188,3 +188,14 @@ func registerOwnership(humaAPI huma.API, cfg ServerConfig) {
 func registerReady(humaAPI huma.API, cfg ServerConfig) {
 	registerReadyHandlers(humaAPI, cfg)
 }
+
+// validateActor returns a 400 validation error when actor is empty after
+// trimming whitespace. Huma's `required:"true"` only checks presence, so a
+// blank or whitespace-only actor sneaks through to the DB and surfaces as a
+// 500 from the events.actor / issue_labels.author CHECK constraint.
+func validateActor(actor string) error {
+	if strings.TrimSpace(actor) == "" {
+		return api.NewError(400, "validation", "actor must be non-empty", "", nil)
+	}
+	return nil
+}
