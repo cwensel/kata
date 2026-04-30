@@ -444,9 +444,6 @@ func (d *DB) PurgeResetCheck(ctx context.Context, afterID, projectID int64) (int
 	}
 	var n sql.NullInt64
 	if err := d.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil
-		}
 		return 0, fmt.Errorf("purge reset check: %w", err)
 	}
 	if !n.Valid {
@@ -455,6 +452,10 @@ func (d *DB) PurgeResetCheck(ctx context.Context, afterID, projectID int64) (int
 	return n.Int64, nil
 }
 ```
+
+Note: `SELECT MAX(...)` is an aggregate — it always returns exactly one row (NULL when
+no qualifying rows exist). `sql.ErrNoRows` is therefore unreachable; the `!n.Valid` check
+above is the correct and sufficient empty-result guard. The `"errors"` import is not needed.
 
 - [ ] **Step 12: Run tests**
 

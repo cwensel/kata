@@ -98,6 +98,28 @@ func TestEventsAfter_RespectsLimit(t *testing.T) {
 	assert.Len(t, got, 2)
 }
 
+func TestEventsAfter_StrictlyAfterNonZeroID(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/test/a", "a")
+	require.NoError(t, err)
+	for i := 0; i < 5; i++ {
+		_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "tester"})
+		require.NoError(t, err)
+	}
+	// Five issue.created events with ids 1..5. AfterID=3 must return ids 4, 5
+	// (strict >); AfterID=5 must return zero rows.
+	got, err := d.EventsAfter(ctx, db.EventsAfterParams{AfterID: 3, Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, int64(4), got[0].ID)
+	assert.Equal(t, int64(5), got[1].ID)
+
+	none, err := d.EventsAfter(ctx, db.EventsAfterParams{AfterID: 5, Limit: 100})
+	require.NoError(t, err)
+	assert.Len(t, none, 0, "AfterID at the highest event id must return no rows (strict >)")
+}
+
 func TestPurgeResetCheck_NoPurges(t *testing.T) {
 	d := openTestDB(t)
 	got, err := d.PurgeResetCheck(context.Background(), 0, 0)

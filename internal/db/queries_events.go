@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -88,9 +87,6 @@ func (d *DB) PurgeResetCheck(ctx context.Context, afterID, projectID int64) (int
 	}
 	var n sql.NullInt64
 	if err := d.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil
-		}
 		return 0, fmt.Errorf("purge reset check: %w", err)
 	}
 	if !n.Valid {
