@@ -98,6 +98,55 @@ func TestUnparent_RemovesParentLink(t *testing.T) {
 		strings.Contains(buf.String(), "removed"))
 }
 
+func TestRelate_CanonicalOrderingHidesArgOrder(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	createIssue(t, env, pid, "a")
+	createIssue(t, env, pid, "b")
+
+	cmd := newRootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--workspace", dir, "relate", "2", "1"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+
+	resetFlags(t)
+	cmd2 := newRootCmd()
+	var buf bytes.Buffer
+	cmd2.SetOut(&buf)
+	cmd2.SetArgs([]string{"--workspace", dir, "relate", "1", "2"})
+	cmd2.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd2.Execute())
+	assert.Contains(t, buf.String(), "no-op")
+}
+
+func TestBlock_RoundTrip(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	createIssue(t, env, pid, "blocker")
+	createIssue(t, env, pid, "blocked")
+
+	cmd := newRootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--workspace", dir, "block", "1", "2"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+
+	resetFlags(t)
+	cmd2 := newRootCmd()
+	var buf bytes.Buffer
+	cmd2.SetOut(&buf)
+	cmd2.SetArgs([]string{"--workspace", dir, "unblock", "1", "2"})
+	cmd2.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd2.Execute())
+	assert.True(t, strings.Contains(buf.String(), "unlinked") ||
+		strings.Contains(buf.String(), "removed"))
+}
+
 // createLinkViaHTTP is a thin test helper duplicated in link_test.go and
 // label_test.go because cmd/kata is a separate package from internal/daemon.
 func createLinkViaHTTP(t *testing.T, env *testenv.Env, projectID, fromNumber int64, linkType string, toNumber int64) {

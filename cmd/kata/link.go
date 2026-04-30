@@ -89,6 +89,93 @@ func newUnparentCmd() *cobra.Command {
 	}
 }
 
+func newBlockCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "block <blocker> <blocked>",
+		Short: "mark <blocker> as blocking <blocked>",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			blocker, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return &cliError{Message: "blocker must be an integer", ExitCode: ExitValidation}
+			}
+			blocked, err := strconv.ParseInt(args[1], 10, 64)
+			if err != nil {
+				return &cliError{Message: "blocked must be an integer", ExitCode: ExitValidation}
+			}
+			return runLinkCreate(cmd, blocker, "blocks", blocked, false)
+		},
+	}
+}
+
+func newUnblockCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unblock <blocker> <blocked>",
+		Short: "remove the blocks link from <blocker> to <blocked>",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			blocker, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return &cliError{Message: "blocker must be an integer", ExitCode: ExitValidation}
+			}
+			blocked, err := strconv.ParseInt(args[1], 10, 64)
+			if err != nil {
+				return &cliError{Message: "blocked must be an integer", ExitCode: ExitValidation}
+			}
+			return runUnlinkByEndpoints(cmd, blocker, "blocks", blocked)
+		},
+	}
+}
+
+func newRelateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "relate <a> <b>",
+		Short: "mark two issues as related (canonical-ordered)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return &cliError{Message: "a must be an integer", ExitCode: ExitValidation}
+			}
+			b, err := strconv.ParseInt(args[1], 10, 64)
+			if err != nil {
+				return &cliError{Message: "b must be an integer", ExitCode: ExitValidation}
+			}
+			from, to := canonicalRelated(a, b)
+			return runLinkCreate(cmd, from, "related", to, false)
+		},
+	}
+}
+
+func newUnrelateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unrelate <a> <b>",
+		Short: "remove a related link between two issues",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return &cliError{Message: "a must be an integer", ExitCode: ExitValidation}
+			}
+			b, err := strconv.ParseInt(args[1], 10, 64)
+			if err != nil {
+				return &cliError{Message: "b must be an integer", ExitCode: ExitValidation}
+			}
+			from, to := canonicalRelated(a, b)
+			return runUnlinkByEndpoints(cmd, from, "related", to)
+		},
+	}
+}
+
+// canonicalRelated returns (min, max) so callers don't need to remember
+// which direction the schema enforces.
+func canonicalRelated(a, b int64) (int64, int64) {
+	if a < b {
+		return a, b
+	}
+	return b, a
+}
+
 func runLinkCreate(cmd *cobra.Command, fromNumber int64, linkType string, toNumber int64, replace bool) error {
 	ctx := cmd.Context()
 	start, err := resolveStartPath(flags.Workspace)
