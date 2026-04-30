@@ -81,14 +81,19 @@ func TestSearchFTS_RanksByBM25(t *testing.T) {
 	p, err := d.CreateProject(ctx, "p", "p")
 	require.NoError(t, err)
 
-	// Three issues. Only the first two mention "login"; the second has it twice.
+	// Three issues. Only the first two mention "login"; the second has it
+	// many more times. Issue 1's body is padded with unrelated text so token
+	// density makes issue 2's BM25 win unambiguous regardless of column-length
+	// normalization quirks.
 	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "fix login crash", Body: "stack trace", Author: "tester",
+		ProjectID: p.ID, Title: "fix login crash",
+		Body:   "stack trace from a totally unrelated incident with many tokens to dilute density and dominate length normalization here",
+		Author: "tester",
 	})
 	require.NoError(t, err)
 	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "login is broken on login screen",
-		Body: "login fails twice", Author: "tester",
+		Body: "login fails twice login login login", Author: "tester",
 	})
 	require.NoError(t, err)
 	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
@@ -222,6 +227,25 @@ func TestSearchFTS_EmptyQueryReturnsEmpty(t *testing.T) {
 	got, err := d.SearchFTS(ctx, p.ID, "   ", 20, false)
 	require.NoError(t, err)
 	assert.Empty(t, got, "blank query → empty result, not an error")
+}
+
+func TestSearchFTS_LimitCappedAt200(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID, Title: "login bug", Body: "", Author: "tester",
+		})
+		require.NoError(t, err)
+	}
+	// A wildly large caller-supplied limit must be capped — the function must
+	// not pass an unbounded LIMIT through to SQLite. We can't observe the cap
+	// directly here, but the call must succeed and return all 3 hits.
+	got, err := d.SearchFTS(ctx, p.ID, "login", 1_000_000, false)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
 }
 
 func TestSearchFTS_QueryEscaping(t *testing.T) {

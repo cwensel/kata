@@ -20,6 +20,12 @@ func (d *DB) SearchFTS(ctx context.Context, projectID int64, q string, limit int
 	if limit <= 0 {
 		limit = 20
 	}
+	// Cap unbounded callers — the per-column subqueries make a huge limit
+	// expensive, and the HTTP layer is the natural enforcer but defending
+	// here is cheap.
+	if limit > 200 {
+		limit = 200
+	}
 
 	// Wrap the user query as a single FTS5 phrase. Embedded double quotes are
 	// doubled per FTS5 quoting rules so the whole query is opaque to FTS's
@@ -50,6 +56,9 @@ func (d *DB) SearchFTS(ctx context.Context, projectID int64, q string, limit int
 		ORDER BY bm25(issues_fts) ASC
 		LIMIT %d`, deletedFilter, limit)
 
+	// Bind order: phrase (×4 — title MATCH, body MATCH, comments MATCH, top-level
+	// MATCH), then projectID. Reordering the SELECT/WHERE clauses without
+	// updating the bind list will silently transpose binds.
 	rows, err := d.QueryContext(ctx, query, phrase, phrase, phrase, phrase, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("search fts: %w", err)

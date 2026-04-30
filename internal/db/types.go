@@ -88,7 +88,7 @@ type LabelCount struct {
 }
 
 // SearchCandidate is one row from SearchFTS: an issue, a BM25 score (lower is
-// better in raw form; we negate to ascending = better), and the columns where
+// better in raw form; we negate so higher = better), and the columns where
 // the query matched. MatchedIn is the basis for the wire response's matched_in.
 type SearchCandidate struct {
 	Issue     Issue    `json:"issue"`
