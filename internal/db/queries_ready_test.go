@@ -9,7 +9,7 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
-func TestReadyIssues_FiltersOutClosedAndDeleted(t *testing.T) {
+func TestReadyIssues_FiltersOutClosed(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
 	p, err := d.CreateProject(ctx, "p", "p")
