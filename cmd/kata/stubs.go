@@ -2,14 +2,6 @@ package main
 
 import "github.com/spf13/cobra"
 
-func newCloseCmd() *cobra.Command {
-	return &cobra.Command{Use: "close <number>", Short: "close issue"}
-}
-
-func newReopenCmd() *cobra.Command {
-	return &cobra.Command{Use: "reopen <number>", Short: "reopen issue"}
-}
-
 func newWhoamiCmd() *cobra.Command {
 	return &cobra.Command{Use: "whoami", Short: "show resolved actor"}
 }
