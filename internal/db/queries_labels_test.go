@@ -88,6 +88,19 @@ func TestRemoveLabel_RoundTrips(t *testing.T) {
 	assert.True(t, errors.Is(err, db.ErrNotFound))
 }
 
+func TestAddLabel_BlankAuthorIsNotMisreportedAsInvalidLabel(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+
+	_, err = d.AddLabel(ctx, i.ID, "bug", "" /* blank */)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, db.ErrLabelInvalid),
+		"blank author must not surface as ErrLabelInvalid, got %v", err)
+}
+
 func TestLabelCounts_AggregatesPerProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

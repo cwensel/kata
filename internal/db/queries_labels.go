@@ -37,8 +37,12 @@ func classifyLabelInsertError(err error) error {
 	switch {
 	case strings.Contains(msg, "UNIQUE constraint failed: issue_labels.issue_id, issue_labels.label"):
 		return ErrLabelExists
-	case strings.Contains(msg, "CHECK constraint failed"):
-		// Either the GLOB charset or the length BETWEEN check.
+	case strings.Contains(msg, "CHECK constraint failed") &&
+		(strings.Contains(msg, "length(label)") || strings.Contains(msg, "label NOT GLOB")):
+		// Scoped to the two label-related CHECKs (length BETWEEN 1 AND 64
+		// and the charset GLOB). Other CHECKs on the table (e.g. blank
+		// author) fall through to the wrapped generic error rather than
+		// being misreported as invalid labels.
 		return ErrLabelInvalid
 	}
 	return fmt.Errorf("insert label: %w", err)
