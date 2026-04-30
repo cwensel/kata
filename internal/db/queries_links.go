@@ -162,15 +162,36 @@ func scanLink(r rowScanner) (Link, error) {
 	return l, nil
 }
 
+// LinkEventParams describes the event-emission side of a link mutation. The
+// DB-layer methods CreateLinkAndEvent and DeleteLinkAndEvent split "the link's
+// storage endpoints" (from_issue_id/to_issue_id, possibly canonicalized for
+// related) from "the issue the user acted on" (the URL's {number}, which
+// determines events.issue_id and the updated_at bump). For type=parent and
+// type=blocks these are identical; for type=related they may differ when the
+// user posted from the higher-numbered side and we canonicalized to from < to
+// before insertion.
+type LinkEventParams struct {
+	EventType        string // "issue.linked" | "issue.unlinked"
+	EventIssueID     int64  // the issue whose URL the user posted to
+	EventIssueNumber int64  // matching number for that issue
+	FromNumber       int64  // payload field; matches the URL issue's number
+	ToNumber         int64  // payload field; matches the OTHER endpoint
+	Actor            string
+}
+
 // CreateLinkAndEvent inserts a link, emits the matching issue.linked event,
-// and bumps the source issue's updated_at — all in one TX. Returns the new
-// link, the event row, and the source issue's refreshed fields. Typed errors
-// (ErrLinkExists, ErrParentAlreadySet, ErrSelfLink, ErrCrossProjectLink)
-// flow up unchanged from the underlying INSERT classification.
+// and bumps the URL issue's updated_at — all in one TX. Returns the new link
+// and the event row. Typed errors (ErrLinkExists, ErrParentAlreadySet,
+// ErrSelfLink, ErrCrossProjectLink) flow up unchanged from the underlying
+// INSERT classification.
 //
 // Used by the daemon's POST /links handler so the link insert and its event
 // are atomic — there's no window where the row exists without an event.
-func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, eventType string, fromIssueID, fromNumber, toNumber int64, actor string) (Link, Event, error) {
+//
+// Storage endpoints come from p (canonicalized for related when fromID > toID
+// at the call site); event attribution comes from ev. For parent/blocks the
+// two coincide; for related they may differ when canonicalization swapped.
+func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev LinkEventParams) (Link, Event, error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return Link{}, Event{}, fmt.Errorf("begin: %w", err)
@@ -203,19 +224,22 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, eventTy
 		return Link{}, Event{}, fmt.Errorf("last insert id: %w", err)
 	}
 
-	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, fromIssueID)
+	_, projectIdentity, err := lookupIssueForEvent(ctx, tx, ev.EventIssueID)
 	if err != nil {
 		return Link{}, Event{}, err
 	}
+	// related_issue_id is the OTHER endpoint of the link (not the URL issue).
+	// When the URL issue is one of the link's endpoints, pick the opposite;
+	// otherwise default to the link's to_issue_id.
 	relatedID := p.ToIssueID
-	if relatedID == fromIssueID {
+	if relatedID == ev.EventIssueID {
 		relatedID = p.FromIssueID
 	}
 	payload, err := json.Marshal(map[string]any{
 		"link_id":     linkID,
 		"type":        p.Type,
-		"from_number": fromNumber,
-		"to_number":   toNumber,
+		"from_number": ev.FromNumber,
+		"to_number":   ev.ToNumber,
 	})
 	if err != nil {
 		return Link{}, Event{}, fmt.Errorf("marshal link payload: %w", err)
@@ -223,11 +247,11 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, eventTy
 	evt, err := insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       p.ProjectID,
 		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
+		IssueID:         &ev.EventIssueID,
+		IssueNumber:     &ev.EventIssueNumber,
 		RelatedIssueID:  &relatedID,
-		Type:            eventType,
-		Actor:           actor,
+		Type:            ev.EventType,
+		Actor:           ev.Actor,
 		Payload:         string(payload),
 	})
 	if err != nil {
@@ -236,7 +260,7 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, eventTy
 
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE issues SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
-		fromIssueID); err != nil {
+		ev.EventIssueID); err != nil {
 		return Link{}, Event{}, fmt.Errorf("touch issue: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -251,20 +275,18 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, eventTy
 }
 
 // DeleteLinkAndEvent deletes a link and emits the matching issue.unlinked
-// event in one TX. fromIssueID/fromIssueNumber identify the URL's {number}
-// issue (the event's issue_id/issue_number); fromNumber/toNumber describe
-// the link's two endpoints in the payload (which may differ from the URL's
-// issue when the URL's issue is the link's *to* endpoint). Returns
-// ErrNotFound if the link is already gone — caller maps to 200 no-op
-// envelope per spec §4.5.
-func (d *DB) DeleteLinkAndEvent(ctx context.Context, linkID, fromIssueID, fromIssueNumber, fromNumber, toNumber int64, linkType string, link Link, actor string) (Event, error) {
+// event in one TX. The link to delete comes from the link argument; event
+// attribution (events.issue_id/issue_number, updated_at bump, payload
+// from_number/to_number) comes from ev. Returns ErrNotFound if the link is
+// already gone — caller maps to 200 no-op envelope per spec §4.5.
+func (d *DB) DeleteLinkAndEvent(ctx context.Context, link Link, ev LinkEventParams) (Event, error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return Event{}, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	res, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, linkID)
+	res, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, link.ID)
 	if err != nil {
 		return Event{}, fmt.Errorf("delete link: %w", err)
 	}
@@ -276,19 +298,19 @@ func (d *DB) DeleteLinkAndEvent(ctx context.Context, linkID, fromIssueID, fromIs
 		return Event{}, ErrNotFound
 	}
 
-	_, projectIdentity, err := lookupIssueForEvent(ctx, tx, fromIssueID)
+	_, projectIdentity, err := lookupIssueForEvent(ctx, tx, ev.EventIssueID)
 	if err != nil {
 		return Event{}, err
 	}
 	relatedID := link.ToIssueID
-	if relatedID == fromIssueID {
+	if relatedID == ev.EventIssueID {
 		relatedID = link.FromIssueID
 	}
 	payload, err := json.Marshal(map[string]any{
 		"link_id":     link.ID,
-		"type":        linkType,
-		"from_number": fromNumber,
-		"to_number":   toNumber,
+		"type":        link.Type,
+		"from_number": ev.FromNumber,
+		"to_number":   ev.ToNumber,
 	})
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal unlink payload: %w", err)
@@ -296,11 +318,11 @@ func (d *DB) DeleteLinkAndEvent(ctx context.Context, linkID, fromIssueID, fromIs
 	evt, err := insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       link.ProjectID,
 		ProjectIdentity: projectIdentity,
-		IssueID:         &fromIssueID,
-		IssueNumber:     &fromIssueNumber,
+		IssueID:         &ev.EventIssueID,
+		IssueNumber:     &ev.EventIssueNumber,
 		RelatedIssueID:  &relatedID,
-		Type:            "issue.unlinked",
-		Actor:           actor,
+		Type:            ev.EventType,
+		Actor:           ev.Actor,
 		Payload:         string(payload),
 	})
 	if err != nil {
@@ -308,7 +330,7 @@ func (d *DB) DeleteLinkAndEvent(ctx context.Context, linkID, fromIssueID, fromIs
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE issues SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
-		fromIssueID); err != nil {
+		ev.EventIssueID); err != nil {
 		return Event{}, fmt.Errorf("touch issue: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

@@ -52,20 +52,28 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 
-		fromID, toID := from.ID, to.ID
-		fromNum, toNum := from.Number, to.Number
-		if in.Body.Type == "related" && fromID > toID {
-			fromID, toID = toID, fromID
-			fromNum, toNum = toNum, fromNum
+		// Storage endpoints: canonical (from < to) for related; otherwise as-is.
+		// canonicalFromNum/canonicalToNum match the Link row's actual columns
+		// and feed the LinkOut wire projection (so the response shows the
+		// canonical link, e.g. (3, 5) regardless of which side the user posted
+		// from). Event attribution always uses the URL issue (from), so the
+		// payload's from_number is the URL issue's number and to_number is
+		// the OTHER endpoint — even when canonicalization swapped storage.
+		storageFromID, storageToID := from.ID, to.ID
+		canonicalFromNum, canonicalToNum := from.Number, to.Number
+		if in.Body.Type == "related" && storageFromID > storageToID {
+			storageFromID, storageToID = storageToID, storageFromID
+			canonicalFromNum, canonicalToNum = canonicalToNum, canonicalFromNum
 		}
 
 		// Parent --replace path: delete the existing parent link in its own TX
-		// (emitting issue.unlinked) before inserting the new parent link.
+		// (emitting issue.unlinked) before inserting the new parent link. Parent
+		// links are never canonicalized, so storageFromID == from.ID here.
 		if in.Body.Type == "parent" && in.Body.Replace {
-			if existing, perr := cfg.DB.ParentOf(ctx, fromID); perr == nil {
-				if existing.ToIssueID == toID {
+			if existing, perr := cfg.DB.ParentOf(ctx, from.ID); perr == nil {
+				if existing.ToIssueID == to.ID {
 					// Replacing with the same parent is a no-op.
-					return mutationLinkResponse(from, existing, fromNum, toNum, nil, false), nil
+					return mutationLinkResponse(from, existing, canonicalFromNum, canonicalToNum, nil, false), nil
 				}
 				// Resolve the OLD parent's number so the issue.unlinked event
 				// payload's to_number records the parent we're actually
@@ -74,8 +82,15 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 				if err != nil {
 					return nil, api.NewError(500, "internal", err.Error(), "", nil)
 				}
-				if _, err := cfg.DB.DeleteLinkAndEvent(ctx, existing.ID, fromID, fromNum,
-					fromNum, oldParentIssue.Number, existing.Type, existing, in.Body.Actor); err != nil {
+				unlinkEv := db.LinkEventParams{
+					EventType:        "issue.unlinked",
+					EventIssueID:     from.ID,
+					EventIssueNumber: from.Number,
+					FromNumber:       from.Number,
+					ToNumber:         oldParentIssue.Number,
+					Actor:            in.Body.Actor,
+				}
+				if _, err := cfg.DB.DeleteLinkAndEvent(ctx, existing, unlinkEv); err != nil {
 					return nil, api.NewError(500, "internal", err.Error(), "", nil)
 				}
 			} else if !errors.Is(perr, db.ErrNotFound) {
@@ -85,21 +100,29 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 
 		// Default path: insert link + emit issue.linked + touch updated_at, all
 		// in one TX. Distinct error types map to specific responses.
+		linkEv := db.LinkEventParams{
+			EventType:        "issue.linked",
+			EventIssueID:     from.ID,
+			EventIssueNumber: from.Number,
+			FromNumber:       from.Number,
+			ToNumber:         to.Number,
+			Actor:            in.Body.Actor,
+		}
 		link, evt, err := cfg.DB.CreateLinkAndEvent(ctx, db.CreateLinkParams{
 			ProjectID:   in.ProjectID,
-			FromIssueID: fromID,
-			ToIssueID:   toID,
+			FromIssueID: storageFromID,
+			ToIssueID:   storageToID,
 			Type:        in.Body.Type,
 			Author:      in.Body.Actor,
-		}, "issue.linked", fromID, fromNum, toNum, in.Body.Actor)
+		}, linkEv)
 		switch {
 		case errors.Is(err, db.ErrLinkExists):
 			// Duplicate (from, to, type) → no-op. Re-fetch and return existing.
-			existing, lookupErr := cfg.DB.LinkByEndpoints(ctx, fromID, toID, in.Body.Type)
+			existing, lookupErr := cfg.DB.LinkByEndpoints(ctx, storageFromID, storageToID, in.Body.Type)
 			if lookupErr != nil {
 				return nil, api.NewError(500, "internal", lookupErr.Error(), "", nil)
 			}
-			return mutationLinkResponse(from, existing, fromNum, toNum, nil, false), nil
+			return mutationLinkResponse(from, existing, canonicalFromNum, canonicalToNum, nil, false), nil
 		case errors.Is(err, db.ErrParentAlreadySet):
 			return nil, api.NewError(409, "parent_already_set",
 				"this issue already has a parent", "pass replace=true to swap", nil)
@@ -115,7 +138,7 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		return mutationLinkResponse(updatedIssue, link, fromNum, toNum, &evt, true), nil
+		return mutationLinkResponse(updatedIssue, link, canonicalFromNum, canonicalToNum, &evt, true), nil
 	}
 }
 
@@ -155,8 +178,15 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 
-		evt, err := cfg.DB.DeleteLinkAndEvent(ctx, in.LinkID, from.ID, from.Number,
-			fromIssue.Number, toIssue.Number, link.Type, link, in.Actor)
+		ev := db.LinkEventParams{
+			EventType:        "issue.unlinked",
+			EventIssueID:     from.ID,
+			EventIssueNumber: from.Number,
+			FromNumber:       fromIssue.Number,
+			ToNumber:         toIssue.Number,
+			Actor:            in.Actor,
+		}
+		evt, err := cfg.DB.DeleteLinkAndEvent(ctx, link, ev)
 		if errors.Is(err, db.ErrNotFound) {
 			// Lost the race against another DELETE; surface as no-op.
 			out := &api.MutationResponse{}

@@ -71,6 +71,45 @@ func TestCreateLink_RelatedCanonicalizesOrder(t *testing.T) {
 	assert.Equal(t, b, out.Link.ToNumber)
 }
 
+// TestCreateLink_RelatedEventAttributionIsURLIssue verifies that when a user
+// POSTs a `related` link from the higher-numbered side and the handler
+// canonicalizes storage to (from < to), the resulting event still attributes
+// to the URL's issue (not the canonical-from). The link row records the
+// canonical relationship; the event records the user's action.
+func TestCreateLink_RelatedEventAttributionIsURLIssue(t *testing.T) {
+	env := testenv.New(t)
+	pid, a, b := setupTwoIssues(t, env) // a < b
+	// POST from b (higher-numbered) targeting a. Storage canonicalizes
+	// to (a→b), but the event must still be attributed to issue b.
+	out := postLink(t, env, pid, b, "related", a)
+	require.NotNil(t, out.Event)
+	assert.Equal(t, "issue.linked", out.Event.Type)
+
+	// The response carries the canonical link (from=a, to=b).
+	assert.Equal(t, a, out.Link.FromNumber)
+	assert.Equal(t, b, out.Link.ToNumber)
+
+	// Query the events table directly: events.issue_number must be b (URL),
+	// and the payload's from_number/to_number must record what the user did
+	// (from b → to a), not the canonical link's columns.
+	row := env.DB.QueryRowContext(t.Context(),
+		`SELECT issue_number, payload FROM events
+		 WHERE project_id = ? AND type = 'issue.linked'
+		 ORDER BY id DESC LIMIT 1`, pid)
+	var issueNumber int64
+	var payload string
+	require.NoError(t, row.Scan(&issueNumber, &payload))
+	assert.Equal(t, b, issueNumber, "event must attribute to URL issue (b), not canonical-from (a)")
+
+	var pl struct {
+		FromNumber int64 `json:"from_number"`
+		ToNumber   int64 `json:"to_number"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(payload), &pl))
+	assert.Equal(t, b, pl.FromNumber, "payload from_number is the URL issue's number")
+	assert.Equal(t, a, pl.ToNumber, "payload to_number is the OTHER endpoint")
+}
+
 func TestCreateLink_ParentAlreadySetIs409(t *testing.T) {
 	env := testenv.New(t)
 	pid, child, p1 := setupTwoIssues(t, env)
