@@ -23,6 +23,7 @@ func TestUpdateOwner_AssignFromNil(t *testing.T) {
 	assert.Equal(t, "alice", *updated.Owner)
 	require.NotNil(t, evt)
 	assert.Equal(t, "issue.assigned", evt.Type)
+	assert.Equal(t, `{"owner":"alice"}`, evt.Payload)
 }
 
 func TestUpdateOwner_UnassignFromValue(t *testing.T) {
@@ -41,6 +42,7 @@ func TestUpdateOwner_UnassignFromValue(t *testing.T) {
 	assert.Nil(t, updated.Owner)
 	require.NotNil(t, evt)
 	assert.Equal(t, "issue.unassigned", evt.Type)
+	assert.Equal(t, "{}", evt.Payload)
 }
 
 func TestUpdateOwner_NoOpSameOwner(t *testing.T) {
