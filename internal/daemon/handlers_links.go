@@ -103,9 +103,11 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 					ToNumber:         oldParentIssue.Number,
 					Actor:            in.Body.Actor,
 				}
-				if _, err := cfg.DB.DeleteLinkAndEvent(ctx, existing, unlinkEv); err != nil {
+				unlinkEvt, err := cfg.DB.DeleteLinkAndEvent(ctx, existing, unlinkEv)
+				if err != nil {
 					return nil, api.NewError(500, "internal", err.Error(), "", nil)
 				}
+				cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &unlinkEvt, ProjectID: in.ProjectID})
 			} else if !errors.Is(perr, db.ErrNotFound) {
 				return nil, api.NewError(500, "internal", perr.Error(), "", nil)
 			}
@@ -151,6 +153,7 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &evt, ProjectID: in.ProjectID})
 		return mutationLinkResponse(updatedIssue, link, canonicalFromNum, canonicalToNum, &evt, true), nil
 	}
 }
@@ -225,6 +228,7 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &evt, ProjectID: in.ProjectID})
 		out := &api.MutationResponse{}
 		out.Body.Issue = updatedIssue
 		out.Body.Event = &evt

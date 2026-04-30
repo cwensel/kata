@@ -40,6 +40,9 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+		if changed && evt != nil {
+			cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: in.ProjectID})
+		}
 		out := &api.MutationResponse{}
 		out.Body.Issue = updated
 		out.Body.Event = evt
@@ -68,6 +71,9 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 		}
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		if changed && evt != nil {
+			cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: in.ProjectID})
 		}
 		out := &api.MutationResponse{}
 		out.Body.Issue = updated
@@ -105,6 +111,13 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 		}
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		if pl.PurgeResetAfterEventID != nil {
+			cfg.Broadcaster.Broadcast(StreamMsg{
+				Kind:      "reset",
+				ResetID:   *pl.PurgeResetAfterEventID,
+				ProjectID: in.ProjectID,
+			})
 		}
 		out := &api.PurgeResponse{}
 		out.Body.PurgeLog = pl

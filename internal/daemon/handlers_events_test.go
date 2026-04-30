@@ -418,13 +418,115 @@ func TestSSE_ResetWhenCursorInsidePurgeGap(t *testing.T) {
 }
 
 func TestSSE_DrainFollowedByLiveBroadcast(t *testing.T) {
-	t.Skip("requires testenv.Env.Broadcaster accessor — added in Task 8")
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	mkIssue(t, env, pid, "first")
+
+	resp := openSSE(t, env, "after_id=0", nil)
+	defer func() { _ = resp.Body.Close() }()
+
+	// Start reading frames in the background before triggering the live broadcast.
+	// We expect 2 frames total: one drained (issue.created for "first") and one
+	// live (issue.created for "second").
+	framesCh := make(chan []sseFrame, 1)
+	go func() {
+		framesCh <- readSSEFramesUntilN(t, resp.Body, 2, 5*time.Second)
+	}()
+
+	// Create a second issue via HTTP so the handler fires the broadcast.
+	pidStr := strconv.FormatInt(pid, 10)
+	issueURL := env.URL + "/api/v1/projects/" + pidStr + "/issues"
+	issueReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, issueURL,
+		strings.NewReader(`{"title":"second","actor":"tester"}`))
+	require.NoError(t, err)
+	issueReq.Header.Set("Content-Type", "application/json")
+	issueResp, err := env.HTTP.Do(issueReq) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	_ = issueResp.Body.Close()
+	require.Equal(t, 200, issueResp.StatusCode)
+
+	frames := <-framesCh
+	require.Len(t, frames, 2)
+	assert.Equal(t, "1", frames[0].id)
+	assert.Equal(t, "issue.created", frames[0].event)
+	assert.Equal(t, "2", frames[1].id)
+	assert.Equal(t, "issue.created", frames[1].event)
 }
 
 func TestSSE_LiveResetClosesStream(t *testing.T) {
-	// Wired in Task 8 via testenv.Env.Broadcaster accessor + purge handler
-	// broadcasting the reset signal post-commit.
-	t.Skip("requires testenv.Env.Broadcaster accessor — added in Task 8")
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	is := mkIssue(t, env, pid, "doomed")
+	pidStr := strconv.FormatInt(pid, 10)
+
+	resp := openSSE(t, env, "after_id=0", nil)
+	defer func() { _ = resp.Body.Close() }()
+
+	// Start reading frames in the background. We expect 2: the drain frame
+	// (issue.created for "doomed") and the live reset frame.
+	framesCh := make(chan []sseFrame, 1)
+	go func() {
+		framesCh <- readSSEFramesUntilN(t, resp.Body, 2, 5*time.Second)
+	}()
+
+	purgeURL := env.URL + "/api/v1/projects/" + pidStr + "/issues/" + strconv.FormatInt(is.Number, 10) + "/actions/purge"
+	purgeReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, purgeURL,
+		strings.NewReader(`{"actor":"tester"}`))
+	require.NoError(t, err)
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeReq.Header.Set("X-Kata-Confirm", "PURGE #"+strconv.FormatInt(is.Number, 10))
+	purgeResp, err := env.HTTP.Do(purgeReq) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	_ = purgeResp.Body.Close()
+	require.Equal(t, 200, purgeResp.StatusCode)
+
+	frames := <-framesCh
+	require.Len(t, frames, 2)
+	assert.Equal(t, "issue.created", frames[0].event)
+	assert.Equal(t, "sync.reset_required", frames[1].event)
+}
+
+func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	mkIssue(t, env, pid, "first")  // #1, will be initial parent
+	mkIssue(t, env, pid, "second") // #2, will be replacement parent
+	mkIssue(t, env, pid, "child")  // #3, the issue we re-parent
+	pidStr := strconv.FormatInt(pid, 10)
+
+	// Initial parent link 3 → 1.
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		env.URL+"/api/v1/projects/"+pidStr+"/issues/3/links",
+		strings.NewReader(`{"actor":"tester","type":"parent","to_number":1}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Subscribe AFTER the initial link so we don't see its frame in the drain.
+	maxID, err := env.DB.MaxEventID(context.Background())
+	require.NoError(t, err)
+	sseResp := openSSE(t, env, "after_id="+strconv.FormatInt(maxID, 10), nil)
+	defer func() { _ = sseResp.Body.Close() }()
+
+	// Re-parent 3 → 2 with replace.
+	req, err = http.NewRequestWithContext(context.Background(), http.MethodPost,
+		env.URL+"/api/v1/projects/"+pidStr+"/issues/3/links",
+		strings.NewReader(`{"actor":"tester","type":"parent","to_number":2,"replace":true}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Live phase delivers two frames in order: issue.unlinked then issue.linked.
+	frames := readSSEFramesUntilN(t, sseResp.Body, 2, 2*time.Second)
+	require.Len(t, frames, 2)
+	assert.Equal(t, "issue.unlinked", frames[0].event)
+	assert.Equal(t, "issue.linked", frames[1].event)
 }
 
 func TestSSE_LiveHeartbeatKeepsConnectionAlive(t *testing.T) {

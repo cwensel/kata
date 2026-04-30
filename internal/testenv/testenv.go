@@ -18,10 +18,11 @@ import (
 
 // Env is a per-test daemon + DB + HTTP client bundle.
 type Env struct {
-	URL  string
-	HTTP *http.Client
-	DB   *db.DB
-	Home string
+	URL         string
+	HTTP        *http.Client
+	DB          *db.DB
+	Home        string
+	Broadcaster *daemon.EventBroadcaster
 }
 
 // New launches a daemon listening on a free loopback port. The DB lives under
@@ -43,9 +44,11 @@ func New(t *testing.T) *Env {
 	require.NoError(t, err)
 	addr := l.Addr().(*net.TCPAddr).String() //nolint:forcetypeassert // net.Listen("tcp",...) always returns *net.TCPAddr
 
+	bcast := daemon.NewEventBroadcaster()
 	srv := daemon.NewServer(daemon.ServerConfig{
-		DB:        d,
-		StartedAt: time.Now().UTC(),
+		DB:          d,
+		StartedAt:   time.Now().UTC(),
+		Broadcaster: bcast,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -88,5 +91,5 @@ func New(t *testing.T) *Env {
 	}
 	require.Truef(t, ready, "daemon did not become ready within 2s: %v", lastErr)
 
-	return &Env{URL: url, HTTP: client, DB: d, Home: home}
+	return &Env{URL: url, HTTP: client, DB: d, Home: home, Broadcaster: bcast}
 }
