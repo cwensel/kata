@@ -11,6 +11,7 @@ func newWhoamiCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "whoami",
 		Short: "show resolved actor and source",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			actor, source := resolveActor(flags.As, nil)
 			if flags.JSON {

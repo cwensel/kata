@@ -22,12 +22,21 @@ type globalFlags struct {
 
 var flags globalFlags
 
+// runEEntered is set by PersistentPreRunE before any subcommand's RunE fires.
+// It stays false when cobra fails during argument/flag parsing, allowing main()
+// to distinguish a parse error (ExitUsage) from an operational failure (ExitInternal).
+var runEEntered bool
+
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "kata",
 		Short:         "kata — lightweight issue tracker for agents",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			runEEntered = true
+			return nil
+		},
 	}
 	cmd.PersistentFlags().BoolVar(&flags.JSON, "json", false, "emit machine-readable JSON")
 	cmd.PersistentFlags().BoolVarP(&flags.Quiet, "quiet", "q", false, "suppress non-essential output")
@@ -70,12 +79,15 @@ func main() {
 			fmt.Fprintln(os.Stderr, "kata:", cli.Message)
 			os.Exit(cli.ExitCode)
 		}
-		// Operational RunE failures (daemon startup, HTTP transport, filesystem)
-		// and cobra parsing failures both reach here. Default to ExitInternal so
-		// a network or daemon failure isn't masked as ExitUsage. Subcommands that
-		// detect explicit usage problems (bad flag value, missing required input)
-		// should return *cliError{ExitCode: ExitUsage} themselves.
 		fmt.Fprintln(os.Stderr, "kata:", err)
+		if !runEEntered {
+			// PersistentPreRunE never fired, so cobra failed during argument or
+			// flag parsing (unknown command, missing positional arg, bad flag
+			// value). Exit code 2 per spec §4.7.
+			os.Exit(ExitUsage)
+		}
+		// RunE ran and returned a plain error — operational failure (daemon
+		// startup, HTTP transport, filesystem). Exit code 1.
 		os.Exit(ExitInternal)
 	}
 }

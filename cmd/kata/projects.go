@@ -20,6 +20,7 @@ func projectsListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "list known projects",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			baseURL, err := ensureDaemon(ctx)

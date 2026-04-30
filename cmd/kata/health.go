@@ -13,6 +13,7 @@ func newHealthCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "health",
 		Short: "report daemon health",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			baseURL, err := ensureDaemon(ctx)
