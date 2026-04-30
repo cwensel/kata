@@ -100,16 +100,43 @@ func TestSmoke_Plan2Lifecycle(t *testing.T) {
 	assert.NotContains(t, readyBody, `"title":"child"`,
 		"child must be filtered while parent (blocker) is open")
 
-	// Unassign + remove label to verify the reverse paths.
+	// Look up the blocks-link id so we can DELETE it after unassign.
+	parentShow := getBody(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/1")
+	var parentBody struct {
+		Links []struct {
+			ID   int64  `json:"id"`
+			Type string `json:"type"`
+		} `json:"links"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parentShow), &parentBody))
+	var blocksLinkID int64
+	for _, l := range parentBody.Links {
+		if l.Type == "blocks" {
+			blocksLinkID = l.ID
+			break
+		}
+	}
+	require.NotZero(t, blocksLinkID, "blocks link must be present on #1 before unlink")
+
+	// Unassign + remove label + unlink to verify the reverse paths.
 	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2/actions/unassign",
 		map[string]any{"actor": "agent"}))
 	deleteWith(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2/labels/bug?actor=agent")
+	deleteWith(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/1/links/"+
+		strconv.FormatInt(blocksLinkID, 10)+"?actor=agent")
 
-	// show #2 must reflect the post-state: bug label gone, parent link still
-	// present.
+	// show #2 must reflect the post-state: owner gone (db.Issue.Owner has
+	// omitempty so a cleared pointer drops the key entirely), bug label gone,
+	// parent link still present.
 	showBody := getBody(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/2")
+	assert.NotContains(t, showBody, `"owner":"alice"`, "owner must be cleared after unassign")
 	assert.NotContains(t, showBody, `"label":"bug"`, "bug label must be gone from issue #2")
 	assert.Contains(t, showBody, `"parent"`, "parent link must still be present on issue #2")
+
+	// And the blocks link must be gone — child is ready again.
+	finalReadyBody := getBody(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/ready")
+	assert.Contains(t, finalReadyBody, `"title":"child"`,
+		"child must be ready again after the blocks link is removed")
 }
 
 // deleteWith issues a DELETE through the bounded testenv client and asserts

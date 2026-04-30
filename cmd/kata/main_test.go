@@ -78,16 +78,16 @@ func TestRunEEntered_TrueOnSuccessfulRunE(t *testing.T) {
 	assert.True(t, runEEntered, "PersistentPreRunE should fire before whoami's RunE")
 }
 
-// TestRoot_Plan2VerbsAdvertised pins the new top-level verbs so a future
-// command-registration regression on any of them fails fast at help-rendering
-// time, not at first user run.
+// TestRoot_Plan2VerbsAdvertised pins the new top-level verbs against
+// cmd.Commands() (not raw help substrings) so paired commands like
+// link/unlink can't mask each other's missing registration. A help-string
+// substring match for "link" passes if only "unlink" is registered.
 func TestRoot_Plan2VerbsAdvertised(t *testing.T) {
 	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"--help"})
-	require.NoError(t, cmd.Execute())
-	out := buf.String()
+	registered := make(map[string]struct{}, len(cmd.Commands()))
+	for _, sub := range cmd.Commands() {
+		registered[sub.Name()] = struct{}{}
+	}
 	for _, verb := range []string{
 		"link", "unlink", "parent", "unparent",
 		"block", "unblock", "relate", "unrelate",
@@ -95,7 +95,8 @@ func TestRoot_Plan2VerbsAdvertised(t *testing.T) {
 		"assign", "unassign",
 		"ready",
 	} {
-		assert.Containsf(t, out, verb, "root help must list %q", verb)
+		_, ok := registered[verb]
+		assert.Truef(t, ok, "root must register subcommand %q", verb)
 	}
 }
 
