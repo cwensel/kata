@@ -586,7 +586,7 @@ data: {"event_id":81235,"type":"issue.commented","project_id":3,"project_identit
 - `event:` field = `events.type` (e.g. `issue.commented`) or `sync.reset_required`. Same fully qualified strings used in `events.type` and hook matchers.
 - `data:` is single-line JSON.
 - Daemon broadcasts after DB commit; in-memory broadcaster fans out.
-- On reconnect: compute `MAX(purge_reset_after_event_id) FROM purge_log WHERE purge_reset_after_event_id > <cursor>` (with `AND project_id = ?` for `?project_id=N` streams). If non-null → send single `sync.reset_required` (with `id:` = that max value, `data.new_baseline` = same), close stream. Otherwise: replay `events WHERE id > ?` ordered by id (bounded ~10k rows; continue streaming live afterward).
+- On reconnect: compute `MAX(purge_reset_after_event_id) FROM purge_log WHERE purge_reset_after_event_id > <cursor>` (with `AND project_id = ?` for `?project_id=N` streams). If non-null → send single `sync.reset_required` (with `id:` = that max value, `data.reset_after_id` = same), close stream. Otherwise: replay `events WHERE id > ?` ordered by id (bounded ~10k rows; continue streaming live afterward).
 - Heartbeats: `: keepalive\n\n` every 25s.
 
 `sync.reset_required` event IDs are reserved synthetic cursors. They are produced by bumping `sqlite_sequence.seq` for `events` (without inserting a row) at purge time, so the value is strictly greater than every real `events.id` that existed at the moment of purge, and no real event will ever be assigned that id (the next real insert continues from `reserved + 1`).
@@ -619,12 +619,12 @@ For each request:
    ```json
    {
      "reset_required": true,
-     "new_baseline": <reset_to>,
+     "reset_after_id": <reset_to>,
      "events": [],
      "next_after_id": <reset_to>
    }
    ```
-   The `events` array is empty; the client refetches state and resumes polling with `after_id = new_baseline`. (HTTP 200 keeps the response interpretable as a normal envelope; the `reset_required` flag is the trigger for the client.)
+   The `events` array is empty; the client refetches state and resumes polling with `after_id = reset_after_id`. (HTTP 200 keeps the response interpretable as a normal envelope; the `reset_required` flag is the trigger for the client.)
 3. **Otherwise** return:
    ```json
    {
