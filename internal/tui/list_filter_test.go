@@ -13,17 +13,31 @@ import (
 // the corresponding result fields. Counters surface "exactly N calls"
 // assertions so empty-title regression tests stay direct.
 type fakeListAPI struct {
-	listIssuesCalls                      int
-	listAllCalls                         int
-	createCalls                          int
-	lastListProjectID                    int64
-	lastListFilter                       ListFilter
-	lastCreateProject                    int64
-	lastCreateBody                       CreateIssueBody
-	listIssuesResult                     []Issue
-	listAllResult                        []Issue
-	createResult                         *MutationResp
-	listIssuesErr, listAllErr, createErr error
+	listIssuesCalls    int
+	listAllCalls       int
+	createCalls        int
+	closeCalls         int
+	reopenCalls        int
+	lastListProjectID  int64
+	lastListFilter     ListFilter
+	lastCreateProject  int64
+	lastCreateBody     CreateIssueBody
+	lastCloseProjectID int64
+	lastCloseNumber    int64
+	lastCloseActor     string
+	lastReopenProject  int64
+	lastReopenNumber   int64
+	lastReopenActor    string
+	listIssuesResult   []Issue
+	listAllResult      []Issue
+	createResult       *MutationResp
+	closeResult        *MutationResp
+	reopenResult       *MutationResp
+	listIssuesErr      error
+	listAllErr         error
+	createErr          error
+	closeErr           error
+	reopenErr          error
 }
 
 func (f *fakeListAPI) ListIssues(
@@ -50,6 +64,26 @@ func (f *fakeListAPI) CreateIssue(
 	f.lastCreateProject = projectID
 	f.lastCreateBody = body
 	return f.createResult, f.createErr
+}
+
+func (f *fakeListAPI) Close(
+	_ context.Context, projectID, number int64, actor string,
+) (*MutationResp, error) {
+	f.closeCalls++
+	f.lastCloseProjectID = projectID
+	f.lastCloseNumber = number
+	f.lastCloseActor = actor
+	return f.closeResult, f.closeErr
+}
+
+func (f *fakeListAPI) Reopen(
+	_ context.Context, projectID, number int64, actor string,
+) (*MutationResp, error) {
+	f.reopenCalls++
+	f.lastReopenProject = projectID
+	f.lastReopenNumber = number
+	f.lastReopenActor = actor
+	return f.reopenResult, f.reopenErr
 }
 
 // runeKey synthesizes a tea.KeyMsg for a single rune so tests don't
@@ -449,5 +483,89 @@ func TestList_AuthorFilter_NarrowsDisplay(t *testing.T) {
 	out := filteredIssues(issues, ListFilter{Author: "wes"})
 	if len(out) != 2 || out[0].Number != 1 || out[1].Number != 3 {
 		t.Fatalf("wrong issues filtered: %+v", out)
+	}
+}
+
+// TestList_Close_DispatchesAPI: j to row 2, 'x' calls api.Close with
+// the row 2 issue's number, threading the actor through. The fixture
+// uses two rows so cursor!=0 is observable.
+func TestList_Close_DispatchesAPI(t *testing.T) {
+	api := &fakeListAPI{
+		closeResult: &MutationResp{Issue: &Issue{Number: 2, Status: "closed"}},
+	}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+	lm := listModel{
+		actor: "tester",
+		issues: []Issue{
+			{ProjectID: 7, Number: 1, Title: "first"},
+			{ProjectID: 7, Number: 2, Title: "second"},
+		},
+	}
+
+	lm, _ = lm.Update(runeKey('j'), km, api, sc)
+	if lm.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1 after j", lm.cursor)
+	}
+	lm, cmd := lm.Update(runeKey('x'), km, api, sc)
+	if cmd == nil {
+		t.Fatal("expected close cmd from x")
+	}
+	_ = drainCmd(t, lm, cmd, km, api, sc)
+	if api.closeCalls != 1 {
+		t.Fatalf("closeCalls = %d, want 1", api.closeCalls)
+	}
+	if api.lastCloseProjectID != 7 || api.lastCloseNumber != 2 {
+		t.Fatalf("close args wrong: pid=%d num=%d",
+			api.lastCloseProjectID, api.lastCloseNumber)
+	}
+	if api.lastCloseActor != "tester" {
+		t.Fatalf("lastCloseActor = %q, want tester", api.lastCloseActor)
+	}
+}
+
+// TestList_Reopen_DispatchesAPI mirrors TestList_Close_DispatchesAPI for
+// the 'r' binding.
+func TestList_Reopen_DispatchesAPI(t *testing.T) {
+	api := &fakeListAPI{
+		reopenResult: &MutationResp{Issue: &Issue{Number: 1, Status: "open"}},
+	}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+	lm := listModel{
+		actor: "tester",
+		issues: []Issue{
+			{ProjectID: 7, Number: 1, Title: "first"},
+		},
+	}
+
+	lm, cmd := lm.Update(runeKey('r'), km, api, sc)
+	if cmd == nil {
+		t.Fatal("expected reopen cmd from r")
+	}
+	_ = drainCmd(t, lm, cmd, km, api, sc)
+	if api.reopenCalls != 1 {
+		t.Fatalf("reopenCalls = %d, want 1", api.reopenCalls)
+	}
+	if api.lastReopenNumber != 1 || api.lastReopenActor != "tester" {
+		t.Fatalf("reopen args wrong: num=%d actor=%q",
+			api.lastReopenNumber, api.lastReopenActor)
+	}
+}
+
+// TestList_Close_EmptyListNoOp: 'x' on an empty list does not call
+// api.Close and does not panic.
+func TestList_Close_EmptyListNoOp(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+	lm := listModel{actor: "tester"}
+
+	_, cmd := lm.Update(runeKey('x'), km, api, sc)
+	if cmd != nil {
+		t.Fatalf("expected nil cmd on empty list, got %T", cmd)
+	}
+	if api.closeCalls != 0 {
+		t.Fatalf("closeCalls = %d, want 0", api.closeCalls)
 	}
 }

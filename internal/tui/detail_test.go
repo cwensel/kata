@@ -297,7 +297,8 @@ func TestDetail_HardWrap_OversizeRune(t *testing.T) {
 // fakeDetailAPI is the test double for detailAPI used by the fetch-cmd
 // tests and the jump-nav tests. The exported result fields seed the
 // return values; lastGetIssue captures the most recent GetIssue call so
-// jump tests can assert on the issue number that was fetched.
+// jump tests can assert on the issue number that was fetched. The
+// mutation counters/last-* fields support the Task 9 mutation tests.
 type fakeDetailAPI struct {
 	commentsResult []CommentEntry
 	eventsResult   []EventLogEntry
@@ -309,6 +310,23 @@ type fakeDetailAPI struct {
 	getIssueResult *Issue
 	getIssueErr    error
 	lastGetIssue   int64
+
+	closeCalls       int
+	reopenCalls      int
+	addLabelCalls    int
+	removeLabelCalls int
+	assignCalls      int
+	addLinkCalls     int
+
+	lastProjectID int64
+	lastNumber    int64
+	lastActor     string
+	lastLabel     string
+	lastOwner     string
+	lastLinkBody  LinkBody
+
+	mutationResult *MutationResp
+	mutationErr    error
 }
 
 func (f *fakeDetailAPI) GetIssue(
@@ -334,6 +352,70 @@ func (f *fakeDetailAPI) ListLinks(
 	_ context.Context, _, _ int64,
 ) ([]LinkEntry, error) {
 	return f.linksResult, f.linksErr
+}
+
+func (f *fakeDetailAPI) Close(
+	_ context.Context, projectID, number int64, actor string,
+) (*MutationResp, error) {
+	f.closeCalls++
+	f.lastProjectID = projectID
+	f.lastNumber = number
+	f.lastActor = actor
+	return f.mutationResult, f.mutationErr
+}
+
+func (f *fakeDetailAPI) Reopen(
+	_ context.Context, projectID, number int64, actor string,
+) (*MutationResp, error) {
+	f.reopenCalls++
+	f.lastProjectID = projectID
+	f.lastNumber = number
+	f.lastActor = actor
+	return f.mutationResult, f.mutationErr
+}
+
+func (f *fakeDetailAPI) AddLabel(
+	_ context.Context, projectID, number int64, label, actor string,
+) (*MutationResp, error) {
+	f.addLabelCalls++
+	f.lastProjectID = projectID
+	f.lastNumber = number
+	f.lastLabel = label
+	f.lastActor = actor
+	return f.mutationResult, f.mutationErr
+}
+
+func (f *fakeDetailAPI) RemoveLabel(
+	_ context.Context, projectID, number int64, label, actor string,
+) (*MutationResp, error) {
+	f.removeLabelCalls++
+	f.lastProjectID = projectID
+	f.lastNumber = number
+	f.lastLabel = label
+	f.lastActor = actor
+	return f.mutationResult, f.mutationErr
+}
+
+func (f *fakeDetailAPI) Assign(
+	_ context.Context, projectID, number int64, owner, actor string,
+) (*MutationResp, error) {
+	f.assignCalls++
+	f.lastProjectID = projectID
+	f.lastNumber = number
+	f.lastOwner = owner
+	f.lastActor = actor
+	return f.mutationResult, f.mutationErr
+}
+
+func (f *fakeDetailAPI) AddLink(
+	_ context.Context, projectID, number int64, body LinkBody, actor string,
+) (*MutationResp, error) {
+	f.addLinkCalls++
+	f.lastProjectID = projectID
+	f.lastNumber = number
+	f.lastLinkBody = body
+	f.lastActor = actor
+	return f.mutationResult, f.mutationErr
 }
 
 // TestDetail_FetchCommands_RoundTrip exercises the three fetch wrappers

@@ -105,9 +105,9 @@ func initialFilter(opts Options) ListFilter {
 
 // Update routes messages to the active sub-view. Quit is handled at the
 // top level so it works from every view, EXCEPT while a list-view inline
-// prompt is active: typing 'q' into the search/owner/title prompt must
-// reach the buffer instead of quitting. The same gate applies to ?, R,
-// and any future global key.
+// prompt or a detail-view modal is active: typing 'q' into a prompt or
+// modal must reach the buffer instead of quitting. The same gate applies
+// to ?, R, and any future global key.
 //
 // openDetailMsg / popDetailMsg are intercepted before the per-view
 // dispatch because the view switch lives at this level. The detail
@@ -120,7 +120,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case tea.KeyMsg:
-		if !m.list.search.inputting && m.keymap.Quit.matches(msg) {
+		if m.canQuit() && m.keymap.Quit.matches(msg) {
 			return m, tea.Quit
 		}
 	case openDetailMsg:
@@ -130,6 +130,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m.dispatchToView(msg)
+}
+
+// canQuit reports whether a 'q' keystroke should be honored as Quit.
+// False while a list prompt is open (the buffer must absorb the rune)
+// or while a detail modal is open (same reason — the user is typing a
+// label/owner/link target, not asking to exit).
+func (m Model) canQuit() bool {
+	if m.list.search.inputting {
+		return false
+	}
+	if m.view == viewDetail && m.detail.modal.active() {
+		return false
+	}
+	return true
 }
 
 // handleOpenDetail seeds m.detail with the chosen issue and dispatches

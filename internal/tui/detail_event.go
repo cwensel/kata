@@ -103,3 +103,51 @@ func fmtTime(t time.Time) string {
 	}
 	return t.Format("2006-01-02 15:04")
 }
+
+// eventJumpTarget reads the issue number that a jumpable event refers
+// to. link.added/link.removed carry to_number; we also accept
+// issue_number for forward-compat.
+func eventJumpTarget(events []EventLogEntry, idx int) (int64, bool) {
+	if idx < 0 || idx >= len(events) {
+		return 0, false
+	}
+	return readEventTargetNumber(events[idx])
+}
+
+// readEventTargetNumber pulls an int64 issue number out of e.Payload.
+// JSON decodes numbers as float64 by default; int64/int are accepted so
+// hand-built test fixtures don't need to round-trip through json.
+func readEventTargetNumber(e EventLogEntry) (int64, bool) {
+	if e.Payload == nil {
+		return 0, false
+	}
+	for _, k := range []string{"to_number", "issue_number"} {
+		if v, ok := e.Payload[k]; ok {
+			if n, ok := numberFromAny(v); ok {
+				return n, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// numberFromAny widens a JSON-decoded number to int64.
+func numberFromAny(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	}
+	return 0, false
+}
+
+// linkJumpTarget returns the link's ToNumber.
+func linkJumpTarget(links []LinkEntry, idx int) (int64, bool) {
+	if idx < 0 || idx >= len(links) {
+		return 0, false
+	}
+	return links[idx].ToNumber, true
+}

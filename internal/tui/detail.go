@@ -30,12 +30,29 @@ type detailAPI interface {
 	ListComments(ctx context.Context, projectID, number int64) ([]CommentEntry, error)
 	ListEvents(ctx context.Context, projectID, number int64) ([]EventLogEntry, error)
 	ListLinks(ctx context.Context, projectID, number int64) ([]LinkEntry, error)
+	Close(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
+	Reopen(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
+	AddLabel(
+		ctx context.Context, projectID, number int64, label, actor string,
+	) (*MutationResp, error)
+	RemoveLabel(
+		ctx context.Context, projectID, number int64, label, actor string,
+	) (*MutationResp, error)
+	Assign(
+		ctx context.Context, projectID, number int64, owner, actor string,
+	) (*MutationResp, error)
+	AddLink(
+		ctx context.Context, projectID, number int64, body LinkBody, actor string,
+	) (*MutationResp, error)
 }
 
 // detailModel owns detail-view state. activeTab + tabCursor address
 // the highlighted row; navStack holds the prior detailModel so Esc
 // pops back to the issue the user jumped from. scopePID and scope-
-// flags carry the project_id used for jump fetches.
+// flags carry the project_id used for jump fetches. modal/status/actor
+// support the Task 9 mutation path: modal is the inline label/owner/
+// link prompt, status is the one-shot toast text (Task 12 will swap to
+// timed expiry), and actor is the user identity threaded into mutations.
 type detailModel struct {
 	issue       *Issue
 	loading     bool
@@ -49,6 +66,9 @@ type detailModel struct {
 	navStack    []detailModel
 	scopePID    int64
 	allProjects bool
+	actor       string
+	modal       modal
+	status      string
 }
 
 // newDetailModel returns a zeroed detailModel.
@@ -59,7 +79,12 @@ func newDetailModel() detailModel { return detailModel{} }
 func (dm detailModel) Update(msg tea.Msg, km keymap, api detailAPI) (detailModel, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.KeyMsg:
+		if dm.modal.active() {
+			return dm.handleModalKey(m, api)
+		}
 		return dm.handleKey(m, km, api)
+	case mutationDoneMsg:
+		return dm.applyMutation(m, api)
 	case detailFetchedMsg, commentsFetchedMsg, eventsFetchedMsg, linksFetchedMsg:
 		return dm.applyFetched(msg), nil
 	}
@@ -99,13 +124,27 @@ func mergeErr(prev, next error) error {
 	return prev
 }
 
-// handleKey dispatches detail bindings: tab/shift-tab cycle, j/k move
-// the tab cursor (or scroll the body when the active tab is empty),
-// enter jumps to a referenced issue, esc pops the nav stack one level
-// before falling through to popDetailMsg.
+// handleKey dispatches detail bindings. The function is intentionally a
+// thin router: navigation keys live here directly, mutation keys defer
+// to handleMutationKey so the cyclomatic budget (≤8) holds.
 func (dm detailModel) handleKey(
 	msg tea.KeyMsg, km keymap, api detailAPI,
 ) (detailModel, tea.Cmd) {
+	if next, cmd, ok := dm.handleNavKey(msg, km, api); ok {
+		return next, cmd
+	}
+	if next, cmd, ok := dm.handleMutationKey(msg, km, api); ok {
+		return next, cmd
+	}
+	return dm, nil
+}
+
+// handleNavKey processes the navigation/cursor/scroll/tab bindings.
+// Returns ok=true when the key was consumed; handleKey forwards to
+// handleMutationKey otherwise.
+func (dm detailModel) handleNavKey(
+	msg tea.KeyMsg, km keymap, api detailAPI,
+) (detailModel, tea.Cmd, bool) {
 	switch {
 	case km.NextTab.matches(msg):
 		dm.activeTab = (dm.activeTab + 1) % detailTabCount
@@ -114,15 +153,19 @@ func (dm detailModel) handleKey(
 		dm.activeTab = (dm.activeTab + detailTabCount - 1) % detailTabCount
 		dm.tabCursor = 0
 	case km.Up.matches(msg):
-		return dm.handleUp(), nil
+		return dm.handleUp(), nil, true
 	case km.Down.matches(msg):
-		return dm.handleDown(), nil
+		return dm.handleDown(), nil, true
 	case km.Open.matches(msg):
-		return dm.handleEnter(api)
+		next, cmd := dm.handleEnter(api)
+		return next, cmd, true
 	case km.Back.matches(msg):
-		return dm.handleBack()
+		next, cmd := dm.handleBack()
+		return next, cmd, true
+	default:
+		return dm, nil, false
 	}
-	return dm, nil
+	return dm, nil, true
 }
 
 // handleUp moves the tab cursor up when the active tab has rows;
@@ -226,54 +269,6 @@ func (dm detailModel) activeRowCount() int {
 		return len(dm.links)
 	}
 	return 0
-}
-
-// eventJumpTarget reads the issue number that a jumpable event refers
-// to. link.added/link.removed carry to_number; we also accept
-// issue_number for forward-compat.
-func eventJumpTarget(events []EventLogEntry, idx int) (int64, bool) {
-	if idx < 0 || idx >= len(events) {
-		return 0, false
-	}
-	return readEventTargetNumber(events[idx])
-}
-
-// readEventTargetNumber pulls an int64 issue number out of e.Payload.
-// JSON decodes numbers as float64 by default; int64/int are accepted so
-// hand-built test fixtures don't need to round-trip through json.
-func readEventTargetNumber(e EventLogEntry) (int64, bool) {
-	if e.Payload == nil {
-		return 0, false
-	}
-	for _, k := range []string{"to_number", "issue_number"} {
-		if v, ok := e.Payload[k]; ok {
-			if n, ok := numberFromAny(v); ok {
-				return n, true
-			}
-		}
-	}
-	return 0, false
-}
-
-// numberFromAny widens a JSON-decoded number to int64.
-func numberFromAny(v any) (int64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int64(n), true
-	case int64:
-		return n, true
-	case int:
-		return int64(n), true
-	}
-	return 0, false
-}
-
-// linkJumpTarget returns the link's ToNumber.
-func linkJumpTarget(links []LinkEntry, idx int) (int64, bool) {
-	if idx < 0 || idx >= len(links) {
-		return 0, false
-	}
-	return links[idx].ToNumber, true
 }
 
 // popDetailCmd emits popDetailMsg so the top-level Model reverts to

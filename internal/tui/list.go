@@ -20,6 +20,8 @@ type listAPI interface {
 	CreateIssue(
 		ctx context.Context, projectID int64, body CreateIssueBody,
 	) (*MutationResp, error)
+	Close(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
+	Reopen(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
 }
 
 // searchField names which filter is being edited inline. The shared
@@ -104,10 +106,100 @@ func (lm listModel) applyNavKey(
 	if next, ok := lm.applyPromptKey(msg, km, sc); ok {
 		return next, nil
 	}
+	if next, cmd, ok := lm.applyMutationKey(msg, km, api, sc); ok {
+		return next, cmd
+	}
 	if next, cmd, ok := lm.applyOpenKey(msg, km); ok {
 		return next, cmd
 	}
 	return lm, nil
+}
+
+// applyMutationKey handles list-side mutation bindings: close (x) and
+// reopen (r) act on the highlighted row. Empty list is a quiet no-op
+// so a stray keystroke on the empty-state hint does nothing.
+func (lm listModel) applyMutationKey(
+	msg tea.KeyMsg, km keymap, api listAPI, sc scope,
+) (listModel, tea.Cmd, bool) {
+	switch {
+	case km.Close.matches(msg):
+		next, cmd := lm.dispatchListClose(api, sc)
+		return next, cmd, true
+	case km.Reopen.matches(msg):
+		next, cmd := lm.dispatchListReopen(api, sc)
+		return next, cmd, true
+	}
+	return lm, nil, false
+}
+
+// dispatchListClose closes the issue under the cursor. Empty list is a
+// no-op (returns lm unchanged with a nil cmd).
+func (lm listModel) dispatchListClose(
+	api listAPI, sc scope,
+) (listModel, tea.Cmd) {
+	iss, ok := lm.targetRow()
+	if !ok {
+		return lm, nil
+	}
+	lm.status = ""
+	return lm, closeIssueCmd(api, projectIDForRow(iss, sc), iss.Number, lm.actor)
+}
+
+// dispatchListReopen mirrors dispatchListClose for the reopen action.
+func (lm listModel) dispatchListReopen(
+	api listAPI, sc scope,
+) (listModel, tea.Cmd) {
+	iss, ok := lm.targetRow()
+	if !ok {
+		return lm, nil
+	}
+	lm.status = ""
+	return lm, reopenIssueCmd(api, projectIDForRow(iss, sc), iss.Number, lm.actor)
+}
+
+// targetRow returns the currently highlighted issue, accounting for the
+// client-side filter that hides rows the cursor still indexes. ok=false
+// when the visible list is empty.
+func (lm listModel) targetRow() (Issue, bool) {
+	rows := filteredIssues(lm.issues, lm.filter)
+	if len(rows) == 0 {
+		return Issue{}, false
+	}
+	idx := lm.cursor
+	if idx >= len(rows) {
+		idx = len(rows) - 1
+	}
+	return rows[idx], true
+}
+
+// projectIDForRow picks the right project_id for the row's mutation.
+// In all-projects scope the issue carries its own ProjectID; in single-
+// project scope sc.projectID wins.
+func projectIDForRow(iss Issue, sc scope) int64 {
+	if sc.allProjects && iss.ProjectID != 0 {
+		return iss.ProjectID
+	}
+	return sc.projectID
+}
+
+// closeIssueCmd wraps Close into a mutationDoneMsg-emitting tea.Cmd.
+func closeIssueCmd(api listAPI, pid, num int64, actor string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := api.Close(ctx, pid, num, actor)
+		return mutationDoneMsg{kind: "close", resp: resp, err: err}
+	}
+}
+
+// reopenIssueCmd is the reopen counterpart of closeIssueCmd.
+func reopenIssueCmd(api listAPI, pid, num int64, actor string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := api.Reopen(ctx, pid, num, actor)
+		return mutationDoneMsg{kind: "reopen", resp: resp, err: err}
+	}
 }
 
 // applyOpenKey handles Enter on a list row: emit openDetailMsg with the
@@ -248,9 +340,11 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 	return lm
 }
 
-// applyMutation handles the reply from CreateIssue. Success seeds the
-// status line and dispatches a refetch so the new row shows up; failure
-// leaves the issues alone and surfaces the error in the status line.
+// applyMutation handles a mutationDoneMsg arriving at the list view.
+// "create", "close", "reopen" kinds all seed the status line and (on
+// success) dispatch a refetch so the row updates without waiting for
+// SSE invalidation (Task 11). Detail-driven mutations also bubble up
+// here via dispatchToView so the list cache gets the same refresh.
 //
 // TODO(task-12): replace lm.status string with Model-level toast
 // machinery (messages.go::toastExpiredMsg + toast). The status line is
@@ -259,14 +353,32 @@ func (lm listModel) applyMutation(
 	m mutationDoneMsg, api listAPI, sc scope,
 ) (listModel, tea.Cmd) {
 	if m.err != nil {
-		lm.status = "create failed: " + m.err.Error()
+		lm.status = errorStyle.Render(
+			fmt.Sprintf("%s failed: %s", m.kind, m.err.Error()),
+		)
 		return lm, nil
 	}
-	if m.kind == "create" && m.resp != nil && m.resp.Issue != nil {
-		lm.status = fmt.Sprintf("created #%d", m.resp.Issue.Number)
-		return lm, lm.refetchCmd(api, sc)
+	lm.status = listMutationSuccessText(m)
+	return lm, lm.refetchCmd(api, sc)
+}
+
+// listMutationSuccessText is the per-kind status hint after a successful
+// mutation. The number comes from m.resp.Issue when present; otherwise
+// the hint omits it so we don't print "#0".
+func listMutationSuccessText(m mutationDoneMsg) string {
+	num := int64(0)
+	if m.resp != nil && m.resp.Issue != nil {
+		num = m.resp.Issue.Number
 	}
-	return lm, nil
+	switch m.kind {
+	case "create":
+		return fmt.Sprintf("created #%d", num)
+	case "close":
+		return fmt.Sprintf("closed #%d", num)
+	case "reopen":
+		return fmt.Sprintf("reopened #%d", num)
+	}
+	return ""
 }
 
 // handleSearchKey processes characters while a prompt is open. Enter

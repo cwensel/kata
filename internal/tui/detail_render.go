@@ -29,7 +29,14 @@ func (dm detailModel) View(width, height int) string {
 	body := dm.renderBody(width, bodyArea)
 	tabs := dm.renderTabStrip()
 	tabContent := dm.renderActiveTab(width, dm.tabContentHeight(height))
-	return strings.Join([]string{header, body, tabs, tabContent}, "\n")
+	parts := []string{header, body, tabs, tabContent}
+	if s := dm.modal.Render(); s != "" {
+		parts = append(parts, s)
+	}
+	if dm.status != "" {
+		parts = append(parts, dm.status)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // bodyHeight is the row count allotted to the body window.
