@@ -1,6 +1,6 @@
 # Plan 7 — TUI Design Sprint (Visual + Interaction Redesign)
 
-> **Status:** Design v2 — incorporates Wes's review (2026-05-01). Open for Codex review next. Lock the visual + interaction model, then break the build into milestones.
+> **Status:** Design v3 — locked. Wes locked the high-level shape (v2); Codex resolved the eight open questions and signed off on the locked shape (v3, 2026-05-01). Implementation tracked in `2026-05-01-kata-7-tui-impl.md`. This doc stays as the rationale + visual reference + decision log.
 
 ## Decisions locked (Wes review)
 
