@@ -170,6 +170,9 @@ func (lm listModel) applyPromptKey(
 // (the daemon's create endpoint is project-scoped and the TUI has no
 // project picker yet). The status-line message replaces the chip strip
 // briefly so the user knows why nothing happened.
+//
+// TODO(task-12): replace lm.status string with Model-level toast
+// machinery (messages.go::toastExpiredMsg + toast).
 func (lm listModel) beginNewIssue(sc scope) listModel {
 	if sc.allProjects {
 		lm.status = "cannot create from all-projects view; cd into a project"
@@ -222,6 +225,10 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 // applyMutation handles the reply from CreateIssue. Success seeds the
 // status line and dispatches a refetch so the new row shows up; failure
 // leaves the issues alone and surfaces the error in the status line.
+//
+// TODO(task-12): replace lm.status string with Model-level toast
+// machinery (messages.go::toastExpiredMsg + toast). The status line is
+// a placeholder; toasts will own auto-expiry and stacked notifications.
 func (lm listModel) applyMutation(
 	m mutationDoneMsg, api listAPI, sc scope,
 ) (listModel, tea.Cmd) {
@@ -302,9 +309,16 @@ func (lm listModel) submitNewIssue(
 }
 
 // refetchCmd returns a tea.Cmd that re-fetches the issue list using
-// lm.filter for client-side fields (later tasks may filter in-memory)
-// while the wire still only honors Status. The command path mirrors
-// fetchInitial.
+// lm.filter for client-side fields while the wire still only honors
+// Status. The command path mirrors fetchInitial. Owner/Author/Search
+// narrow the result via filteredIssues at render time.
+//
+// Note: rapid filter changes dispatch concurrent refetches. The latest
+// reply wins via simple last-write to lm.issues; older replies can race
+// over newer state when network latency reorders them. Task 11's SSE
+// consumer would amplify this — when SSE invalidation lands, consider
+// tagging refetchedMsg with a generation counter so applyFetched can
+// drop stale replies.
 func (lm listModel) refetchCmd(api listAPI, sc scope) tea.Cmd {
 	filter := lm.filter
 	return func() tea.Msg {
@@ -321,6 +335,53 @@ func (lm listModel) refetchCmd(api listAPI, sc scope) tea.Cmd {
 		}
 		return refetchedMsg{issues: issues, err: err}
 	}
+}
+
+// filteredIssues returns the subset of issues that satisfy the
+// client-side filters (Owner/Author/Search). Status is filtered
+// server-side via the daemon's status query param and is already
+// reflected in lm.issues, so it is not re-checked here. The fast path
+// returns the input slice unchanged when no client-side filter is set
+// — render runs every keystroke, so this matters.
+func filteredIssues(issues []Issue, f ListFilter) []Issue {
+	if f.Owner == "" && f.Author == "" && f.Search == "" {
+		return issues
+	}
+	out := make([]Issue, 0, len(issues))
+	for _, iss := range issues {
+		if matchesFilter(iss, f) {
+			out = append(out, iss)
+		}
+	}
+	return out
+}
+
+// matchesFilter reports whether iss satisfies the client-side filters.
+// Owner is *string on the wire, so a nil pointer never matches a set
+// owner. Search is case-insensitive over Title — body search would need
+// the detail fetch and is out of scope for the list view.
+//
+// Labels are deliberately not checked: the Issue projection drops the
+// labels field (Task 3 wire-vs-spec adaptation #1), so a label filter
+// can't actually narrow until the wire carries them. The chip strip
+// hides the label chip for the same reason; see renderChips.
+func matchesFilter(iss Issue, f ListFilter) bool {
+	if f.Owner != "" {
+		if iss.Owner == nil || *iss.Owner != f.Owner {
+			return false
+		}
+	}
+	if f.Author != "" && iss.Author != f.Author {
+		return false
+	}
+	if f.Search != "" {
+		if !strings.Contains(
+			strings.ToLower(iss.Title), strings.ToLower(f.Search),
+		) {
+			return false
+		}
+	}
+	return true
 }
 
 // nonEmptyLabels splits on commas and drops empty results, so the user

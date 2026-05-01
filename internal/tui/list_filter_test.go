@@ -373,3 +373,81 @@ func lmFromUpdate(
 ) (listModel, tea.Cmd) {
 	return lm.Update(msg, km, api, sc)
 }
+
+// TestList_OwnerFilter_NarrowsDisplay confirms filteredIssues drops
+// rows whose Owner does not match. The fixture exercises the *string
+// branch (alice matches twice, bob is filtered out, nil-owner case is
+// covered by TestList_NoFilter_PassThrough).
+func TestList_OwnerFilter_NarrowsDisplay(t *testing.T) {
+	issues := []Issue{
+		{Number: 1, Owner: ptrString("alice"), Title: "a"},
+		{Number: 2, Owner: ptrString("bob"), Title: "b"},
+		{Number: 3, Owner: ptrString("alice"), Title: "c"},
+	}
+	out := filteredIssues(issues, ListFilter{Owner: "alice"})
+	if len(out) != 2 {
+		t.Fatalf("got %d, want 2", len(out))
+	}
+	if out[0].Number != 1 || out[1].Number != 3 {
+		t.Fatalf("wrong issues filtered: %+v", out)
+	}
+}
+
+// TestList_OwnerFilter_NilOwnerNeverMatches: a row with no owner can
+// never satisfy a set Owner filter, even if the filter string is
+// empty. (Empty filter is the no-filter fast path; non-empty plus nil
+// owner is the case under test here.)
+func TestList_OwnerFilter_NilOwnerNeverMatches(t *testing.T) {
+	issues := []Issue{
+		{Number: 1, Title: "no owner"},
+		{Number: 2, Owner: ptrString("alice"), Title: "owned"},
+	}
+	out := filteredIssues(issues, ListFilter{Owner: "alice"})
+	if len(out) != 1 || out[0].Number != 2 {
+		t.Fatalf("expected only #2, got %+v", out)
+	}
+}
+
+// TestList_SearchFilter_CaseInsensitive: the search box is forgiving
+// about case so users typing "login" find "LOGIN bug" and vice versa.
+func TestList_SearchFilter_CaseInsensitive(t *testing.T) {
+	issues := []Issue{
+		{Number: 1, Title: "Fix LOGIN bug"},
+		{Number: 2, Title: "deploy"},
+	}
+	out := filteredIssues(issues, ListFilter{Search: "login"})
+	if len(out) != 1 || out[0].Number != 1 {
+		t.Fatalf("expected #1 only, got %+v", out)
+	}
+}
+
+// TestList_NoFilter_PassThrough: with no client-side filter set the
+// fast path returns the input unchanged so the steady state pays no
+// per-render allocation.
+func TestList_NoFilter_PassThrough(t *testing.T) {
+	issues := []Issue{
+		{Number: 1, Owner: ptrString("alice"), Title: "a"},
+		{Number: 2, Title: "b"},
+	}
+	out := filteredIssues(issues, ListFilter{})
+	if len(out) != 2 {
+		t.Fatalf("expected pass-through, got %d", len(out))
+	}
+}
+
+// TestList_AuthorFilter_NarrowsDisplay covers the Author branch even
+// though there's no key binding for it yet — ListFilter.Author is on
+// the struct (Task 6 left it in for forward compat) and matchesFilter
+// honors it. When a future task adds an `a` keystroke to filter by
+// author, this test guards the wiring.
+func TestList_AuthorFilter_NarrowsDisplay(t *testing.T) {
+	issues := []Issue{
+		{Number: 1, Author: "wes", Title: "a"},
+		{Number: 2, Author: "claude", Title: "b"},
+		{Number: 3, Author: "wes", Title: "c"},
+	}
+	out := filteredIssues(issues, ListFilter{Author: "wes"})
+	if len(out) != 2 || out[0].Number != 1 || out[1].Number != 3 {
+		t.Fatalf("wrong issues filtered: %+v", out)
+	}
+}
