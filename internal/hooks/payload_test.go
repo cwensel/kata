@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wesm/kata/internal/db"
 )
@@ -165,6 +166,32 @@ func TestBuildStdin_TitleTruncated(t *testing.T) {
 	}
 	if int(issue["_full_size"].(float64)) != len(bigTitle) {
 		t.Fatalf("_full_size = %v, want %d", issue["_full_size"], len(bigTitle))
+	}
+}
+
+func TestBuildStdin_TitleTruncation_RuneBoundary(t *testing.T) {
+	evt := sampleEvent("issue.created")
+	// 4-byte rune (😀 = U+1F600) repeated to overflow the 1KB title cap
+	// at a non-aligned offset. 257 runes = 1028 bytes, cap = 1024 means
+	// the cut lands inside the 257th rune.
+	bigTitle := strings.Repeat("😀", 257)
+	bigIssue := func(_ context.Context, _ int64) (IssueSnapshot, error) {
+		return IssueSnapshot{Number: 1, Title: bigTitle, Status: "open"}, nil
+	}
+	out, _ := buildStdinJSON(context.Background(), evt, okProject, bigIssue, okComment, okAlias, nopLog())
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	issue := got["issue"].(map[string]any)
+	title := issue["title"].(string)
+	if !utf8.ValidString(title) {
+		t.Fatalf("truncated title is not valid UTF-8: %q", title)
+	}
+	// Truncated string must be ≤ limit and end on a rune boundary, so it
+	// should contain a whole number of 4-byte runes (≤ 256).
+	if len(title) > 1024 {
+		t.Fatalf("truncated length %d exceeds 1024", len(title))
 	}
 }
 
