@@ -9,11 +9,12 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
-// Per-field byte caps from spec §7.2.
+// Per-field byte caps from spec §7.2. issue.body is not in the IssueSnapshot
+// surface in v1; the spec lists it for forward compatibility but the
+// envelope assembler does not include or truncate it today.
 const (
 	maxStdinBytes       = 256 * 1024
 	maxIssueTitleBytes  = 1 * 1024
-	maxIssueBodyBytes   = 8 * 1024
 	maxCommentBodyBytes = 8 * 1024
 )
 
@@ -175,7 +176,7 @@ func truncStringField(parent map[string]any, key, value string, limit int) {
 }
 
 // dropOptional removes the addressed field. Supports "payload" (top-level
-// removal) and dotted keys like "issue.body" (sub-field removal). Returns
+// removal) and dotted keys like "issue.title" (sub-field removal). Returns
 // true when the key existed and was removed.
 func dropOptional(env map[string]any, addr string) bool {
 	parts := strings.SplitN(addr, ".", 2)

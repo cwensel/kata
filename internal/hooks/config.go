@@ -108,12 +108,40 @@ type rawHookFile struct {
 }
 
 type rawHooksSection struct {
-	PoolSize             *int    `toml:"pool_size"`
-	QueueCap             *int    `toml:"queue_cap"`
-	OutputDiskCap        *string `toml:"output_disk_cap"`
-	RunsLogMax           *string `toml:"runs_log_max"`
-	RunsLogKeep          *int    `toml:"runs_log_keep"`
-	QueueFullLogInterval *string `toml:"queue_full_log_interval"`
+	PoolSize             *int       `toml:"pool_size"`
+	QueueCap             *int       `toml:"queue_cap"`
+	OutputDiskCap        *sizeValue `toml:"output_disk_cap"`
+	RunsLogMax           *sizeValue `toml:"runs_log_max"`
+	RunsLogKeep          *int       `toml:"runs_log_keep"`
+	QueueFullLogInterval *string    `toml:"queue_full_log_interval"`
+}
+
+// sizeValue wraps a parsed byte count. UnmarshalTOML accepts both bare
+// integer bytes (output_disk_cap = 100) and unit-suffixed strings
+// (output_disk_cap = "100MB"), per spec §4.2.
+type sizeValue struct{ Bytes int64 }
+
+// UnmarshalTOML decodes either a TOML integer or a TOML string into a
+// byte count. Unit suffixes are parsed by parseSize; bare integers go
+// through the same > 0 / overflow checks as parsed strings.
+func (s *sizeValue) UnmarshalTOML(v any) error {
+	switch t := v.(type) {
+	case int64:
+		if t <= 0 {
+			return fmt.Errorf("size %d must be > 0", t)
+		}
+		s.Bytes = t
+		return nil
+	case string:
+		n, err := parseSize(t)
+		if err != nil {
+			return err
+		}
+		s.Bytes = n
+		return nil
+	default:
+		return fmt.Errorf("size must be string or integer, got %T", v)
+	}
 }
 
 type rawHookEntry struct {
@@ -201,18 +229,10 @@ func buildLoadedConfig(raw rawHookFile, base Config) (LoadedConfig, error) {
 		cfg.QueueCap = v
 	}
 	if raw.Hooks.OutputDiskCap != nil {
-		v, err := parseSize(*raw.Hooks.OutputDiskCap)
-		if err != nil {
-			return LoadedConfig{}, fmt.Errorf("output_disk_cap: %w", err)
-		}
-		cfg.OutputDiskCap = v
+		cfg.OutputDiskCap = raw.Hooks.OutputDiskCap.Bytes
 	}
 	if raw.Hooks.RunsLogMax != nil {
-		v, err := parseSize(*raw.Hooks.RunsLogMax)
-		if err != nil {
-			return LoadedConfig{}, fmt.Errorf("runs_log_max: %w", err)
-		}
-		cfg.RunsLogMaxBytes = v
+		cfg.RunsLogMaxBytes = raw.Hooks.RunsLogMax.Bytes
 	}
 	if raw.Hooks.RunsLogKeep != nil {
 		v := *raw.Hooks.RunsLogKeep

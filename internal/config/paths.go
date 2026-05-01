@@ -70,13 +70,35 @@ func HookConfigPath() (string, error) {
 }
 
 // HookRootDir returns <KataHome>/hooks/<dbhash>. Per-DB so multiple kata
-// databases on the same host don't share output streams.
+// databases on the same host don't share output streams. Rejects any
+// dbhash that is not a 12-char lower-hex string so a malformed value
+// can't escape the hook root via "..", separators, or padding.
 func HookRootDir(dbhash string) (string, error) {
+	if err := validateDBHash(dbhash); err != nil {
+		return "", err
+	}
 	home, err := KataHome()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(home, "hooks", dbhash), nil
+}
+
+// validateDBHash enforces the shape produced by DBHash: exactly 12 chars
+// of lower-hex. Rejects any input outside that contract before joining
+// it into a path.
+func validateDBHash(dbhash string) error {
+	if len(dbhash) != 12 {
+		return fmt.Errorf("dbhash %q: must be 12 chars (got %d)", dbhash, len(dbhash))
+	}
+	for _, r := range dbhash {
+		isDigit := r >= '0' && r <= '9'
+		isHexLetter := r >= 'a' && r <= 'f'
+		if !isDigit && !isHexLetter {
+			return fmt.Errorf("dbhash %q: must be lower-hex", dbhash)
+		}
+	}
+	return nil
 }
 
 // HookOutputDir returns <KataHome>/hooks/<dbhash>/output. Holds per-run

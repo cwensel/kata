@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -20,7 +21,10 @@ var knownEventTypes = map[string]struct{}{
 }
 
 // compileEventMatcher returns the canonical string and a precompiled
-// matcher for the three accepted forms; an error otherwise.
+// matcher for the three accepted forms; an error otherwise. Both `*`
+// and `issue.*` only match types in knownEventTypes, so an unknown
+// (e.g., future-typo) "issue.foo" event won't quietly fan out to all
+// issue.* hooks.
 func compileEventMatcher(raw string) (string, func(string) bool, error) {
 	switch raw {
 	case "":
@@ -28,7 +32,13 @@ func compileEventMatcher(raw string) (string, func(string) bool, error) {
 	case "*":
 		return "*", func(t string) bool { _, ok := knownEventTypes[t]; return ok }, nil
 	case "issue.*":
-		return "issue.*", func(t string) bool { return strings.HasPrefix(t, "issue.") }, nil
+		return "issue.*", func(t string) bool {
+			if !strings.HasPrefix(t, "issue.") {
+				return false
+			}
+			_, ok := knownEventTypes[t]
+			return ok
+		}, nil
 	case "sync.reset_required":
 		return "", nil, fmt.Errorf("event %q is synthetic and cannot be hooked", raw)
 	}
@@ -39,9 +49,13 @@ func compileEventMatcher(raw string) (string, func(string) bool, error) {
 	return "", nil, fmt.Errorf("event %q is not a known event type or pattern", raw)
 }
 
-// validateCommand: absolute path OR bare name (no '/'). Rejects ./foo,
-// bin/foo, "", ".", "..", and whitespace-contaminated strings — anything
-// that introduces a relative path component or is not a bare executable.
+// validateCommand: absolute path OR bare name (no path separators).
+// Rejects ./foo, bin/foo, "", ".", "..", leading/trailing whitespace,
+// NUL bytes, and control characters. Internal whitespace is allowed in
+// absolute paths (e.g. /Applications/Some App/bin/x) but rejected in
+// bare names since exec.Command treats bare names as PATH lookups —
+// "my command" would try to find an executable literally named
+// "my command".
 func validateCommand(cmd string) error {
 	if cmd == "" {
 		return fmt.Errorf("command must be non-empty")
@@ -49,8 +63,8 @@ func validateCommand(cmd string) error {
 	if strings.TrimSpace(cmd) != cmd {
 		return fmt.Errorf("command %q must not contain leading/trailing whitespace", cmd)
 	}
-	if strings.ContainsAny(cmd, " \t\n\r\x00") {
-		return fmt.Errorf("command %q must not contain whitespace or NUL", cmd)
+	if strings.ContainsAny(cmd, "\t\n\r\x00") {
+		return fmt.Errorf("command %q must not contain control characters or NUL", cmd)
 	}
 	if cmd == "." || cmd == ".." {
 		return fmt.Errorf("command %q is a directory reference, not an executable", cmd)
@@ -58,7 +72,10 @@ func validateCommand(cmd string) error {
 	if filepath.IsAbs(cmd) {
 		return nil
 	}
-	if strings.ContainsRune(cmd, '/') || strings.ContainsRune(cmd, filepath.Separator) {
+	if strings.ContainsRune(cmd, ' ') {
+		return fmt.Errorf("command %q must be absolute to contain spaces (bare names are PATH-looked-up by exec.Command)", cmd)
+	}
+	if strings.ContainsRune(cmd, '/') || (filepath.Separator != '/' && strings.ContainsRune(cmd, filepath.Separator)) {
 		return fmt.Errorf("command %q must be absolute or a bare name (no path separators)", cmd)
 	}
 	return nil
@@ -106,7 +123,8 @@ func validateUserEnv(m map[string]string) ([]string, error) {
 }
 
 // parseSize accepts bare integer bytes or the suffixes k/kb/m/mb
-// (binary, case-insensitive). Returns the byte count.
+// (binary, case-insensitive). Returns the byte count. Rejects values
+// that would overflow int64 after multiplying by the unit.
 func parseSize(s string) (int64, error) {
 	t := strings.ToLower(strings.TrimSpace(s))
 	if t == "" {
@@ -130,6 +148,9 @@ func parseSize(s string) (int64, error) {
 	}
 	if n <= 0 {
 		return 0, fmt.Errorf("size %q must be > 0", s)
+	}
+	if n > math.MaxInt64/mul {
+		return 0, fmt.Errorf("size %q overflows int64", s)
 	}
 	return n * mul, nil
 }

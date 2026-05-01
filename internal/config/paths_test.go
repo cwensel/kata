@@ -118,3 +118,31 @@ func TestHookRunsPath_UnderHookRoot(t *testing.T) {
 		t.Fatalf("HookRunsPath = %q, want %q", got, want)
 	}
 }
+
+// TestHookRootDir_RejectsNonHash pins that path helpers refuse to join
+// any string that isn't a 12-char lower-hex DBHash, so a corrupted state
+// file or test typo can't escape <KataHome>/hooks via path traversal.
+func TestHookRootDir_RejectsNonHash(t *testing.T) {
+	t.Setenv("KATA_HOME", "/tmp/kata-test")
+	cases := []string{
+		"",                   // empty
+		"../escape",          // traversal
+		"with/slash",         // separator
+		"abc123def45",        // 11 chars
+		"abc123def4567",      // 13 chars
+		"ABC123DEF456",       // upper-case
+		"abc123def45g",       // non-hex
+		string([]byte{0, 1}), // control bytes
+	}
+	for _, c := range cases {
+		if _, err := config.HookRootDir(c); err == nil {
+			t.Errorf("HookRootDir(%q) should error", c)
+		}
+		if _, err := config.HookOutputDir(c); err == nil {
+			t.Errorf("HookOutputDir(%q) should error", c)
+		}
+		if _, err := config.HookRunsPath(c); err == nil {
+			t.Errorf("HookRunsPath(%q) should error", c)
+		}
+	}
+}

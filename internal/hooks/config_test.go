@@ -315,3 +315,71 @@ func TestLoad_PoolSizeBounds(t *testing.T) {
 		}
 	}
 }
+
+// TestLoad_SizeAcceptsBareInteger pins that bare TOML integers (e.g.,
+// output_disk_cap = 100) are valid byte values, alongside unit-suffixed
+// strings like "100MB". Spec §4.2 lists both forms.
+func TestLoad_SizeAcceptsBareInteger(t *testing.T) {
+	p := writeTOML(t, `
+[hooks]
+output_disk_cap = 12345
+runs_log_max    = 67890
+`)
+	lc, err := LoadStartup(p)
+	if err != nil {
+		t.Fatalf("bare integer sizes should load: %v", err)
+	}
+	if lc.Config.OutputDiskCap != 12345 {
+		t.Fatalf("output_disk_cap = %d, want 12345", lc.Config.OutputDiskCap)
+	}
+	if lc.Config.RunsLogMaxBytes != 67890 {
+		t.Fatalf("runs_log_max = %d, want 67890", lc.Config.RunsLogMaxBytes)
+	}
+}
+
+// TestLoad_SizeOverflow guards parseSize against int64 wraparound: a
+// value times its unit must not exceed math.MaxInt64.
+func TestLoad_SizeOverflow(t *testing.T) {
+	// 9223372036854775807 / 1024 / 1024 ≈ 8796093022207 → adding "mb" puts
+	// us above MaxInt64.
+	p := writeTOML(t, `
+[hooks]
+output_disk_cap = "9999999999999mb"
+`)
+	if _, err := LoadStartup(p); err == nil {
+		t.Fatal("massively oversize size value should be rejected")
+	}
+}
+
+// TestLoad_AbsolutePathWithSpaces pins that command validation accepts
+// internal whitespace inside an absolute path (Windows "Program Files"
+// or Unix custom dirs), while still rejecting bare names with spaces.
+func TestLoad_AbsolutePathWithSpaces(t *testing.T) {
+	p := writeTOML(t, `
+[[hook]]
+event   = "issue.created"
+command = "/Applications/Some App/bin/notify"
+`)
+	if _, err := LoadStartup(p); err != nil {
+		t.Fatalf("absolute path with spaces should be accepted: %v", err)
+	}
+}
+
+// TestMatch_IssueStarOnlyKnown pins that the issue.* matcher rejects
+// unknown event types like "issue.bogus" rather than fan-matching every
+// string with the issue. prefix.
+func TestMatch_IssueStarOnlyKnown(t *testing.T) {
+	_, match, err := compileEventMatcher("issue.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !match("issue.created") {
+		t.Fatal("issue.* should match issue.created")
+	}
+	if match("issue.bogus") {
+		t.Fatal("issue.* must not match unknown issue.bogus")
+	}
+	if match("foo.created") {
+		t.Fatal("issue.* must not match foo.created")
+	}
+}
