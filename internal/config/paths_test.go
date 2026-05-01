@@ -71,3 +71,50 @@ func TestRuntimeDir_NamespaceIsDBHashUnderHome(t *testing.T) {
 	hash := config.DBHash(filepath.Join(tmp, "kata.db"))
 	assert.Equal(t, filepath.Join(tmp, "runtime", hash), got)
 }
+
+func TestHookConfigPath_HonorsKataHome(t *testing.T) {
+	t.Setenv("KATA_HOME", "/tmp/kata-test")
+	got, err := config.HookConfigPath()
+	if err != nil {
+		t.Fatalf("HookConfigPath: %v", err)
+	}
+	want := filepath.Join("/tmp/kata-test", "hooks.toml")
+	if got != want {
+		t.Fatalf("HookConfigPath = %q, want %q", got, want)
+	}
+}
+
+func TestHookRootDir_NamespacedByDBHash(t *testing.T) {
+	t.Setenv("KATA_HOME", "/tmp/kata-test")
+	got, err := config.HookRootDir("abc123def456")
+	if err != nil {
+		t.Fatalf("HookRootDir: %v", err)
+	}
+	want := filepath.Join("/tmp/kata-test", "hooks", "abc123def456")
+	if got != want {
+		t.Fatalf("HookRootDir = %q, want %q", got, want)
+	}
+}
+
+func TestHookOutputDir_UnderHookRoot(t *testing.T) {
+	t.Setenv("KATA_HOME", "/tmp/kata-test")
+	got, err := config.HookOutputDir("abc123def456")
+	if err != nil {
+		t.Fatalf("HookOutputDir: %v", err)
+	}
+	if !strings.HasSuffix(got, filepath.Join("hooks", "abc123def456", "output")) {
+		t.Fatalf("HookOutputDir = %q, want suffix hooks/abc123def456/output", got)
+	}
+}
+
+func TestHookRunsPath_UnderHookRoot(t *testing.T) {
+	t.Setenv("KATA_HOME", "/tmp/kata-test")
+	got, err := config.HookRunsPath("abc123def456")
+	if err != nil {
+		t.Fatalf("HookRunsPath: %v", err)
+	}
+	want := filepath.Join("/tmp/kata-test", "hooks", "abc123def456", "runs.jsonl")
+	if got != want {
+		t.Fatalf("HookRunsPath = %q, want %q", got, want)
+	}
+}

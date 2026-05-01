@@ -59,3 +59,43 @@ func RuntimeDir() (string, error) {
 	}
 	return filepath.Join(home, "runtime", DBHash(db)), nil
 }
+
+// HookConfigPath returns <KataHome>/hooks.toml. The file is not created here.
+func HookConfigPath() (string, error) {
+	home, err := KataHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "hooks.toml"), nil
+}
+
+// HookRootDir returns <KataHome>/hooks/<dbhash>. Per-DB so multiple kata
+// databases on the same host don't share output streams.
+func HookRootDir(dbhash string) (string, error) {
+	home, err := KataHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "hooks", dbhash), nil
+}
+
+// HookOutputDir returns <KataHome>/hooks/<dbhash>/output. Holds per-run
+// .out and .err files keyed by <event_id>.<hook_index>.
+func HookOutputDir(dbhash string) (string, error) {
+	root, err := HookRootDir(dbhash)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "output"), nil
+}
+
+// HookRunsPath returns <KataHome>/hooks/<dbhash>/runs.jsonl, the active
+// (non-rotated) JSONL log of finished runs. Rotated copies live alongside
+// as runs.jsonl.1, runs.jsonl.2, ...
+func HookRunsPath(dbhash string) (string, error) {
+	root, err := HookRootDir(dbhash)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "runs.jsonl"), nil
+}
