@@ -694,12 +694,18 @@ func (m Model) dispatchToView(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View returns the rendered string for the active sub-view, with the
-// SSE reconnect indicator and any active toast appended below. Both
-// extras render as empty strings in the steady state so the view does
-// not gain spurious blank lines.
+// View returns the rendered string for the active sub-view. The list
+// view consumes its own SSE state + toast inline (via the M1 chrome);
+// other views still get the SSE/toast extras appended below since they
+// don't carry a status line of their own. Both extras render as empty
+// strings in the steady state so the view does not gain spurious blank
+// lines.
 func (m Model) View() string {
 	body := m.viewBody()
+	if m.view == viewList {
+		// listChrome already accounted for SSE + toast inline.
+		return body
+	}
 	extras := []string{}
 	if s := renderSSEStatus(m.sseStatus); s != "" {
 		extras = append(extras, s)
@@ -722,9 +728,28 @@ func (m Model) viewBody() string {
 	case viewEmpty:
 		return renderEmpty(m.width, m.height)
 	case viewList:
-		return m.list.View(m.width, m.height)
+		return m.list.View(m.width, m.height, m.listChrome())
 	case viewDetail:
 		return m.detail.View(m.width, m.height)
 	}
 	return ""
 }
+
+// listChrome assembles the cross-cutting render inputs the list view
+// needs from Model state: scope, SSE status, pending invalidation
+// flag, the active toast (if any), and the build-time version string.
+// Centralising this keeps lm.View free of Model coupling.
+func (m Model) listChrome() listChrome {
+	return listChrome{
+		scope:     m.scope,
+		sseStatus: m.sseStatus,
+		pending:   m.pendingRefetch,
+		toast:     m.toast,
+		version:   kataVersion,
+	}
+}
+
+// kataVersion is the build-time version string used by the title bar.
+// Hardcoded today; a future plan can wire `-ldflags
+// -X`-style injection through an internal/version package.
+const kataVersion = "v0.1.0"

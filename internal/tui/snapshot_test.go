@@ -2,6 +2,7 @@ package tui
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -144,7 +145,12 @@ func TestSnapshot_List_DefaultMixedStatus(t *testing.T) {
 	lm.loading = false
 	lm.issues = snapListFixture()
 	lm.cursor = 1
-	got := lm.View(120, 30)
+	chrome := listChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	got := lm.View(120, 30, chrome)
 	assertGolden(t, "list-default-mixed-status", got)
 }
 
@@ -166,7 +172,12 @@ func TestSnapshot_List_EmptyAfterFilter(t *testing.T) {
 	lm.loading = false
 	lm.issues = snapListFixture()
 	lm.filter = ListFilter{Search: "no-match-anywhere"}
-	got := lm.View(120, 30)
+	chrome := listChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	got := lm.View(120, 30, chrome)
 	assertGolden(t, "list-empty-after-filter", got)
 }
 
@@ -174,6 +185,42 @@ func TestSnapshot_List_EmptyAfterFilter(t *testing.T) {
 // with two active filters: status:open and owner:alice. The label chip
 // is intentionally skipped (Issue projection lacks labels) so the
 // scenario uses owner instead of label per Roborev-fix #2's guidance.
+// TestSnapshot_List_ScrollIndicator covers the scroll-indicator slot
+// in the footer status line. With 50 issues and a 30-row terminal, the
+// chrome reserves enough rows that not every issue fits — the
+// indicator surfaces as `[start-end of N issues]` aligned right.
+func TestSnapshot_List_ScrollIndicator(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	issues := make([]Issue, 50)
+	for i := range issues {
+		issues[i] = Issue{
+			Number: int64(i + 1),
+			Title:  "issue " + ptrFormat(int64(i+1)),
+			Status: "open",
+			UpdatedAt: snapshotFixedNow.Add(
+				-time.Duration(i+1) * time.Hour,
+			),
+		}
+	}
+	lm.issues = issues
+	lm.cursor = 25 // mid-list so the scroll window has both start and end visible
+	chrome := listChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	got := lm.View(120, 30, chrome)
+	assertGolden(t, "list-scroll-indicator", got)
+}
+
+// ptrFormat is a tiny helper for fixture row titles that need the
+// issue number embedded — keeps the fixture builder readable.
+func ptrFormat(n int64) string {
+	return fmt.Sprintf("%d", n)
+}
+
 func TestSnapshot_List_WithFilterChips(t *testing.T) {
 	defer snapshotInit(t)()
 	lm := newListModel()
@@ -184,7 +231,12 @@ func TestSnapshot_List_WithFilterChips(t *testing.T) {
 		UpdatedAt: snapshotFixedNow.Add(-30 * time.Minute),
 	}}
 	lm.filter = ListFilter{Status: "open", Owner: "alice"}
-	got := lm.View(120, 30)
+	chrome := listChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	got := lm.View(120, 30, chrome)
 	assertGolden(t, "list-with-filter-chips", got)
 }
 

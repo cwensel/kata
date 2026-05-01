@@ -1,4 +1,10 @@
+kata · kata · open:1 closed:0 all:1                                                                               v0.1.0
+SSE: connected · 0 pending events                                                                                       
 status:open  owner:alice
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  #     status    title                                                                         owner         updated   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+› #1    open      narrowed by chips                                                             alice         30m ago   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                                                                                                                         
- ›                   #1                  open                narrowed by chips   alice               30m ago            
-                                                                                                                        
+j/k move  enter open  n new  / search  o owner  s status  c clear  x close  r reopen  ? help  q quit

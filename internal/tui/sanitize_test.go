@@ -118,7 +118,7 @@ func TestListView_SanitizesMaliciousTitle(t *testing.T) {
 	lm.issues = []Issue{
 		{Number: 1, Title: "\x1b]0;HIJACK\x07normal title", Status: "open"},
 	}
-	out := lm.View(120, 30)
+	out := lm.View(120, 30, listChrome{})
 	if strings.Contains(out, "\x1b") {
 		t.Fatalf("ESC reached rendered list: %q", out)
 	}

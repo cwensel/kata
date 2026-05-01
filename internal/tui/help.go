@@ -40,6 +40,98 @@ func helpSections(km keymap) []helpSection {
 // keyDisplay joins multi-key bindings with '/' (e.g. "q/ctrl+c").
 func keyDisplay(k key) string { return strings.Join(k.Keys, "/") }
 
+// reflowHelpRows redistributes helpRow items across rows so the rendered
+// table fits within width. Each cell's visible width is key + space +
+// desc, and non-first columns add 2 chars (▕ border + padding). width
+// <= 0 returns rows unchanged.
+//
+// Lifted verbatim from roborev (`cmd/roborev/tui/tui.go::reflowHelpRows`)
+// per the design lock §"Resolved decisions" #5 — no point getting
+// clever; the algorithm is battle-tested and bounded.
+func reflowHelpRows(rows [][]helpRow, width int) [][]helpRow {
+	if width <= 0 {
+		return rows
+	}
+	cellWidth := func(item helpRow) int {
+		w := runewidth.StringWidth(item.key)
+		if item.desc != "" {
+			w += 1 + runewidth.StringWidth(item.desc)
+		}
+		return w
+	}
+	maxItemsPerRow := 0
+	for _, row := range rows {
+		if len(row) > maxItemsPerRow {
+			maxItemsPerRow = len(row)
+		}
+	}
+	for ncols := maxItemsPerRow; ncols >= 1; ncols-- {
+		var candidate [][]helpRow
+		for _, row := range rows {
+			for i := 0; i < len(row); i += ncols {
+				end := min(i+ncols, len(row))
+				candidate = append(candidate, row[i:end])
+			}
+		}
+		colW := make([]int, ncols)
+		for _, crow := range candidate {
+			for c, item := range crow {
+				if w := cellWidth(item); w > colW[c] {
+					colW[c] = w
+				}
+			}
+		}
+		total := 0
+		for c, w := range colW {
+			total += w
+			if c > 0 {
+				total += 2 // ▕ + padding
+			}
+		}
+		if total <= width {
+			return candidate
+		}
+	}
+	// Fallback: one item per row.
+	var result [][]helpRow
+	for _, row := range rows {
+		for _, item := range row {
+			result = append(result, []helpRow{item})
+		}
+	}
+	return result
+}
+
+// renderHelpBar renders a flat list of helpRow items as a single line
+// (or a few wrapped lines, via reflowHelpRows) suitable for the
+// persistent footer help row on the main views. Each item is rendered
+// as `helpKeyStyle(key) " " helpDescStyle(desc)`; entries are joined
+// with two spaces. Empty input renders as "".
+//
+// Used by list_render.go and detail_render.go for the bottom-of-screen
+// help line. The full sectioned overlay (renderHelp) is still triggered
+// by `?` for the dense reference view.
+func renderHelpBar(items []helpRow, width int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	rows := reflowHelpRows([][]helpRow{items}, width)
+	out := make([]string, len(rows))
+	for ri, row := range rows {
+		parts := make([]string, len(row))
+		for i, item := range row {
+			if item.desc == "" {
+				parts[i] = helpKeyStyle.Render(item.key)
+			} else {
+				parts[i] = helpKeyStyle.Render(item.key) + " " +
+					helpDescStyle.Render(item.desc)
+			}
+		}
+		out[ri] = strings.Join(parts, "  ")
+	}
+	return strings.Join(out, "\n")
+}
+
 // renderHelp builds the help overlay. width picks column count.
 func renderHelp(km keymap, width int, filter ListFilter) string {
 	cols := chunkSections(helpSections(km), helpColumnCount(width))
