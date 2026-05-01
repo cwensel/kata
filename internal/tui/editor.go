@@ -33,7 +33,8 @@ func editorCmd(kind, template string) tea.Cmd {
 	}
 	_ = tmp.Close()
 	editor := resolveEditor()
-	cmd := exec.Command(editor[0], append(editor[1:], name)...) //nolint:gosec // user-controlled $EDITOR
+	//nolint:gosec // user-controlled $EDITOR is intentional
+	cmd := exec.Command(editor[0], append(editor[1:], name)...)
 	return tea.ExecProcess(cmd, func(execErr error) tea.Msg {
 		defer func() { _ = os.Remove(name) }() //nolint:gosec // path is os.CreateTemp output
 		if execErr != nil {
