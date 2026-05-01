@@ -78,7 +78,7 @@ func TestList_Cursor_DownAndUp(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		for _, line := range strings.Split(string(b), "\n") {
-			if strings.Contains(line, "›") && strings.Contains(line, "#2") {
+			if strings.Contains(line, "▶") && strings.Contains(line, "#2") {
 				return true
 			}
 		}

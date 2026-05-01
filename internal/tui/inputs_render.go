@@ -4,11 +4,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// renderInputBar formats the inline command bar for an active
-// inputSearchBar / inputOwnerBar. Single-line bordered box, title in
-// the top border, magenta border (always focused while open).
-// Sanitizes the rendered buffer text as a safety net so a pasted ANSI
-// sequence can't reach the terminal.
+// renderInputBar formats the inline command bar as a bordered box.
+// Used by the M3a above-the-table layout; M3.5 moved bars to the
+// info line via renderInfoBar instead. Kept for any caller that
+// wants the heavier bordered presentation.
+//
+//nolint:unused // superseded by renderInfoBar in M3.5
 func renderInputBar(s inputState, width int) string {
 	if width < 10 {
 		width = 10
@@ -28,12 +29,12 @@ func renderInputBar(s inputState, width int) string {
 	return title + "\n" + rendered
 }
 
-// renderPanelPrompt is the M3b shell — short single-field prompt
-// anchored to the bottom of the detail pane. Lighter than a centered
-// form because the action is short and contextually tied to the
-// detail issue. Visually similar to the inline command bar (single-
-// line bordered box, magenta border, title in label) but rendered
-// at panel scope rather than full-width.
+// renderPanelPrompt is the M3b bordered panel-prompt shell. M3.5
+// moved panel prompts to the info line via renderInfoPrompt for a
+// lighter footprint; this stays for any caller wanting the heavier
+// bordered presentation.
+//
+//nolint:unused // superseded by renderInfoPrompt in M3.5
 func renderPanelPrompt(s inputState, width int) string {
 	if width < 10 {
 		width = 10

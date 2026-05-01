@@ -75,6 +75,15 @@ func TestApplyColorMode_RebuildsAllStyles(t *testing.T) {
 	chipActive = sentinel
 	tabActive = sentinel
 	tabInactive = sentinel
+	titleBarStyle = sentinel
+	statsLineStyle = sentinel
+	tableHeaderStyle = sentinel
+	separatorRuleStyle = sentinel
+	cursorRowStyle = sentinel
+	altRowStyle = sentinel
+	normalRowStyle = sentinel
+	footerBarStyle = sentinel
+	modalBoxStyle = sentinel
 	// Panel-border vars are TerminalColor (not Style); poison them
 	// with the same sentinel value so we can detect a forgotten
 	// rebuild via the same colorNone test.
@@ -88,6 +97,9 @@ func TestApplyColorMode_RebuildsAllStyles(t *testing.T) {
 		openStyle, closedStyle, deletedStyle, helpKeyStyle,
 		helpDescStyle, errorStyle, toastStyle, chipStyle,
 		chipActive, tabActive, tabInactive,
+		titleBarStyle, statsLineStyle, tableHeaderStyle,
+		separatorRuleStyle, cursorRowStyle, altRowStyle,
+		normalRowStyle, footerBarStyle, modalBoxStyle,
 	}
 	for i, s := range all {
 		if fg, ok := s.GetForeground().(lipgloss.Color); ok && fg == sentinelColor {

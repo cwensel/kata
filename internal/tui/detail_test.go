@@ -593,17 +593,16 @@ func TestDetail_OpenWithNilAPI_NoCrash(t *testing.T) {
 	}
 }
 
-// TestDetail_SplitContentHeight_TinyTerminal: very small terminals
-// fall through to the floor split so neither pane collapses to zero
-// even when the chrome doesn't fit.
-func TestDetail_SplitContentHeight_TinyTerminal(t *testing.T) {
+// TestDetail_TinyTerminal_RendersWithoutPanic: very small terminals
+// fall through to the bare-render fallback so the user sees something
+// rather than a panic from negative budgets. After M3.5 the body+tab
+// split is computed inline in View; the floors detailMinBodyRows and
+// detailMinTabRows still cap the inner allocations.
+func TestDetail_TinyTerminal_RendersWithoutPanic(t *testing.T) {
 	dm := detailFixture()
-	body, tab := dm.splitContentHeight(4)
-	if body < detailMinBodyRows {
-		t.Fatalf("body height = %d, want >= %d (floor)", body, detailMinBodyRows)
-	}
-	if tab < detailMinTabRows {
-		t.Fatalf("tab height = %d, want >= %d (floor)", tab, detailMinTabRows)
+	out := dm.View(80, 4, viewChrome{})
+	if out == "" {
+		t.Fatal("tiny render must produce some output")
 	}
 }
 

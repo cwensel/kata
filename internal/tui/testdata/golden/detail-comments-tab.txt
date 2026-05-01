@@ -1,19 +1,30 @@
-kata                                                                                                                    
-SSE: connected · 0 pending events                                                                                       
+ kata かた                                                                                                              
 #42 · open · wesm
 fix login bug on Safari
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Reproduces in Safari 17 only.
 Click the login button twice.
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
 [ Comments (2) ]  Events (2)  Links (1)
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 [alice] 2026-04-30 10:00
   I can repro on macOS.
 
 [bob] 2026-04-30 11:00
   Looks like a race in oauth.
 
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                                                                                                                         
-j/k move  tab next  shift+tab prev  enter jump  esc back  e edit  c comment  x close  + label  a owner  ? help  q quit
+                                                                                                                        
+                                                                                                                        
+ ↑↓ move │ ↹ tab │ ↵ jump │ esc back │ e edit │ c comment │ x close │ + label │ a owner │ ? help │ q quit               

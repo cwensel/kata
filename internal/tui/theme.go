@@ -72,6 +72,38 @@ var (
 	panelInactiveBorder lipgloss.TerminalColor // gray
 )
 
+// M3.5 chrome styles — borrowed from msgvault's view.go palette. Each
+// pairs a foreground/bold/italic with an adaptive background so the
+// rendered cell visibly differs from the surrounding void (msgvault's
+// pattern; helps the chrome read as window furniture, not stray text).
+//
+// titleBarStyle: the top brand strip. Bold + adaptive bg + horizontal
+//
+//	padding so the bar looks like a window-chrome strip.
+//
+// statsStyle: second header line + info line. Faint foreground.
+// tableHeaderStyle: column headers above the table body.
+// separatorRuleStyle: the single ─ line under the column headers.
+// cursorRowStyle: highlighted background for the row under the cursor.
+// altRowStyle: subtle alternate background for odd rows.
+// normalRowStyle: explicit background for even rows so partial-line
+//
+//	updates don't leave artifacts on terminals that retain prior content.
+//
+// footerBarStyle: the persistent footer help row at the bottom.
+// modalBoxStyle: rounded-bordered overlay box for confirm/info modals.
+var (
+	titleBarStyle      lipgloss.Style
+	statsLineStyle     lipgloss.Style
+	tableHeaderStyle   lipgloss.Style
+	separatorRuleStyle lipgloss.Style
+	cursorRowStyle     lipgloss.Style
+	altRowStyle        lipgloss.Style
+	normalRowStyle     lipgloss.Style
+	footerBarStyle     lipgloss.Style
+	modalBoxStyle      lipgloss.Style
+)
+
 // applyColorMode rebuilds all package-level styles. Called at TUI boot
 // so tests can swap modes without leaking state across tests. The
 // renderer is bound to w so color-capability detection runs against the
@@ -104,6 +136,18 @@ func applyColorMode(m colorMode, w io.Writer) {
 		// stand-in for "use whatever the terminal would otherwise pick."
 		panelActiveBorder = lipgloss.NoColor{}
 		panelInactiveBorder = lipgloss.NoColor{}
+		// M3.5 chrome under colorNone: no backgrounds (snapshots stay
+		// plain text), Bold/Faint preserved so structure reads even
+		// when colors are stripped.
+		titleBarStyle = base.Bold(true).Padding(0, 1)
+		statsLineStyle = base.Padding(0, 1)
+		tableHeaderStyle = base.Bold(true)
+		separatorRuleStyle = base.Faint(true)
+		cursorRowStyle = base.Reverse(true)
+		altRowStyle = base
+		normalRowStyle = base
+		footerBarStyle = base.Padding(0, 1)
+		modalBoxStyle = base.Border(lipgloss.RoundedBorder()).Padding(1, 2)
 		return
 	}
 	pick := func(light, dark string) lipgloss.TerminalColor {
@@ -136,6 +180,30 @@ func applyColorMode(m colorMode, w io.Writer) {
 	tabInactive = r.NewStyle().Foreground(pick("242", "246"))
 	panelActiveBorder = pick("125", "205")
 	panelInactiveBorder = pick("242", "246")
+	// M3.5 chrome — adaptive bgs lifted from msgvault. titleBar uses a
+	// brighter bg than statsLine so the brand strip stands out from
+	// the breadcrumb row. cursorRow is brighter than altRow so the
+	// three-tier striping reads cleanly even in 256-color terminals.
+	titleBarStyle = r.NewStyle().Bold(true).Padding(0, 1).
+		Foreground(pick("232", "255")).
+		Background(pick("248", "238"))
+	statsLineStyle = r.NewStyle().Padding(0, 1).
+		Foreground(pick("242", "246")).
+		Background(pick("253", "234"))
+	tableHeaderStyle = r.NewStyle().Bold(true).
+		Foreground(pick("242", "246"))
+	separatorRuleStyle = r.NewStyle().Faint(true).
+		Foreground(pick("248", "242"))
+	cursorRowStyle = r.NewStyle().
+		Background(pick("153", "24"))
+	altRowStyle = r.NewStyle().
+		Background(pick("254", "236"))
+	normalRowStyle = r.NewStyle()
+	footerBarStyle = r.NewStyle().Padding(0, 1).
+		Foreground(pick("242", "246")).
+		Background(pick("253", "234"))
+	modalBoxStyle = r.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).
+		BorderForeground(pick("125", "205"))
 }
 
 // applyDefaultColorMode wires the resolved color mode to the active

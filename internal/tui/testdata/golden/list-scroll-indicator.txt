@@ -1,8 +1,8 @@
-kata · kata · open:50 closed:0 all:50                                                                             v0.1.0
-SSE: connected · 0 pending events                                                                                       
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ kata かた · project: kata                                                                                       v0.1.0 
+ open: 50 · closed: 0 · all: 50                                                                                         
   #     status    title                                                                         owner         updated   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  #18   open      issue 18                                                                                    18h ago   
   #19   open      issue 19                                                                                    19h ago   
   #20   open      issue 20                                                                                    20h ago   
   #21   open      issue 21                                                                                    21h ago   
@@ -10,7 +10,7 @@ SSE: connected · 0 pending events
   #23   open      issue 23                                                                                    23h ago   
   #24   open      issue 24                                                                                    1d ago    
   #25   open      issue 25                                                                                    1d ago    
-› #26   open      issue 26                                                                                    1d ago    
+▶ #26   open      issue 26                                                                                    1d ago    
   #27   open      issue 27                                                                                    1d ago    
   #28   open      issue 28                                                                                    1d ago    
   #29   open      issue 29                                                                                    1d ago    
@@ -25,6 +25,6 @@ SSE: connected · 0 pending events
   #38   open      issue 38                                                                                    1d ago    
   #39   open      issue 39                                                                                    1d ago    
   #40   open      issue 40                                                                                    1d ago    
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-                                                                                                    [19-40 of 50 issues]
-j/k move  enter open  n new  / search  o owner  s status  c clear  x close  r reopen  ? help  q quit
+  #41   open      issue 41                                                                                    1d ago    
+                                                                                                          [18-43 of 50] 
+ ↑↓ move │ ↵ open │ n new │ / search │ o owner │ s status │ c clear │ x close │ ? help │ q quit                 [26/50] 

@@ -1,10 +1,30 @@
-kata · kata · open:1 closed:0 all:1                                                                               v0.1.0
-SSE: connected · 0 pending events                                                                                       
-status:open  owner:alice
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ kata かた · project: kata                                                                                       v0.1.0 
+ open: 1 · closed: 0 · all: 1                                                                  status:open  owner:alice 
   #     status    title                                                                         owner         updated   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-› #1    open      narrowed by chips                                                             alice         30m ago   
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▶ #1    open      narrowed by chips                                                             alice         30m ago   
                                                                                                                         
-j/k move  enter open  n new  / search  o owner  s status  c clear  x close  r reopen  ? help  q quit
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ↑↓ move │ ↵ open │ n new │ / search │ o owner │ s status │ c clear │ x close │ ? help │ q quit                   [1/1] 

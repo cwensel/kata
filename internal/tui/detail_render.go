@@ -8,25 +8,20 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// View renders the detail view under the M2 chrome layer. Layout
-// (top → bottom):
+// View renders the detail view under the M3.5 chrome layer:
 //
-//   - title bar (project + counts + version) — same as the list view
-//   - SSE/status line                         — same as the list view
-//   - detail header strip:  #N · status · author · created Xago · updated Yago
-//   - title row                               — bold, full-width
-//   - hairline rule
-//   - body                                    — scrollable
-//   - hairline rule
-//   - tab strip                               — [ active ]  others
-//   - hairline rule
-//   - tab content
-//   - hairline rule
-//   - footer status line                      — flash OR scroll indicator
-//   - footer help row                         — context-specific keys
+//   - line 1:    title bar (kata かた · project: $name · version)
+//   - line 2:    detail header strip (#N · status · author · timestamps)
+//   - line 3:    issue title row (bold, full-width)
+//   - line 4:    body separator rule
+//   - lines 5..: body (scrollable, padded so the tab strip pins
+//     under the body); tab strip; tab content; padding
+//     so the info+footer pin to the bottom
+//   - line H-1:  info line (panel prompt OR scroll/flash text)
+//   - line H:    footer help row
 //
-// width and height come from the parent Model's WindowSize. The body
-// area + tab content area split the remainder after chrome.
+// Same fillScreen pattern as the list view: the body+tab area
+// absorbs slack so the footer always sits on the last terminal row.
 func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	if dm.loading {
 		return statusStyle.Render("loading…")
@@ -34,82 +29,101 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	if dm.issue == nil {
 		return statusStyle.Render("no issue selected")
 	}
-	title := renderTitleBar(width, chrome.scope, dm.viewerCounts(), chrome.version)
-	statusBar := renderStatusLine(width, chrome.sseStatus, chrome.pending, dm.actor)
+	if width <= 0 || height < listMinHeight {
+		return dm.renderTinyFallback(width)
+	}
+	title := renderTitleBar(width, chrome.scope, chrome.version)
 	header := dm.renderHeader(width)
 	titleRow := dm.renderTitleRow(width)
 	tabs := dm.renderTabStrip()
-	helpRow := renderHelpBar(detailHelpItems(), width)
-	bodyA, tabA := dm.splitContentHeight(height,
-		title, statusBar, header, titleRow, tabs, helpRow)
+	footer := renderFooterBar(width, detailFooterItemsFor(chrome.input), 0, nil, ListFilter{})
+	infoLine := dm.renderInfoLine(width, chrome)
+
+	// Reserve: header (1) + detail-header (1) + title-row (1) +
+	// body-rule (1) + tab-rule (1) + info (1) + footer (1) = 7 fixed.
+	// Whatever remains is split body 2/3, tab content 1/3.
+	avail := height - 7
+	if avail < detailMinSplit {
+		avail = detailMinSplit
+	}
+	bodyA := avail * 2 / 3
+	if bodyA < detailMinBodyRows {
+		bodyA = detailMinBodyRows
+	}
+	tabA := avail - bodyA
+	if tabA < detailMinTabRows {
+		tabA = detailMinTabRows
+	}
 	body := dm.renderBody(width, bodyA)
 	tabContent := dm.renderActiveTab(width, tabA)
-	rule := strings.Repeat("─", width)
-	parts := []string{
-		title, statusBar, header, titleRow, rule, body, rule, tabs, rule, tabContent, rule,
-		dm.renderFooterLine(width, tabA),
-	}
-	// Panel-local prompt (M3b) renders below the footer line, anchored
-	// to the bottom of the detail pane. The chrome carries the active
-	// inputState so the renderer doesn't have to reach back to Model.
-	if chrome.input.kind.isPanelPrompt() {
-		parts = append(parts, renderPanelPrompt(chrome.input, panelPromptWidth(width)))
-	}
-	if t := renderToast(chrome.toast); t != "" {
-		parts = append(parts, t)
-	}
-	parts = append(parts, helpRow)
-	return joinNonEmpty(parts)
+	rule := separatorRuleStyle.Render(strings.Repeat("─", width))
+	bodyArea := dm.padArea(body, bodyA, width)
+	tabArea := dm.padArea(tabContent, tabA, width)
+	return strings.Join([]string{
+		title, header, titleRow, rule, bodyArea, tabs, tabArea,
+		infoLine, footer,
+	}, "\n")
 }
 
-// panelPromptWidth caps the prompt's width so it doesn't span the
-// full terminal — visually it should feel like a small overlay
-// anchored to the detail pane. Min 40, max 60% of terminal width.
-func panelPromptWidth(termWidth int) int {
-	w := termWidth * 6 / 10
-	if w < 40 {
-		w = 40
-	}
-	if w > termWidth {
-		w = termWidth
-	}
-	return w
+// renderTinyFallback is the degraded render for terminals below the
+// minimum height. Just dump body content so the user sees something.
+func (dm detailModel) renderTinyFallback(width int) string {
+	return dm.renderBody(width, detailMinBodyRows)
 }
 
-// viewerCounts returns the counts the title bar wants when rendered
-// from the detail view. Detail's listModel state isn't reachable
-// here, so we return a zero value; the title bar degrades to "kata
-// · {project} · v…" without the open/closed/all breakdown. That's
-// honest — the detail view doesn't know the list slice. M6's split
-// layout will pass real counts via viewChrome.
-func (dm detailModel) viewerCounts() issueCounts { return issueCounts{} }
+// padArea pads `content` with normalRowStyle blank rows so the
+// rendered block is exactly `rows` lines tall. Used to absorb the
+// slack between the body / tab content and the rest of the chrome
+// so the footer pins to the bottom (msgvault fillScreen pattern).
+func (dm detailModel) padArea(content string, rows, width int) string {
+	lines := strings.Split(content, "\n")
+	for len(lines) < rows {
+		lines = append(lines, normalRowStyle.Render(strings.Repeat(" ", width)))
+	}
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
+	return strings.Join(lines, "\n")
+}
 
-// splitContentHeight returns the (bodyHeight, tabContentHeight)
-// split given the total terminal height and the rendered chrome
-// strings. We reserve every chrome line plus the four hairline rules
-// (above body / below body / below tab strip / below tab content),
-// then split the remainder roughly two-thirds for body / one-third
-// for tab content (matches the bodyHeight bias the original split
-// used).
-func (dm detailModel) splitContentHeight(total int, chromeStrings ...string) (int, int) {
-	chromeLines := 4 // four hairline rules
-	for _, s := range chromeStrings {
-		chromeLines += countLines(s)
+// renderInfoLine renders the info line just above the footer for the
+// detail view. Same priority order as the list view: active panel
+// prompt > flash > toast > scroll indicator. Always rendered inside
+// statsLineStyle so the row reads as chrome even when blank.
+func (dm detailModel) renderInfoLine(width int, chrome viewChrome) string {
+	body := ""
+	switch {
+	case chrome.input.kind.isPanelPrompt():
+		body = renderInfoPrompt(chrome.input, titleBarInnerWidth(width))
+	case dm.status != "":
+		body = dm.status
+	case chrome.sseStatus != sseConnected:
+		body = sseDegradedFlash(chrome.sseStatus)
+	case chrome.toast != nil:
+		body = chrome.toast.text
+	default:
+		// Scroll indicator for the active tab (computed against the
+		// current tab's row count, not the body lines).
+		n := dm.activeRowCount()
+		if n > 0 {
+			start, end := windowBounds(n, dm.tabCursor, max(1, n))
+			if end-start < n {
+				body = rightAlignInside(
+					fmt.Sprintf("[%d-%d of %d %s]",
+						start+1, end, n, dm.activeTabLabel()),
+					titleBarInnerWidth(width))
+			}
+		}
 	}
-	chromeLines++ // footer status line
-	avail := total - chromeLines
-	if avail < detailMinSplit {
-		return detailMinBodyRows, detailMinTabRows
-	}
-	body := avail * 2 / 3
-	if body < detailMinBodyRows {
-		body = detailMinBodyRows
-	}
-	tab := avail - body
-	if tab < detailMinTabRows {
-		tab = detailMinTabRows
-	}
-	return body, tab
+	return statsLineStyle.Render(padToWidth(body, titleBarInnerWidth(width)))
+}
+
+// renderInfoPrompt renders an active panel-local prompt as a single
+// info-line row. Bordered/labeled at panel-prompt scope makes the
+// info line too tall; instead the prompt's title prefixes the buffer.
+func renderInfoPrompt(s inputState, innerWidth int) string {
+	body := s.title + ": " + sanitizeForDisplay(s.activeField().input.View())
+	return runewidth.Truncate(body, innerWidth, "…")
 }
 
 // detailMinSplit is the smallest tab-content + body budget that gets
@@ -156,25 +170,6 @@ func (dm detailModel) renderTitleRow(width int) string {
 	return titleStyle.Render(truncate(t, max(20, width)))
 }
 
-// renderFooterLine is the per-tab footer status line: mutation flash
-// on the left wins over the scroll indicator on the right (matching
-// the list view's behavior). The scroll indicator counts entries in
-// the active tab, not the body area.
-func (dm detailModel) renderFooterLine(width, tabRows int) string {
-	left := dm.status
-	right := ""
-	n := dm.activeRowCount()
-	if n > tabRows {
-		start, end := windowBounds(n, dm.tabCursor, tabRows)
-		right = statusStyle.Render(fmt.Sprintf("[%d-%d of %d %s]",
-			start+1, end, n, dm.activeTabLabel()))
-	}
-	if left != "" {
-		return statusStyle.Render(left)
-	}
-	return padLeftRight("", right, width)
-}
-
 // activeTabLabel returns the singular noun for the active tab so the
 // scroll indicator reads naturally ("[1-9 of 12 events]" not
 // "[1-9 of 12]").
@@ -190,15 +185,17 @@ func (dm detailModel) activeTabLabel() string {
 	return ""
 }
 
-// detailHelpItems is the persistent footer help row for the detail
-// view's default state. M3b's panel-local prompts will swap in their
-// own help row when active.
-func detailHelpItems() []helpRow {
+// detailFooterItems is the persistent footer help row for the
+// detail view's default state. M3b's panel-local prompts swap in
+// their own help row via detailFooterItemsFor when active.
+//
+// Labels are msgvault-style short tokens; `?` opens the full
+// sectioned help overlay for the long-form descriptions.
+func detailFooterItems() []helpRow {
 	return []helpRow{
-		{key: "j/k", desc: "move"},
-		{key: "tab", desc: "next"},
-		{key: "shift+tab", desc: "prev"},
-		{key: "enter", desc: "jump"},
+		{key: "↑↓", desc: "move"},
+		{key: "↹", desc: "tab"},
+		{key: "↵", desc: "jump"},
 		{key: "esc", desc: "back"},
 		{key: "e", desc: "edit"},
 		{key: "c", desc: "comment"},
@@ -208,6 +205,19 @@ func detailHelpItems() []helpRow {
 		{key: "?", desc: "help"},
 		{key: "q", desc: "quit"},
 	}
+}
+
+// detailFooterItemsFor returns the footer items given the active
+// input. Panel prompts get the prompt's commit/cancel hints; otherwise
+// the default detail keys render.
+func detailFooterItemsFor(input inputState) []helpRow {
+	if input.kind.isPanelPrompt() {
+		return []helpRow{
+			{key: "enter", desc: "commit"},
+			{key: "esc", desc: "cancel"},
+		}
+	}
+	return detailFooterItems()
 }
 
 // renderBody splits the issue body on newlines, hard-wraps each line,

@@ -1,19 +1,30 @@
-kata                                                                                                                    
-SSE: connected · 0 pending events                                                                                       
+ kata かた                                                                                                              
 #42 · open · wesm
 fix login bug on Safari
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Reproduces in Safari 17 only.
 Click the login button twice.
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
 [ Comments (30) ]  Events (2)  Links (1)
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 [actor-14] 2026-04-30 10:13
   comment body 14
 
 [actor-15] 2026-04-30 10:14
   comment body 15
 
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-                                                                                                  [13-19 of 30 comments]
-j/k move  tab next  shift+tab prev  enter jump  esc back  e edit  c comment  x close  + label  a owner  ? help  q quit
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ↑↓ move │ ↹ tab │ ↵ jump │ esc back │ e edit │ c comment │ x close │ + label │ a owner │ ? help │ q quit               

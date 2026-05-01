@@ -43,7 +43,7 @@ func TestEdge_WindowResize_NoPanic(t *testing.T) {
 	// truncated to roughly 20 cells with an ellipsis. We don't pin the
 	// exact truncation length (the table inserts column padding) but the
 	// row marker for the second row must still be present.
-	if !strings.Contains(narrow, "›") {
+	if !strings.Contains(narrow, "▶") {
 		t.Fatalf("narrow render missing cursor marker:\n%s", narrow)
 	}
 	// The full title would not fit at width=40 — the truncate helper

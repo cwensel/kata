@@ -48,6 +48,12 @@ func keyDisplay(k key) string { return strings.Join(k.Keys, "/") }
 // Lifted verbatim from roborev (`cmd/roborev/tui/tui.go::reflowHelpRows`)
 // per the design lock §"Resolved decisions" #5 — no point getting
 // clever; the algorithm is battle-tested and bounded.
+//
+// Currently unused after M3.5 — the persistent footer joins items
+// inline via joinHelpItems instead of via a reflowed table. Kept
+// for the help-overlay rebuild that M5 will land.
+//
+//nolint:unused // reserved for M5 help overlay re-style
 func reflowHelpRows(rows [][]helpRow, width int) [][]helpRow {
 	if width <= 0 {
 		return rows
@@ -108,9 +114,11 @@ func reflowHelpRows(rows [][]helpRow, width int) [][]helpRow {
 // as `helpKeyStyle(key) " " helpDescStyle(desc)`; entries are joined
 // with two spaces. Empty input renders as "".
 //
-// Used by list_render.go and detail_render.go for the bottom-of-screen
-// help line. The full sectioned overlay (renderHelp) is still triggered
-// by `?` for the dense reference view.
+// Currently unused after M3.5 — list/detail footers use renderFooterBar
+// (joins items with ` │ ` and right-aligns a position indicator).
+// Kept for the help-overlay rebuild that M5 will land.
+//
+//nolint:unused // reserved for M5 help overlay re-style
 func renderHelpBar(items []helpRow, width int) string {
 	if len(items) == 0 {
 		return ""

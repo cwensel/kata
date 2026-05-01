@@ -1,6 +1,30 @@
-kata · kata · open:1 closed:1 all:3                                                                               v0.1.0
-SSE: connected · 0 pending events                                                                                       
-q:"no-match-anywhere"
-no issues match. press c to clear filters or n to create one.
+ kata かた · project: kata                                                                                       v0.1.0 
+ open: 1 · closed: 1 · all: 3                                                                search:"no-match-anywhere" 
+  #     status    title                                                                         owner         updated   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  no issues match. press c to clear filters or n to create one.                                                         
                                                                                                                         
-j/k move  enter open  n new  / search  o owner  s status  c clear  x close  r reopen  ? help  q quit
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ↑↓ move │ ↵ open │ n new │ / search │ o owner │ s status │ c clear │ x close │ ? help │ q quit                         

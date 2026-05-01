@@ -1,14 +1,30 @@
-kata                                                                                                                    
-SSE: connected · 0 pending events                                                                                       
+ kata かた                                                                                                              
 #42 · open · wesm
 fix login bug on Safari
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Reproduces in Safari 17 only.
 Click the login button twice.
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Comments (2)  Events (2)  [ Links (1) ]
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-[blocks] → #7 ← #42  by wesm @ 2026-04-30 10:00
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                                                                                                                         
-j/k move  tab next  shift+tab prev  enter jump  esc back  e edit  c comment  x close  + label  a owner  ? help  q quit
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+Comments (2)  Events (2)  [ Links (1) ]
+[blocks] → #7 ← #42  by wesm @ 2026-04-30 10:00
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ↑↓ move │ ↹ tab │ ↵ jump │ esc back │ e edit │ c comment │ x close │ + label │ a owner │ ? help │ q quit               

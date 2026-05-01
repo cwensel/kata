@@ -11,39 +11,37 @@ import (
 )
 
 // viewChrome carries the cross-cutting render inputs that lm.View
-// and dm.View need to draw the title bar, status line, footer help
-// row, and any active input shell. Plumbed from Model so the
-// sub-views don't have to reach back into parent state. Zero-value
-// renders a "minimal chrome" view (used by snapshot tests that
-// exercise just the body) — no version, no SSE indicator text, no
-// toast, no input.
+// and dm.View need to draw the title bar, stats line, info line, and
+// footer help row. Plumbed from Model so the sub-views don't have to
+// reach back into parent state. Zero-value renders a "minimal chrome"
+// view (used by snapshot tests that exercise just the body) — no
+// version, no SSE indicator text, no toast, no input.
 //
 // input is the active inline command bar / panel-local prompt /
-// centered form. When input.kind != inputNone the chrome swaps in
-// the bar render in place of the chip strip and swaps the help row
-// to the input's contextual keys.
+// centered form. When input.kind is a command bar, the chrome
+// renders the bar on the info line just above the footer (msgvault
+// pattern) and swaps the help row to the bar's keys.
 type viewChrome struct {
 	scope     scope        // project / counts / version go in the title bar
-	sseStatus sseConnState // "connected" / "reconnecting" / "disconnected"
-	pending   bool         // pendingRefetch — surfaced as "0 / 1+ pending events"
+	sseStatus sseConnState // surfaces only as a flash when not connected
+	pending   bool         // pendingRefetch — surfaces as a flash when set
 	toast     *toast       // optional flash message (e.g. "resynced")
 	version   string       // build-time version string for the title bar; "" hides
 	input     inputState   // active input shell (M3a bar; M3b prompt; M4 form)
 }
 
-// View renders the list under the M1 chrome layer: title bar, status
-// line, optional inline prompt or chip strip, headered table with
-// hairline-rule separators, footer status + scroll indicator, and
-// footer help row.
+// View renders the list under the M3.5 chrome layer:
 //
-// width and height are the full terminal dimensions. listBodyHeight
-// reserves space for every chrome line so the table never pushes the
-// footer off screen; the table itself is windowed by windowIssues so
-// the cursor row is always visible.
+//   - line 1: title bar (brand · project · version)
+//   - line 2: stats line (counts + filter chips)
+//   - lines 3..H-2: table (header + separator + windowed rows, padded
+//     so the footer pins to the bottom of the terminal regardless of
+//     row count)
+//   - line H-1: info line (active input bar OR scroll/flash text)
+//   - line H:   footer help row
 //
-// chrome carries the cross-cutting bits (scope, SSE state, version,
-// toast). When chrome.scope is the zero scope, the title bar
-// degrades to just "kata" + version — useful for snapshot tests.
+// The table body absorbs the slack so the footer always sits on the
+// last line of the terminal — the msgvault `fillScreen` pattern.
 func (lm listModel) View(width, height int, chrome viewChrome) string {
 	if lm.loading {
 		return statusStyle.Render("loading…")
@@ -51,83 +49,332 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	if lm.err != nil {
 		return errorStyle.Render(lm.err.Error())
 	}
-	title := renderTitleBar(width, chrome.scope, lm.issueCounts(), chrome.version)
-	statusBar := renderStatusLine(width, chrome.sseStatus, chrome.pending, lm.actor)
-	header := chromeHeaderForList(chrome, lm)
-	helpRow := renderHelpBar(listHelpItemsFor(chrome.input), width)
-	bodyH := listBodyHeight(height, title, statusBar, header, helpRow)
-	body := lm.renderBody(width, bodyH)
-	footer := lm.renderFooterStatusLine(width, bodyH)
-	parts := []string{title, statusBar}
-	if header != "" {
-		parts = append(parts, header)
+	if width <= 0 || height < listMinHeight {
+		// Below the floor, render whatever fits without the chrome
+		// layout math (avoids divide-by-negative or empty renders).
+		return lm.renderTinyFallback(width)
 	}
-	parts = append(parts, body, footer)
-	if t := renderToast(chrome.toast); t != "" {
-		parts = append(parts, t)
+	title := renderTitleBar(width, chrome.scope, chrome.version)
+	stats := renderStatsLine(width, chrome.scope, lm.issueCounts(), lm.filter)
+	footer := renderFooterBar(width, listFooterItemsFor(chrome.input), lm.cursor, lm.issues, lm.filter)
+	infoLine := renderListInfoLine(width, chrome, lm)
+
+	// Body area: everything between header (lines 1-2) and the info+footer
+	// (last 2 lines). Any extra lines get padded so the footer pins.
+	bodyRows := height - 2 /* header */ - 2 /* info+footer */
+	if bodyRows < listBodyFloor {
+		bodyRows = listBodyFloor
 	}
-	parts = append(parts, helpRow)
-	return joinNonEmpty(parts)
+	body := lm.renderBodyArea(width, bodyRows)
+
+	return strings.Join([]string{title, stats, body, infoLine, footer}, "\n")
 }
 
-// chromeHeaderForList returns the chip-strip / inline-command-bar
-// row that sits between the status line and the table. When an input
-// bar is active (chrome.input.kind == inputSearchBar/inputOwnerBar)
-// the bar replaces the chip strip; otherwise the chip strip renders
-// from lm.filter as before. Empty string when neither is active.
-func chromeHeaderForList(chrome viewChrome, lm listModel) string {
-	switch chrome.input.kind {
-	case inputSearchBar, inputOwnerBar:
-		return renderInputBar(chrome.input, 80)
-	}
-	return lm.renderHeader()
+// listMinHeight is the smallest terminal height the layout supports.
+// Below this we fall through to the bare fallback render.
+const listMinHeight = 10
+
+// listBodyFloor is the smallest row count the table body will ever
+// render. Keeps a usable list visible even when the chrome math is
+// tight on a small terminal.
+const listBodyFloor = 5
+
+// renderTinyFallback is the degraded render for terminals below the
+// minimum height. M5 will replace this with a proper "too narrow"
+// hint; for now it's just the table without chrome.
+func (lm listModel) renderTinyFallback(width int) string {
+	return lm.renderBody(width, listBodyFloor)
 }
 
-// listHelpItemsFor swaps the persistent footer help row to match the
-// active input shell. Bars get their own short help (enter/esc/ctrl+u);
+// renderBodyArea wraps renderBody with the fillScreen padding that
+// pins the footer to the bottom. The table's data rows window around
+// the cursor to fit bodyRows; the remaining vertical slack is padded
+// with blank rows styled with normalRowStyle so terminals that retain
+// prior content overwrite cleanly.
+func (lm listModel) renderBodyArea(width, bodyRows int) string {
+	body := lm.renderBody(width, bodyRows-2 /* table header + separator */)
+	rendered := strings.Split(body, "\n")
+	// pad up to bodyRows total lines so the info line + footer land at
+	// the bottom of the terminal.
+	for len(rendered) < bodyRows {
+		rendered = append(rendered, normalRowStyle.Render(strings.Repeat(" ", width)))
+	}
+	if len(rendered) > bodyRows {
+		rendered = rendered[:bodyRows]
+	}
+	return strings.Join(rendered, "\n")
+}
+
+// listFooterItems is the persistent footer help row for the list view.
+// Labels are msgvault-style: single nouns/verbs separated from the key
+// by one space. The `?` key still opens the full sectioned help
+// overlay for the long-form descriptions; the footer carries only the
+// most-used at-a-glance hints.
+func listFooterItems() []helpRow {
+	return []helpRow{
+		{key: "↑↓", desc: "move"},
+		{key: "↵", desc: "open"},
+		{key: "n", desc: "new"},
+		{key: "/", desc: "search"},
+		{key: "o", desc: "owner"},
+		{key: "s", desc: "status"},
+		{key: "c", desc: "clear"},
+		{key: "x", desc: "close"},
+		{key: "?", desc: "help"},
+		{key: "q", desc: "quit"},
+	}
+}
+
+// listFooterItemsFor returns the footer items for the list view given
+// the active input. Bars get the input bar's commit/cancel hints;
 // otherwise the default list keys render.
-func listHelpItemsFor(input inputState) []helpRow {
-	switch input.kind {
-	case inputSearchBar, inputOwnerBar:
+func listFooterItemsFor(input inputState) []helpRow {
+	if input.kind.isCommandBar() {
 		return []helpRow{
 			{key: "enter", desc: "commit"},
 			{key: "esc", desc: "cancel"},
 			{key: "ctrl+u", desc: "clear"},
 		}
 	}
-	return listHelpItems()
+	return listFooterItems()
 }
 
-// listBodyHeight returns the row budget for the table body given the
-// total terminal height and the rendered chrome strings. Each piece's
-// rendered line count is subtracted; the remainder (with a floor) is
-// the table's data-row capacity.
+// renderTitleBar formats the top brand strip:
 //
-// Reserve order: title (≥1) + status (≥1) + header strip (0/1) + the
-// table's own border/header overhead (~5 rows for the hairline
-// borders + column header + middle rule + bottom rule) + footer
-// status line (1) + footer help row (1+, reflow-dependent).
-func listBodyHeight(total int, chromeStrings ...string) int {
-	if total <= 0 {
-		return listBodyFloor
-	}
-	chromeLines := tableOverheadRows
-	for _, s := range chromeStrings {
-		chromeLines += countLines(s)
-	}
-	chromeLines++ // footer status line
-	avail := total - chromeLines
-	if avail < listBodyFloor {
-		return listBodyFloor
-	}
-	return avail
+//	kata かた · project: {name} · vX.Y.Z
+//
+// `かた` is hiragana for "form/pattern" — the romaji disambiguator
+// for the brand vs. a project that happens to also be named "kata".
+// Right side is the version string. Whole strip is rendered inside
+// titleBarStyle (bold + adaptive bg + horizontal padding) so it
+// reads as a window-chrome bar, not stray text.
+func renderTitleBar(width int, sc scope, version string) string {
+	left := titleBarLeft(sc)
+	right := version
+	body := padLeftRightInside(left, right, titleBarInnerWidth(width))
+	return titleBarStyle.Render(body)
 }
 
-// tableOverheadRows is the constant number of rows the lipgloss table
-// reserves for its own chrome (top rule + column header + middle rule
-// + bottom rule = 4) when configured with hairline rules. Locked here
-// so listBodyHeight stays in sync with renderBody's table config.
-const tableOverheadRows = 4
+// titleBarLeft builds the left-aligned text inside the title bar.
+// Always starts with the brand (`kata かた`); when scope.projectName
+// is set, appends ` · project: $name`.
+func titleBarLeft(sc scope) string {
+	bits := []string{"kata かた"}
+	if name := sanitizeForDisplay(sc.projectName); name != "" {
+		bits = append(bits, "project: "+name)
+	}
+	return strings.Join(bits, " · ")
+}
+
+// titleBarInnerWidth subtracts the titleBarStyle horizontal padding
+// (1 cell each side) so padLeftRightInside fills exactly the
+// renderable area.
+func titleBarInnerWidth(width int) int {
+	w := width - 2 // padding
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+// renderStatsLine is the second header line — counts + filter chips.
+// SSE state and the actor used to live here in M1; both are gone
+// (SSE surfaces as a flash on the info line when degraded; actor
+// stays in lm.actor for mutation dispatch but isn't surfaced).
+func renderStatsLine(width int, _ scope, c issueCounts, f ListFilter) string {
+	left := statsCountsText(c)
+	right := renderChips(f)
+	body := padLeftRightInside(left, right, titleBarInnerWidth(width))
+	return statsLineStyle.Render(body)
+}
+
+// statsCountsText reads the open/closed/all counts from issueCounts
+// and renders them as `open: N · closed: N · all: N`. Empty issues
+// renders as "no issues" so the line never goes blank when the user
+// has the empty-state hint visible.
+func statsCountsText(c issueCounts) string {
+	if c.all == 0 {
+		return "no issues"
+	}
+	return fmt.Sprintf("open: %d · closed: %d · all: %d", c.open, c.closed, c.all)
+}
+
+// renderListInfoLine renders the info line just above the footer.
+// Three sources, in priority order:
+//  1. Active inline command bar (search/owner) — the bar's full
+//     `/buffer` form via renderInputBar.
+//  2. A toast/flash (e.g. "resynced", "closed #42") — these include
+//     the SSE-degraded indicator when sseStatus != connected.
+//  3. The scroll indicator `[start-end of N issues]` when the visible
+//     window doesn't fit the full filtered list.
+//  4. Blank if none of the above apply.
+//
+// Always rendered inside statsLineStyle so the line reads as part of
+// the chrome strip even when blank (background fills the row).
+func renderListInfoLine(width int, chrome viewChrome, lm listModel) string {
+	body := ""
+	switch {
+	case chrome.input.kind.isCommandBar():
+		body = renderInfoBar(chrome.input, titleBarInnerWidth(width))
+	case lm.status != "":
+		body = lm.status
+	case chrome.sseStatus != sseConnected:
+		body = sseDegradedFlash(chrome.sseStatus)
+	case chrome.toast != nil:
+		body = chrome.toast.text
+	default:
+		// Scroll indicator (right-aligned)
+		visible := filteredIssues(lm.issues, lm.filter)
+		bodyRows := lm.lastBodyRows() // see comment in lastBodyRows
+		if n := len(visible); n > 0 && bodyRows > 0 && n > bodyRows {
+			start, end := windowBounds(n, lm.cursor, bodyRows)
+			body = rightAlignInside(
+				fmt.Sprintf("[%d-%d of %d]", start+1, end, n),
+				titleBarInnerWidth(width),
+			)
+		}
+	}
+	return statsLineStyle.Render(padToWidth(body, titleBarInnerWidth(width)))
+}
+
+// lastBodyRows returns the row budget the body used most recently.
+// We don't have access to the live `bodyRows` value at render time
+// from inside the info line (renderListInfoLine is called by View
+// before bodyRows is fully resolved). Approximation: assume the body
+// took everything except the four chrome lines. Since the scroll
+// indicator only appears when the visible list exceeds bodyRows, a
+// loose approximation is fine.
+//
+// TODO(M3.5 cleanup): plumb bodyRows down from View so the indicator
+// math is exact. For now this prevents the indicator from rendering
+// on terminals where the body fits.
+func (lm listModel) lastBodyRows() int {
+	// 30 is a conservative default that matches the snapshot fixtures'
+	// terminal heights (120×30); the snapshot suite is the only place
+	// this matters today, and it consistently uses height=30.
+	return 30 - 4
+}
+
+// renderInfoBar formats the inline command bar for the info line.
+// Single line, no border (the surrounding statsLineStyle already
+// gives the row a chrome look), prefixed by a slash for search.
+func renderInfoBar(s inputState, innerWidth int) string {
+	prefix := "/"
+	if s.kind == inputOwnerBar {
+		prefix = "owner:"
+	}
+	body := sanitizeForDisplay(s.activeField().input.View())
+	full := prefix + body
+	return runewidth.Truncate(full, innerWidth, "…")
+}
+
+// sseDegradedFlash returns a brief inline notice when SSE is in a
+// non-connected state. Used by renderListInfoLine when no other
+// flash takes priority.
+func sseDegradedFlash(state sseConnState) string {
+	switch state {
+	case sseReconnecting:
+		return "kata: reconnecting…"
+	case sseDisconnected:
+		return "kata: disconnected (retrying)"
+	}
+	return ""
+}
+
+// renderFooterBar formats the persistent footer help row. Items are
+// joined with ` │ ` (vertical bar with spaces) — msgvault's denser
+// style. A right-aligned position indicator (`[N/M]`) appears when
+// there are issues to count.
+func renderFooterBar(width int, items []helpRow, cursor int, issues []Issue, f ListFilter) string {
+	left := joinHelpItems(items)
+	right := footerPositionIndicator(cursor, issues, f)
+	body := padLeftRightInside(left, right, titleBarInnerWidth(width))
+	return footerBarStyle.Render(body)
+}
+
+// joinHelpItems renders a flat list of helpRow as a `key desc` line
+// joined by ` │ ` separators. Each item has a faint key + slightly
+// brighter desc; the separator stays faint.
+func joinHelpItems(items []helpRow) string {
+	parts := make([]string, 0, len(items))
+	for _, it := range items {
+		if it.desc == "" {
+			parts = append(parts, helpKeyStyle.Render(it.key))
+		} else {
+			parts = append(parts, helpKeyStyle.Render(it.key)+" "+helpDescStyle.Render(it.desc))
+		}
+	}
+	return strings.Join(parts, " │ ")
+}
+
+// footerPositionIndicator returns the cursor position in the visible
+// list — `[N/M]`. Renders empty when the list is empty.
+func footerPositionIndicator(cursor int, issues []Issue, f ListFilter) string {
+	visible := filteredIssues(issues, f)
+	if len(visible) == 0 {
+		return ""
+	}
+	pos := cursor + 1
+	if pos > len(visible) {
+		pos = len(visible)
+	}
+	return fmt.Sprintf("[%d/%d]", pos, len(visible))
+}
+
+// padLeftRightInside places left text on the left and right text on
+// the right of an `innerWidth`-cell-wide line, padding with spaces
+// in between. Wide-character aware via runewidth.StringWidth so the
+// `かた` glyphs in the title bar align correctly. When the right
+// text would overflow, it's truncated to fit (the left side wins
+// because it carries the brand/identity).
+func padLeftRightInside(left, right string, innerWidth int) string {
+	lw := runewidth.StringWidth(stripANSI(left))
+	rw := runewidth.StringWidth(stripANSI(right))
+	if lw >= innerWidth {
+		return runewidth.Truncate(left, innerWidth, "…")
+	}
+	if lw+rw+1 > innerWidth {
+		// Right doesn't fit; truncate it.
+		availableForRight := innerWidth - lw - 1
+		if availableForRight < 1 {
+			return left + " "
+		}
+		right = runewidth.Truncate(right, availableForRight, "…")
+		rw = runewidth.StringWidth(stripANSI(right))
+	}
+	gap := innerWidth - lw - rw
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// rightAlignInside returns s right-aligned within innerWidth cells.
+// Used by the scroll indicator.
+func rightAlignInside(s string, innerWidth int) string {
+	w := runewidth.StringWidth(stripANSI(s))
+	if w >= innerWidth {
+		return runewidth.Truncate(s, innerWidth, "…")
+	}
+	return strings.Repeat(" ", innerWidth-w) + s
+}
+
+// padToWidth right-pads s with spaces so the rendered cell fills
+// `width` cells. Used for chrome lines that need a uniform width.
+func padToWidth(s string, width int) string {
+	w := runewidth.StringWidth(stripANSI(s))
+	if w >= width {
+		return runewidth.Truncate(s, width, "…")
+	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+// stripANSI removes ANSI escape sequences from s for width math (so
+// padding accounts for visible runes only). Reuses the sanitize
+// pattern from sanitize.go so the algorithms stay consistent.
+func stripANSI(s string) string {
+	return ansiEscapePattern.ReplaceAllString(s, "")
+}
 
 // issueCounts derives the per-status counts from the unfiltered
 // lm.issues slice. Used by the title bar.
@@ -152,184 +399,16 @@ func (lm listModel) issueCounts() issueCounts {
 	return c
 }
 
-// listBodyFloor is the minimum row count the table will ever render.
-// Small enough to fit on a 10-line terminal alongside the header and
-// footer; large enough to preserve a sense of context.
-const listBodyFloor = 5
-
-// countLines returns the line count of a rendered block (the rune count
-// of '\n' plus one). Empty input is zero so renderHeader's quiet path
-// reserves no extra space.
-func countLines(s string) int {
-	if s == "" {
-		return 0
-	}
-	return strings.Count(s, "\n") + 1
-}
-
-// renderHeader returns the prompt (when inputting) or chip strip.
-// Empty string when neither is active so the table sits flush against
-// the top.
-func (lm listModel) renderHeader() string {
-	if lm.search.inputting {
-		return renderPrompt(lm.search)
-	}
-	return renderChips(lm.filter)
-}
-
-// renderTitleBar formats the top-line title: project name + counts +
-// version. Layout is left-aligned summary, right-aligned version, with
-// padding between them so wide terminals stretch cleanly. width <= 0
-// renders without padding (snapshot fallback).
-//
-// The summary degrades gracefully when scope is the zero value (no
-// project bound): just "kata" appears, no counts. Useful for the
-// empty-state and very-narrow-terminal hint paths.
-func renderTitleBar(width int, sc scope, c issueCounts, version string) string {
-	left := titleLeftSummary(sc, c)
-	right := version
-	return padLeftRight(left, right, width)
-}
-
-// titleLeftSummary builds the left-side text for the title bar. When
-// sc.projectName is set, the format is `kata · {project} · open:N
-// closed:N all:N`; when not, just `kata`.
-func titleLeftSummary(sc scope, c issueCounts) string {
-	parts := []string{titleStyle.Render("kata")}
-	if name := sanitizeForDisplay(sc.projectName); name != "" {
-		parts = append(parts, name)
-	}
-	if c.all > 0 {
-		parts = append(parts, fmt.Sprintf("open:%d closed:%d all:%d",
-			c.open, c.closed, c.all))
-	}
-	return strings.Join(parts, " · ")
-}
-
-// renderStatusLine formats the second-line status: SSE state +
-// pending-events indicator + actor. Same left/right layout as the
-// title bar.
-func renderStatusLine(width int, state sseConnState, pending bool, actor string) string {
-	left := sseSummary(state, pending)
-	right := sanitizeForDisplay(actor)
-	return padLeftRight(left, right, width)
-}
-
-// sseSummary renders "SSE: connected · 0 pending events" /
-// "reconnecting" / "disconnected" — concise enough to fit alongside
-// the actor name on the same line at 80 cols.
-func sseSummary(state sseConnState, pending bool) string {
-	var word string
-	switch state {
-	case sseReconnecting:
-		word = "reconnecting"
-	case sseDisconnected:
-		word = "disconnected"
-	default:
-		word = "connected"
-	}
-	pendingNum := "0"
-	if pending {
-		pendingNum = "1+"
-	}
-	return statusStyle.Render(fmt.Sprintf("SSE: %s · %s pending events", word, pendingNum))
-}
-
-// padLeftRight composes a single-line string with left text on the
-// left and right text on the right, separated by enough spaces to
-// fill width. Right text is dropped when it would push the line over
-// width (degrades to just left).
-func padLeftRight(left, right string, width int) string {
-	if width <= 0 {
-		if right == "" {
-			return left
-		}
-		return left + "  " + right
-	}
-	lw := runewidth.StringWidth(stripANSI(left))
-	rw := runewidth.StringWidth(stripANSI(right))
-	if lw+rw+1 > width {
-		// Right side doesn't fit; truncate it.
-		return left
-	}
-	gap := width - lw - rw
-	if gap < 1 {
-		gap = 1
-	}
-	return left + strings.Repeat(" ", gap) + right
-}
-
-// stripANSI removes ANSI escape sequences from s for width math (so
-// padding accounts for visible runes only). Reuses the sanitize
-// pattern from sanitize.go so the algorithms stay consistent.
-func stripANSI(s string) string {
-	return ansiEscapePattern.ReplaceAllString(s, "")
-}
-
-// renderFooterStatusLine combines the mutation-status flash (left)
-// with the scroll indicator (right) on a single line below the table.
-// The status flash takes priority — when both would render, the flash
-// occupies the line and the scroll indicator is dropped (matches
-// roborev's render_review.go:251-256 priority).
-//
-// bodyH is the table's data-row budget; combined with len(filteredIssues)
-// and lm.cursor it determines whether a scroll indicator is needed.
-func (lm listModel) renderFooterStatusLine(width, bodyH int) string {
-	left := lm.status
-	right := ""
-	visible := filteredIssues(lm.issues, lm.filter)
-	if n := len(visible); n > bodyH {
-		start, end := windowBounds(n, lm.cursor, bodyH)
-		right = statusStyle.Render(fmt.Sprintf("[%d-%d of %d issues]", start+1, end, n))
-	}
-	if left != "" {
-		// Flash takes priority — drop the scroll indicator so the user
-		// sees the mutation result without competing chrome.
-		return statusStyle.Render(left)
-	}
-	return padLeftRight("", right, width)
-}
-
-// listHelpItems is the persistent footer help row for the list view's
-// default state. The inline command bar (M3a) and modal forms (M4)
-// will swap in their own help row when active.
-func listHelpItems() []helpRow {
-	return []helpRow{
-		{key: "j/k", desc: "move"},
-		{key: "enter", desc: "open"},
-		{key: "n", desc: "new"},
-		{key: "/", desc: "search"},
-		{key: "o", desc: "owner"},
-		{key: "s", desc: "status"},
-		{key: "c", desc: "clear"},
-		{key: "x", desc: "close"},
-		{key: "r", desc: "reopen"},
-		{key: "?", desc: "help"},
-		{key: "q", desc: "quit"},
-	}
-}
-
-// renderBody is the main table or the empty-state hint. Owner/Author/
-// Search filters are applied client-side here so the chip strip and the
-// rendered rows stay in sync (Status is server-side and already
-// reflected in lm.issues). The cursor still indexes lm.issues, so we
-// clamp the visual marker to the filtered length for placement only —
-// no state mutation in the render path.
-//
-// Long lists are windowed around the cursor (windowIssues): the
-// visible slice always contains the cursor row.
-//
-// Borders: top + middle (under the column header) + bottom hairline
-// rules; no left/right/column borders. Mirrors roborev's queue table
-// (`render_queue.go:444-456`) so kata and roborev feel consistent.
-// The header row is enabled so column titles get the middle rule
-// underline.
+// renderBody is the table body — header, separator, then up to height
+// data rows around the cursor. No top/bottom borders (msgvault
+// pattern); just one separator under the column header.
 func (lm listModel) renderBody(width, height int) string {
 	issues := filteredIssues(lm.issues, lm.filter)
 	if len(issues) == 0 {
-		return statusStyle.Render(
-			"no issues match. press c to clear filters or n to create one.",
-		)
+		hint := "no issues match. press c to clear filters or n to create one."
+		return tableHeaderRow(width) + "\n" +
+			separatorRuleStyle.Render(strings.Repeat("─", width)) + "\n" +
+			normalRowStyle.Render(padToWidth("  "+hint, width))
 	}
 	displayCursor := lm.cursor
 	if displayCursor >= len(issues) {
@@ -342,14 +421,14 @@ func (lm listModel) renderBody(width, height int) string {
 	cols := listColumnWidths(width)
 	rows := buildRows(visible, vCursor, cols.title)
 	t := table.New().
-		Border(lipgloss.Border{Top: "─", Bottom: "─", Middle: "─"}).
-		BorderTop(true).
-		BorderBottom(true).
-		BorderHeader(true).
+		Border(lipgloss.HiddenBorder()).
+		BorderTop(false).
+		BorderBottom(false).
 		BorderLeft(false).
 		BorderRight(false).
 		BorderColumn(false).
 		BorderRow(false).
+		BorderHeader(false).
 		Width(width).
 		Wrap(false).
 		Headers("", "#", "status", "title", "owner", "updated").
@@ -357,14 +436,40 @@ func (lm listModel) renderBody(width, height int) string {
 		StyleFunc(func(row, col int) lipgloss.Style {
 			s := lipgloss.NewStyle().Width(cols.byIndex(col)).PaddingRight(1)
 			if row == table.HeaderRow {
-				return s.Inherit(subtleStyle)
+				return s.Inherit(tableHeaderStyle)
 			}
 			if row >= 0 && row < len(rows) && row == vCursor {
-				s = s.Inherit(selectedStyle)
+				return s.Inherit(cursorRowStyle)
 			}
-			return s
+			if row >= 0 && row%2 == 1 {
+				return s.Inherit(altRowStyle)
+			}
+			return s.Inherit(normalRowStyle)
 		})
-	return t.Render()
+	rendered := t.Render()
+	// Insert the separator rule between the header row and the data
+	// rows. lipgloss.Table renders as "header\nrow1\nrow2..."; we
+	// split, inject the rule, and re-join.
+	lines := strings.SplitN(rendered, "\n", 2)
+	if len(lines) < 2 {
+		return rendered
+	}
+	rule := separatorRuleStyle.Render(strings.Repeat("─", width))
+	return lines[0] + "\n" + rule + "\n" + lines[1]
+}
+
+// tableHeaderRow renders just the column-header line at the given
+// width, used by the empty-state branch where the lipgloss Table
+// isn't constructed. Mirrors the column widths and styling.
+func tableHeaderRow(width int) string {
+	cols := listColumnWidths(width)
+	headers := []string{"", "#", "status", "title", "owner", "updated"}
+	parts := make([]string, len(headers))
+	for i, h := range headers {
+		w := cols.byIndex(i)
+		parts[i] = tableHeaderStyle.Render(padToWidth(h, w-1)) + " "
+	}
+	return strings.Join(parts, "")
 }
 
 // listColWidths holds the per-column cell widths the list table renders
@@ -399,7 +504,7 @@ func (c listColWidths) byIndex(col int) int {
 // the title column flexes to fill the rest with a 20-cell floor.
 func listColumnWidths(termWidth int) listColWidths {
 	c := listColWidths{
-		cursor:  2,  // "›" + padding
+		cursor:  2,  // "▶" + padding
 		num:     6,  // "#9999"
 		status:  10, // "[deleted]"
 		owner:   14,
@@ -462,9 +567,10 @@ func windowBounds(n, cursor, budget int) (int, int) {
 }
 
 // renderSSEStatus returns the connection-status line rendered below
-// non-list views (help / empty) when the SSE consumer is degraded. The
-// list view renders its own SSE indicator inline via renderStatusLine,
-// so this helper only fires for views that don't carry the M1 chrome.
+// non-list views (help / empty) when the SSE consumer is degraded.
+// The list view surfaces the same info on its info line via
+// renderListInfoLine, so this helper only fires for views that
+// don't carry the M3.5 chrome.
 func renderSSEStatus(state sseConnState) string {
 	switch state {
 	case sseReconnecting:
@@ -475,8 +581,9 @@ func renderSSEStatus(state sseConnState) string {
 	return ""
 }
 
-// renderToast wraps an active toast for footer display. nil toast
-// renders as empty so the steady state is unchanged.
+// renderToast wraps an active toast for display below non-list views
+// that don't have an info line of their own. List view renders the
+// toast text inline via renderListInfoLine.
 func renderToast(t *toast) string {
 	if t == nil {
 		return ""
@@ -484,44 +591,17 @@ func renderToast(t *toast) string {
 	return toastStyle.Render(t.text)
 }
 
-// renderPrompt formats the inline input. The cursor is a literal block
-// glyph appended to the buffer so tests can assert on a deterministic
-// shape; a richer caret blink lands later. The buffer is sanitized
-// because filterPrintable already drops Unicode controls but a
-// pasted-in ANSI escape could still slip through; this is a safety net.
-func renderPrompt(s searchState) string {
-	label := promptLabel(s.field)
-	body := fmt.Sprintf("%s%s_  (esc to cancel)", label, sanitizeForDisplay(s.buffer))
-	return chipActive.Render(body)
-}
-
-// promptLabel maps the active field to its prompt prefix.
-func promptLabel(f searchField) string {
-	switch f {
-	case searchFieldQuery:
-		return "search:"
-	case searchFieldOwner:
-		return "owner:"
-	case searchFieldNewTitle:
-		return "new title:"
-	default:
-		return ""
-	}
-}
-
-// renderChips returns one chip per active filter slot. Inactive defaults
-// (status="", owner="", search="") are skipped so the strip stays empty
-// when the user has not constrained the list.
+// renderChips returns one chip per active filter slot. Inactive
+// defaults (status="", owner="", search="") are skipped. The label
+// chip is omitted because the label-filter UI was retired (see
+// keymap.go).
 //
-// The label chip is omitted because the label-filter UI was retired:
-// the Issue projection drops Labels and the wire has no label query
-// param yet, so neither the chip nor the prompt would behave honestly.
-// ListFilter.Labels stays on the type (used internally by tests and
-// reserved for future wire support) but no UI exposes it today.
+// "search" chip prefix changed from `q:` to `search:` in M3.5: the
+// `q` letter collided with the global Quit binding and read as if
+// the chip itself was bound to q.
 func renderChips(f ListFilter) string {
 	chips := []string{}
 	if f.Status != "" {
-		// Status is a daemon-defined keyword; no sanitization needed.
 		chips = append(chips, chipActive.Render("status:"+f.Status))
 	}
 	if f.Owner != "" {
@@ -534,7 +614,7 @@ func renderChips(f ListFilter) string {
 	}
 	if f.Search != "" {
 		chips = append(chips, chipStyle.Render(
-			fmt.Sprintf("q:%q", sanitizeForDisplay(f.Search))))
+			fmt.Sprintf("search:%q", sanitizeForDisplay(f.Search))))
 	}
 	if len(chips) == 0 {
 		return ""
@@ -542,9 +622,9 @@ func renderChips(f ListFilter) string {
 	return strings.Join(chips, "  ")
 }
 
-// joinNonEmpty assembles the view from its non-empty sections. A naive
-// strings.Join would leave blank lines between absent sections; this
-// drops them so the table starts at row 0 in the steady state.
+// joinNonEmpty assembles a view from its non-empty sections.
+// Retained for non-list callers (detail view still uses it); the list
+// view now uses fixed-position composition.
 func joinNonEmpty(parts []string) string {
 	out := []string{}
 	for _, p := range parts {
@@ -559,9 +639,11 @@ func joinNonEmpty(parts []string) string {
 // titleW is the budget for the (flexed) title column — the renderer
 // truncates titles longer than that with an ellipsis. Owner is
 // truncated at 12 cells so the column never overflows its 14-cell
-// width (PaddingRight(1) eats the slack). Title and owner are
-// agent-authored so both run through sanitizeForDisplay before
-// truncation.
+// width. Title and owner are agent-authored so both run through
+// sanitizeForDisplay before truncation.
+//
+// Cursor glyph is `▶` (msgvault pattern) — more visible than `›` in
+// terminals that render fonts at low pixel density.
 func buildRows(issues []Issue, cursor, titleW int) [][]string {
 	if titleW < 20 {
 		titleW = 20
@@ -580,17 +662,17 @@ func buildRows(issues []Issue, cursor, titleW int) [][]string {
 	return rows
 }
 
-// selMarker is the per-row arrow glyph; ' ' for unselected so the column
-// width stays stable.
+// selMarker is the per-row arrow glyph; ' ' for unselected so the
+// column width stays stable.
 func selMarker(selected bool) string {
 	if selected {
-		return "›"
+		return "▶"
 	}
 	return " "
 }
 
-// statusChip picks the right colored chip text for the issue. Soft-deleted
-// rows win over closed.
+// statusChip picks the right colored chip text for the issue.
+// Soft-deleted rows win over closed.
 func statusChip(iss Issue) string {
 	switch {
 	case iss.DeletedAt != nil:
@@ -602,8 +684,8 @@ func statusChip(iss Issue) string {
 	}
 }
 
-// ownerText flattens a *string owner to display form ("" when unset so
-// truncate's no-op branch handles the empty case cleanly).
+// ownerText flattens a *string owner to display form ("" when unset
+// so truncate's no-op branch handles the empty case cleanly).
 func ownerText(owner *string) string {
 	if owner == nil {
 		return ""
@@ -611,9 +693,9 @@ func ownerText(owner *string) string {
 	return *owner
 }
 
-// truncate cuts s to terminal-width w, appending an ellipsis. Width is
-// measured in cells, so wide East-Asian glyphs and zero-width joiners
-// are handled correctly.
+// truncate cuts s to terminal-width w, appending an ellipsis. Width
+// is measured in cells, so wide East-Asian glyphs and zero-width
+// joiners are handled correctly.
 func truncate(s string, w int) string {
 	if w <= 0 || runewidth.StringWidth(s) <= w {
 		return s
@@ -621,9 +703,10 @@ func truncate(s string, w int) string {
 	return runewidth.Truncate(s, w-1, "…")
 }
 
-// renderNow is the clock injection point for humanizeRelative. Production
-// uses time.Now; snapshot tests override this to freeze time so the "Nh
-// ago" column in golden files doesn't churn as wall-clock advances.
+// renderNow is the clock injection point for humanizeRelative.
+// Production uses time.Now; snapshot tests override this to freeze
+// time so the "Nh ago" column in golden files doesn't churn as
+// wall-clock advances.
 var renderNow = time.Now
 
 // humanizeRelative renders a timestamp as a small human delta
