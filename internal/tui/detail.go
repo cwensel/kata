@@ -53,36 +53,58 @@ func newDetailModel() detailModel { return detailModel{} }
 
 // Update routes detail-view messages: keys (j/k scroll, tab/shift-tab
 // cycle, esc back) and the four fetch messages (issue + three tab
-// projections). The keymap is passed in so Help stays in lockstep.
+// projections). The keymap is passed in so Help stays in lockstep. The
+// fetch-message branches are split into applyFetched so this dispatch
+// stays under the project's cyclomatic ≤8 budget — the listModel.Update
+// shape is mirrored for consistency.
 func (dm detailModel) Update(msg tea.Msg, km keymap) (detailModel, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.KeyMsg:
 		return dm.handleKey(m, km)
+	case detailFetchedMsg, commentsFetchedMsg, eventsFetchedMsg, linksFetchedMsg:
+		return dm.applyFetched(msg), nil
+	}
+	return dm, nil
+}
+
+// applyFetched seeds dm with the payload from one of the four fetched-
+// messages. Errors are last-write-wins (most recent failure surfaces
+// on dm.err); a successful fetch on one tab does not clear an earlier
+// failure on another. mergeErr factors the err handling out so each
+// case is a two-liner and applyFetched stays ≤5 cyclomatic. Task 8
+// refines this to per-tab error chips and can drop mergeErr.
+func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
+	// Last-write-wins for tab errors; Task 8 refines per-tab error chips.
+	switch m := msg.(type) {
 	case detailFetchedMsg:
 		dm.loading = false
-		if m.err != nil {
-			dm.err = m.err
-		}
+		// Defensive: refetch errors arrive with issue=nil. Don't clobber
+		// the populated issue we already display.
 		if m.issue != nil {
 			dm.issue = m.issue
 		}
+		dm.err = mergeErr(dm.err, m.err)
 	case commentsFetchedMsg:
 		dm.comments = m.comments
-		if m.err != nil {
-			dm.err = m.err
-		}
+		dm.err = mergeErr(dm.err, m.err)
 	case eventsFetchedMsg:
 		dm.events = m.events
-		if m.err != nil {
-			dm.err = m.err
-		}
+		dm.err = mergeErr(dm.err, m.err)
 	case linksFetchedMsg:
 		dm.links = m.links
-		if m.err != nil {
-			dm.err = m.err
-		}
+		dm.err = mergeErr(dm.err, m.err)
 	}
-	return dm, nil
+	return dm
+}
+
+// mergeErr keeps the last non-nil error so a successful fetch on one
+// tab does not clear an earlier failure on another. Task 8 swaps the
+// single-err model for per-tab chips and mergeErr can go away.
+func mergeErr(prev, next error) error {
+	if next != nil {
+		return next
+	}
+	return prev
 }
 
 // handleKey dispatches the four bindings the detail view consumes:

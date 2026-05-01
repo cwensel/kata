@@ -137,6 +137,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // parallel so the user sees data on whichever tab is active first.
 func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	iss := msg.issue
+	// Reset on open is the spec — no per-issue scroll memory.
 	m.detail = newDetailModel()
 	m.detail.issue = &iss
 	m.view = viewDetail

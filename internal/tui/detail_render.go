@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
 )
@@ -118,13 +119,21 @@ func wrapBody(s string, width int) []string {
 // hardWrap breaks s into chunks no wider than width cells. We walk one
 // rune at a time and emit a chunk whenever the cell width crosses the
 // limit — runewidth.Truncate alone would drop the tail; the loop keeps
-// it as the next chunk.
+// it as the next chunk. When the leading rune itself is wider than
+// width (e.g. a CJK glyph at width=1), Truncate returns "" because no
+// rune fits; we emit that single oversize rune as its own chunk and
+// advance so the loop terminates.
 func hardWrap(s string, width int) []string {
 	out := []string{}
 	for runewidth.StringWidth(s) > width {
 		head := runewidth.Truncate(s, width, "")
 		if head == "" {
-			break
+			// First rune is wider than `width` — emit it as oversize and
+			// advance one rune so we make progress.
+			_, sz := utf8.DecodeRuneInString(s)
+			out = append(out, s[:sz])
+			s = s[sz:]
+			continue
 		}
 		out = append(out, head)
 		s = s[len(head):]

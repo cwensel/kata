@@ -281,6 +281,18 @@ func TestDetail_HardWrap(t *testing.T) {
 	}
 }
 
+// TestDetail_HardWrap_OversizeRune confirms the wrapper makes progress
+// when the leading rune is wider than the requested width. Each CJK
+// glyph here has display width 2 but width=1, so runewidth.Truncate
+// returns "" on every iteration; the oversize-rune branch must emit
+// each character as its own chunk rather than dumping the remainder.
+func TestDetail_HardWrap_OversizeRune(t *testing.T) {
+	got := hardWrap("你好世界", 1)
+	if len(got) != 4 {
+		t.Fatalf("expected 4 chunks, got %d: %v", len(got), got)
+	}
+}
+
 // fakeDetailAPI is the test double for detailAPI used by the fetch-cmd
 // tests. The exported fields seed the return values; the *Calls fields
 // count invocations so concurrency tests can assert exactly N hits.
