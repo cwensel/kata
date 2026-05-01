@@ -41,8 +41,6 @@ type runRecord struct {
 // fills these from DispatcherDeps + its own per-instance state.
 type runDeps struct {
 	OutputDir   string
-	KataHome    string
-	DBHash      string
 	DaemonLog   *log.Logger
 	Now         func() time.Time
 	GraceWindow time.Duration
@@ -53,77 +51,150 @@ type runDeps struct {
 	AppendRun   func(runRecord)
 }
 
-func runJob(ctx context.Context, shutdown <-chan struct{}, job HookJob, deps runDeps) {
-	startedAt := deps.Now()
-	outPath := filepath.Join(deps.OutputDir, fmt.Sprintf("%d.%d.out", job.Event.ID, job.Hook.Index))
-	errPath := filepath.Join(deps.OutputDir, fmt.Sprintf("%d.%d.err", job.Event.ID, job.Hook.Index))
+// runContext holds the per-invocation state of one hook job. Methods on
+// runContext encapsulate finalization and cleanup so runJob stays a
+// short orchestrator.
+type runContext struct {
+	job       HookJob
+	deps      runDeps
+	outFile   *os.File
+	errFile   *os.File
+	outPath   string
+	errPath   string
+	startedAt time.Time
+}
 
-	outFile, oErr := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // G304: path is OutputDir + int64.int filename, daemon-controlled
-	errFile, eErr := os.OpenFile(errPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // G304: path is OutputDir + int64.int filename, daemon-controlled
+func newRunContext(job HookJob, deps runDeps) *runContext {
+	return &runContext{
+		job:       job,
+		deps:      deps,
+		outPath:   filepath.Join(deps.OutputDir, fmt.Sprintf("%d.%d.out", job.Event.ID, job.Hook.Index)),
+		errPath:   filepath.Join(deps.OutputDir, fmt.Sprintf("%d.%d.err", job.Event.ID, job.Hook.Index)),
+		startedAt: deps.Now(),
+	}
+}
+
+// openOutputFiles creates the .out and .err capture files. On any
+// failure both files are closed and the error includes context for
+// both opens so the spawn_failed record carries diagnostics.
+func (rc *runContext) openOutputFiles() error {
+	outFile, oErr := os.OpenFile(rc.outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // G304: path is OutputDir + int64.int filename, daemon-controlled
+	errFile, eErr := os.OpenFile(rc.errPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // G304: path is OutputDir + int64.int filename, daemon-controlled
 	if oErr != nil || eErr != nil {
-		if outFile != nil {
-			_ = outFile.Close()
+		_ = closeFile(outFile)
+		_ = closeFile(errFile)
+		return fmt.Errorf("open output files: out=%v err=%v", oErr, eErr)
+	}
+	rc.outFile = outFile
+	rc.errFile = errFile
+	return nil
+}
+
+// closeFiles is a best-effort cleanup safety net; finalize() is the
+// authoritative finalizer. After finalize runs, outFile and errFile
+// are nil and these calls become no-ops.
+func (rc *runContext) closeFiles() {
+	_ = closeFile(rc.outFile)
+	_ = closeFile(rc.errFile)
+}
+
+// finalize closes the capture files (so on-disk size is final),
+// stat's them, and emits the runRecord.
+func (rc *runContext) finalize(result, spawnErr string, exitCode int, payloadTruncated bool) {
+	// Close before stat'ing so the on-disk size is final.
+	_ = closeFile(rc.outFile)
+	_ = closeFile(rc.errFile)
+	rc.outFile = nil
+	rc.errFile = nil
+
+	var outBytes, errBytes int64
+	if st, err := os.Stat(rc.outPath); err == nil {
+		outBytes = st.Size()
+	}
+	if st, err := os.Stat(rc.errPath); err == nil {
+		errBytes = st.Size()
+	}
+	ended := rc.deps.Now()
+	rc.deps.AppendRun(runRecord{
+		Version:          1,
+		EventID:          rc.job.Event.ID,
+		EventType:        rc.job.Event.Type,
+		HookIndex:        rc.job.Hook.Index,
+		HookCommand:      rc.job.Hook.Command,
+		StartedAt:        rc.startedAt.UTC().Format(time.RFC3339Nano),
+		EndedAt:          ended.UTC().Format(time.RFC3339Nano),
+		DurationMS:       ended.Sub(rc.startedAt).Milliseconds(),
+		ExitCode:         exitCode,
+		Result:           result,
+		StdoutPath:       rc.outPath,
+		StderrPath:       rc.errPath,
+		StdoutBytes:      outBytes,
+		StderrBytes:      errBytes,
+		SpawnError:       spawnErr,
+		PayloadTruncated: payloadTruncated,
+	})
+}
+
+func closeFile(f *os.File) error {
+	if f == nil {
+		return nil
+	}
+	return f.Close()
+}
+
+// classifyWorkingDir checks fire-time existence/type of the working
+// dir and translates failures into runRecord result/spawn_error
+// strings. Returns ("", "") if the directory is usable. Distinct from
+// the config-load-time validateWorkingDir (which only checks shape).
+func classifyWorkingDir(path string) (result, spawnErr string) {
+	st, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "working_dir_missing", err.Error()
 		}
-		if errFile != nil {
-			_ = errFile.Close()
-		}
-		deps.AppendRun(runRecord{
-			Version:     1,
-			EventID:     job.Event.ID,
-			EventType:   job.Event.Type,
-			HookIndex:   job.Hook.Index,
-			HookCommand: job.Hook.Command,
-			StartedAt:   startedAt.UTC().Format(time.RFC3339Nano),
-			EndedAt:     deps.Now().UTC().Format(time.RFC3339Nano),
-			ExitCode:    -1,
-			Result:      "spawn_failed",
-			SpawnError:  fmt.Sprintf("open output files: out=%v err=%v", oErr, eErr),
-		})
+		return "spawn_failed", err.Error()
+	}
+	if !st.IsDir() {
+		return "spawn_failed", "working_dir is not a directory"
+	}
+	return "", ""
+}
+
+// waitForCompletion owns the doneCh goroutine, the timeout timer, and
+// the 3-way select between normal exit, timeout, and daemon shutdown.
+// On timeout/shutdown branches it kills the process group with grace
+// and drains doneCh so the wait goroutine exits cleanly.
+func waitForCompletion(cmd *exec.Cmd, timeout time.Duration, shutdown <-chan struct{}, deps runDeps) (result string, exitCode int) {
+	doneCh := make(chan error, 1)
+	go func() { doneCh <- cmd.Wait() }()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case e := <-doneCh:
+		return "ok", exitCodeOf(e)
+	case <-timer.C:
+		killTreeWithGrace(cmd, deps.GraceWindow, deps.DaemonLog)
+		w := <-doneCh
+		return "timed_out", exitCodeOf(w)
+	case <-shutdown:
+		killTreeWithGrace(cmd, deps.GraceWindow, deps.DaemonLog)
+		w := <-doneCh
+		return "daemon_shutdown", exitCodeOf(w)
+	}
+}
+
+func runJob(ctx context.Context, shutdown <-chan struct{}, job HookJob, deps runDeps) {
+	rc := newRunContext(job, deps)
+	if err := rc.openOutputFiles(); err != nil {
+		rc.finalize("spawn_failed", err.Error(), -1, false)
 		return
 	}
-	defer func() { _ = outFile.Close() }()
-	defer func() { _ = errFile.Close() }()
+	defer rc.closeFiles()
 
-	recordRunWithFiles := func(result, spawnErr string, exitCode int, payloadTruncated bool) {
-		_ = outFile.Close()
-		_ = errFile.Close()
-		var outBytes, errBytes int64
-		if st, err := os.Stat(outPath); err == nil {
-			outBytes = st.Size()
-		}
-		if st, err := os.Stat(errPath); err == nil {
-			errBytes = st.Size()
-		}
-		ended := deps.Now()
-		deps.AppendRun(runRecord{
-			Version:          1,
-			EventID:          job.Event.ID,
-			EventType:        job.Event.Type,
-			HookIndex:        job.Hook.Index,
-			HookCommand:      job.Hook.Command,
-			StartedAt:        startedAt.UTC().Format(time.RFC3339Nano),
-			EndedAt:          ended.UTC().Format(time.RFC3339Nano),
-			DurationMS:       ended.Sub(startedAt).Milliseconds(),
-			ExitCode:         exitCode,
-			Result:           result,
-			StdoutPath:       outPath,
-			StderrPath:       errPath,
-			StdoutBytes:      outBytes,
-			StderrBytes:      errBytes,
-			SpawnError:       spawnErr,
-			PayloadTruncated: payloadTruncated,
-		})
-	}
-
-	if st, e := os.Stat(job.Hook.WorkingDir); e != nil {
-		if errors.Is(e, fs.ErrNotExist) {
-			recordRunWithFiles("working_dir_missing", e.Error(), -1, false)
-			return
-		}
-		recordRunWithFiles("spawn_failed", e.Error(), -1, false)
-		return
-	} else if !st.IsDir() {
-		recordRunWithFiles("spawn_failed", "working_dir is not a directory", -1, false)
+	if result, spawnErr := classifyWorkingDir(job.Hook.WorkingDir); result != "" {
+		rc.finalize(result, spawnErr, -1, false)
 		return
 	}
 
@@ -134,41 +205,17 @@ func runJob(ctx context.Context, shutdown <-chan struct{}, job HookJob, deps run
 	cmd.Dir = job.Hook.WorkingDir
 	cmd.Env = buildEnv(job.Hook.UserEnv, job.Event, deps)
 	cmd.Stdin = bytes.NewReader(stdinPayload)
-	cmd.Stdout = outFile
-	cmd.Stderr = errFile
+	cmd.Stdout = rc.outFile
+	cmd.Stderr = rc.errFile
 	applyProcessGroupAttrs(cmd)
 
-	if e := cmd.Start(); e != nil {
-		recordRunWithFiles("spawn_failed", e.Error(), -1, payloadTruncated)
+	if err := cmd.Start(); err != nil {
+		rc.finalize("spawn_failed", err.Error(), -1, payloadTruncated)
 		return
 	}
 
-	doneCh := make(chan error, 1)
-	go func() { doneCh <- cmd.Wait() }()
-
-	timer := time.NewTimer(job.Hook.Timeout)
-	defer timer.Stop()
-	var (
-		result   string
-		exitCode int
-	)
-	select {
-	case e := <-doneCh:
-		result = "ok"
-		exitCode = exitCodeOf(e)
-	case <-timer.C:
-		result = "timed_out"
-		killTreeWithGrace(cmd, deps.GraceWindow, deps.DaemonLog)
-		w := <-doneCh
-		exitCode = exitCodeOf(w)
-	case <-shutdown:
-		result = "daemon_shutdown"
-		killTreeWithGrace(cmd, deps.GraceWindow, deps.DaemonLog)
-		w := <-doneCh
-		exitCode = exitCodeOf(w)
-	}
-
-	recordRunWithFiles(result, "", exitCode, payloadTruncated)
+	result, exitCode := waitForCompletion(cmd, job.Hook.Timeout, shutdown, deps)
+	rc.finalize(result, "", exitCode, payloadTruncated)
 }
 
 func exitCodeOf(err error) int {
@@ -197,6 +244,7 @@ func buildEnv(userEnv []string, evt db.Event, deps runDeps) []string {
 	if evt.IssueNumber != nil {
 		env = append(env, "KATA_ISSUE_NUMBER="+strconv.FormatInt(*evt.IssueNumber, 10))
 	}
+	// Errors degrade silently — alias env vars are best-effort and not part of the contract.
 	if asnap, has, err := deps.Alias(evt); err == nil && has {
 		env = append(env,
 			"KATA_ALIAS_IDENTITY="+asnap.Identity,
@@ -215,16 +263,11 @@ func killTreeWithGrace(cmd *exec.Cmd, grace time.Duration, daemonLog *log.Logger
 	}
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
-	exited := make(chan struct{})
-	go func() {
-		for {
-			if !processAlive(cmd.Process.Pid) {
-				close(exited)
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	exited := pollProcessExit(cmd.Process.Pid, stop)
+
 	select {
 	case <-timer.C:
 		if err := signalGroup(cmd, syscallSIGKILL()); err != nil {
@@ -234,10 +277,36 @@ func killTreeWithGrace(cmd *exec.Cmd, grace time.Duration, daemonLog *log.Logger
 	}
 }
 
+// pollProcessExit polls processAlive every 10ms in a goroutine and
+// closes the returned channel once the process is gone. The stop
+// channel bounds the goroutine's lifetime so a kernel reaping the
+// child + PID reuse can't keep it running past killTreeWithGrace's
+// return.
+func pollProcessExit(pid int, stop <-chan struct{}) <-chan struct{} {
+	exited := make(chan struct{})
+	go func() {
+		for {
+			if !processAlive(pid) {
+				close(exited)
+				return
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
+	return exited
+}
+
 func processAlive(pid int) bool {
 	p, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
+	// On Unix, Signal(0) returns nil if the process is alive and ESRCH
+	// otherwise. We only call this on Unix in practice; Windows
+	// semantics differ and FindProcess always succeeds there.
 	return p.Signal(syscallSignal0()) == nil
 }

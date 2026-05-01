@@ -2,7 +2,6 @@ package hooks
 
 import (
 	"context"
-	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -22,7 +21,6 @@ type runnerSetup struct {
 func newRunnerSetup(t *testing.T) *runnerSetup {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv("KATA_HOME", root)
 	dbHash := "testdbhash01"
 	outDir := filepath.Join(root, "hooks", dbHash, "output")
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
@@ -32,8 +30,6 @@ func newRunnerSetup(t *testing.T) *runnerSetup {
 	logger := log.New(logBuf, "", 0)
 	deps := runDeps{
 		OutputDir:   outDir,
-		KataHome:    root,
-		DBHash:      dbHash,
 		DaemonLog:   logger,
 		Now:         func() time.Time { return time.Date(2026, 4, 30, 14, 22, 11, 0, time.UTC) },
 		GraceWindow: 100 * time.Millisecond,
@@ -251,5 +247,3 @@ func TestRunner_EnvUserOverridable_NotForKata(t *testing.T) {
 		t.Fatalf("user env not visible: %q", out)
 	}
 }
-
-var _ = errors.New
