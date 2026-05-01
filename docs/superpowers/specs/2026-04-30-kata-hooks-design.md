@@ -112,7 +112,7 @@ EXTRA = "value"                         # optional; keys matching ^KATA_ rejecte
 
 1. TOML parses with strict-keys: unknown keys cite line and key in the error.
 2. `event` matches §4.3.
-3. `command` is non-empty and either an absolute path OR a bare name with no `/` characters. Relative paths like `./foo` or `bin/foo` are rejected.
+3. `command` is non-empty and either an absolute path (`filepath.IsAbs`) OR a bare name with no path separators (rejects both `/` and the platform `filepath.Separator` so Windows `bin\foo` and `.\foo` are also rejected). Relative paths like `./foo` or `bin/foo` are rejected. Internal whitespace is allowed inside absolute paths (`/Applications/Some App/bin/x`) but not in bare names — `exec.Command` PATH-looks up bare names literally.
 4. `args` is `[]string`. `$VAR`-style entries are accepted as **literal strings**; the executor never expands them (`exec.Command` does no shell processing).
 5. `timeout` parses as Go duration, `(0, 5m]`.
 6. `working_dir` (if set) is absolute after `filepath.Clean`. Existence is **not** checked at load.
@@ -294,8 +294,9 @@ Tests bypass signals entirely and call `disp.Reload(loaded)` directly. `Dispatch
 ```go
 type Dispatcher struct {
     queue    chan HookJob
-    done     chan struct{}      // closed by Shutdown
-    stopped  atomic.Bool        // gates Enqueue
+    done     chan struct{}      // closed by Shutdown (signals "drop queued, exit")
+    stopped  atomic.Bool        // gates Enqueue + first-call Shutdown
+    waited   chan struct{}      // closed when wg.Wait returns; shared by all Shutdown callers
     wg       sync.WaitGroup     // tracks workers
     snapshot atomic.Pointer[Snapshot]
     cfg      Config             // startup-only, captured at New
@@ -305,32 +306,42 @@ type Dispatcher struct {
 func (d *Dispatcher) worker() {
     defer d.wg.Done()
     for {
-        // Two-phase: prefer the done signal over the queue.
+        // Single select: done has priority via the explicit case-order
+        // tiebreak below. Two selects don't help — Go's case selection
+        // is uniformly random. The next iteration's first thing is to
+        // re-check done, so a worker can pop at most one job after a
+        // racing Shutdown.
         select {
-        case <-d.done: return
-        default:
-        }
-        select {
-        case <-d.done: return
-        case job := <-d.queue:
-            d.runJob(job)   // long-running; uses d.done as exec ctx (§6.1)
+        case <-d.done:
+            return
+        case job, ok := <-d.queue:
+            if !ok {
+                return
+            }
+            // Re-check after pop: if Shutdown raced in between the
+            // case selection and the runJob call, drop the job rather
+            // than start it.
+            select {
+            case <-d.done:
+                return
+            default:
+            }
+            d.runJob(job) // long-running; uses d.done as exec ctx (§6.1)
         }
     }
 }
 
 func (d *Dispatcher) Shutdown(ctx context.Context) error {
-    // CompareAndSwap so a second Shutdown call is a no-op rather than
-    // panicking on close-of-closed-channel. Defensive: callers may
-    // retry shutdown on context-deadline expiry.
-    if !d.stopped.CompareAndSwap(false, true) {
-        return nil
+    // First caller wins the close(d.done); subsequent callers fall
+    // through to the wait below so they observe the same completion
+    // signal (`waited`) under their own context. A second call after
+    // the first returned timeout still gets to wait.
+    if d.stopped.CompareAndSwap(false, true) {
+        close(d.done)
+        go func() { d.wg.Wait(); close(d.waited) }()
     }
-    close(d.done)           // workers exit after current in-flight job
-
-    waited := make(chan struct{})
-    go func() { d.wg.Wait(); close(waited) }()
     select {
-    case <-waited:
+    case <-d.waited:
         return nil
     case <-ctx.Done():
         d.daemonLog.Printf("hooks shutdown timed out: %d in-flight", d.inflightCount())
@@ -342,8 +353,9 @@ func (d *Dispatcher) Shutdown(ctx context.Context) error {
 **Contract:**
 - After `Shutdown` is called, `Enqueue` is a no-op (returns immediately, no panic, no send).
 - Workers idle at the moment `done` closes return without popping further jobs. Workers running a job complete it (subject to `runJob`'s own response to `daemonCtx.Done()`/`done`, which resolves into a `daemon_shutdown` result per §6.4).
+- A worker that already won a `case job := <-d.queue` race re-checks `d.done` immediately and drops the job before invoking `runJob`. At most one job per worker can leak past `Shutdown`, and it never starts execution.
 - Queued (un-popped) jobs are not run.
-- `Shutdown` returns `nil` if all workers exit before `ctx` deadline; otherwise returns an error and the caller proceeds with daemon shutdown anyway. The daemon log captures "timed out: N in-flight".
+- `Shutdown` returns `nil` if all workers exit before its caller's `ctx` deadline; otherwise returns an error and the caller proceeds with daemon shutdown anyway. Every later `Shutdown` call observes the same `waited` channel under its own context, so a retry after the first timed out blocks until completion or the new context expires — it does not spuriously return `nil`.
 - The queue channel is **not** closed; `Enqueue` gates on `stopped` rather than relying on closed-channel send (which would panic on race).
 
 ## 6. Runner (per-job execution)
@@ -367,10 +379,17 @@ if oErr != nil || eErr != nil {
     // Output dir was deleted, permissions changed, or fs is full. We
     // cannot reference paths we couldn't create — recordRun with empty
     // path/size fields and exit. No defer-close needed here since
-    // partial-success files are explicitly closed on this branch.
+    // partial-success files are explicitly closed and removed on this
+    // branch so we don't leave an untracked artifact behind.
     msg := fmt.Sprintf("open output files: out=%v err=%v", oErr, eErr)
-    if outFile != nil { _ = outFile.Close() }
-    if errFile != nil { _ = errFile.Close() }
+    if outFile != nil {
+        _ = outFile.Close()
+        _ = os.Remove(out) // remove the half-created file
+    }
+    if errFile != nil {
+        _ = errFile.Close()
+        _ = os.Remove(err)
+    }
     recordRun(
         result="spawn_failed", spawn_error=msg,
         stdout_path="", stderr_path="",
@@ -549,12 +568,13 @@ Hard cap on total stdin: **256 KB**. Per-field caps:
 | Field | Cap | On exceed |
 |---|---|---|
 | `issue.title` | 1 KB | Truncate; sibling `issue._truncated:true`, `issue._full_size:N`. |
-| `issue.body` | 8 KB | Same shape on `issue`. |
 | `payload.comment_body` | 8 KB | Sibling `payload._truncated:true`, `payload._full_size:N`. |
+
+`issue.body` is not part of the v1 `IssueSnapshot` and is reserved for a future extension; do not list a per-field cap or fallback entry until the snapshot exposes it. Truncation of titles cuts on a UTF-8 rune boundary so the result is always valid UTF-8.
 
 After per-field caps, if total bytes still > 256 KB:
 1. Set top-level `payload_truncated: true`.
-2. Drop optional fields in priority order until under cap: `payload` → `issue.body` → `issue.title`.
+2. Drop optional fields in priority order until under cap: `payload` → `issue.title`.
 3. Field-level `_truncated` flags persist across the top-level fallback.
 
 ### 7.3 Sources of payload data
@@ -648,6 +668,8 @@ Algorithm (`prune.MaybeSweep`):
    - Group by `(event_id, hook_index)`; sort groups oldest-first by `(event_id, hook_index)` ascending.
    - Delete `.out` + `.err` as a unit, subtracting both sizes from the running total, until total ≤ cap.
 4. `os.Stat` / `os.Remove` errors are rate-limit-logged via `daemonLog` and never fail the run.
+
+**Concurrency:** all access to the running total and any in-progress sweep is guarded by a single `sync.Mutex` on the pruner. Up to 16 workers may finish concurrently and call into `MaybeSweep`; the mutex serializes total updates and ensures only one sweep runs at a time. The mutex is released before file I/O when possible so a slow `os.Remove` doesn't stall every other worker, but `AddRun` (size accumulation) and the sweep critical sections are non-overlapping. Tests inject ≥2 concurrent finishers under `-race` to pin the contract.
 
 Run-group atomic delete prevents `runs.jsonl` references from degrading into "half-present" output.
 
