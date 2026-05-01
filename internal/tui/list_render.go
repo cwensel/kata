@@ -252,29 +252,43 @@ func listFooterItemsFor(input inputState) []helpRow {
 
 // renderTitleBar formats the top brand strip:
 //
-//	kata かた · project: {name} · vX.Y.Z
+//	Project: {name}                         kata かた · vX.Y.Z
 //
-// `かた` is hiragana for "form/pattern" — the romaji disambiguator
-// for the brand vs. a project that happens to also be named "kata".
-// Right side is the version string. Whole strip is rendered inside
-// titleBarStyle (bold + adaptive bg + horizontal padding) so it
-// reads as a window-chrome bar, not stray text.
+// Project context lives on the left because it's what the user is
+// actually working in; brand + version are window-chrome and pin to
+// the right. `かた` is hiragana for "form/pattern" — the romaji
+// disambiguator for the brand vs. a project that happens to also be
+// named "kata". All-projects scope and the empty-scope hint render
+// in the project slot so the left side is never blank.
 func renderTitleBar(width int, sc scope, version string) string {
 	left := titleBarLeft(sc)
-	right := version
+	right := titleBarRight(version)
 	body := padLeftRightInside(left, right, titleBarInnerWidth(width))
 	return titleBarStyle.Render(body)
 }
 
-// titleBarLeft builds the left-aligned text inside the title bar.
-// Always starts with the brand (`kata かた`); when scope.projectName
-// is set, appends ` · project: $name`.
+// titleBarLeft builds the left-aligned project label. Single-project
+// scope reads `Project: $name`; all-projects scope reads
+// `Project: all`; the no-scope startup state reads `Project: —` so
+// the bar layout doesn't shift once a project is resolved.
 func titleBarLeft(sc scope) string {
-	bits := []string{"kata かた"}
-	if name := sanitizeForDisplay(sc.projectName); name != "" {
-		bits = append(bits, "project: "+name)
+	switch {
+	case sc.allProjects:
+		return "Project: all"
+	case sc.projectName != "":
+		return "Project: " + sanitizeForDisplay(sc.projectName)
 	}
-	return strings.Join(bits, " · ")
+	return "Project: —"
+}
+
+// titleBarRight is the brand + version cluster pinned to the right
+// of the title bar. Version is omitted (gracefully) on builds that
+// didn't stamp it so the right side is just the brand.
+func titleBarRight(version string) string {
+	if version == "" {
+		return "kata かた"
+	}
+	return "kata かた · " + version
 }
 
 // titleBarInnerWidth subtracts the titleBarStyle horizontal padding
