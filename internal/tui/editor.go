@@ -62,31 +62,84 @@ func resolveEditor() []string {
 	return []string{"vi"}
 }
 
+// promptStartSentinel and promptEndSentinel bracket the seeded prompt
+// inside the editor buffer. trimComments removes only the bracketed
+// region; user-authored Markdown headings (like "# Heading") outside
+// the sentinel block are preserved. The sentinels live on their own
+// lines so a user who edits inside the block does not accidentally
+// disable the strip.
+const (
+	promptStartSentinel = "<!-- ---KATA-PROMPT-START--- -->"
+	promptEndSentinel   = "<!-- ---KATA-PROMPT-END--- -->"
+)
+
 // editorTemplate composes the seed text for `kind`. For edit it's the
-// existing body; for comment it's a "# write above" prompt; for create
-// body it's empty.
+// existing body; for comment it's a sentinel-bracketed prompt block
+// that trimComments strips on save; for create body it's empty.
+//
+// Earlier the comment template seeded a single "# Write your comment
+// above…" line and trimComments stripped every line starting with #.
+// That destroyed legitimate Markdown headings in user content. The
+// sentinel block (HTML comments) is invisible in Markdown rendering
+// and survives unmolested if the user accidentally moves text inside
+// it; trimComments removes only the bracketed region.
 func editorTemplate(kind, existing string) string {
 	switch kind {
 	case "edit":
 		return existing
 	case "comment":
-		return "# Write your comment above. Lines starting with # are ignored.\n"
+		return commentTemplate()
 	}
 	return "" // create: empty
 }
 
-// trimComments strips lines starting with `#` from user content,
-// matching git/hg conventions. Leading whitespace before `#` is also
-// treated as a comment marker. Trailing whitespace is trimmed; an empty
-// result signals the caller to cancel the operation.
+// commentTemplate seeds the comment buffer with a sentinel-bracketed
+// instruction block. The block sits below the (empty) author area so
+// the user types above it; trimComments removes the block on save.
+func commentTemplate() string {
+	return strings.Join([]string{
+		"",
+		promptStartSentinel,
+		"Write your comment above. This block is removed on save;",
+		"Markdown headings (lines starting with #) outside this block",
+		"are preserved.",
+		promptEndSentinel,
+		"",
+	}, "\n")
+}
+
+// trimComments removes the sentinel-bracketed prompt region (if any)
+// from user content. Lines outside the START/END markers are
+// preserved verbatim — including legitimate Markdown headings. An
+// empty result after stripping + trimSpace signals the caller to
+// cancel the operation.
+//
+// If only one sentinel is present (or neither), no stripping happens
+// and the buffer is returned trimmed of trailing whitespace.
 func trimComments(s string) string {
-	var b strings.Builder
-	for _, line := range strings.Split(s, "\n") {
-		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
-			continue
-		}
-		b.WriteString(line)
-		b.WriteString("\n")
+	stripped := stripSentinelBlock(s)
+	return strings.TrimSpace(stripped)
+}
+
+// stripSentinelBlock removes the first START..END bracketed block
+// from s. The function preserves a leading newline pattern so a buffer
+// of the form "user text\n<block>" becomes "user text\n" rather than
+// "user text<empty>", keeping the trailing newline ergonomics that
+// callers expect when joining with other text.
+func stripSentinelBlock(s string) string {
+	startIdx := strings.Index(s, promptStartSentinel)
+	if startIdx < 0 {
+		return s
 	}
-	return strings.TrimSpace(b.String())
+	endIdx := strings.Index(s[startIdx:], promptEndSentinel)
+	if endIdx < 0 {
+		return s
+	}
+	endIdx += startIdx + len(promptEndSentinel)
+	// Consume one trailing newline after END so the surrounding text
+	// doesn't gain an extra blank line from the strip.
+	if endIdx < len(s) && s[endIdx] == '\n' {
+		endIdx++
+	}
+	return s[:startIdx] + s[endIdx:]
 }

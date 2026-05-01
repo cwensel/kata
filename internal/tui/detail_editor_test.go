@@ -128,17 +128,18 @@ func TestDetail_EditorReturned_AddComment_EmptyCancels(t *testing.T) {
 	}
 }
 
-// TestDetail_EditorReturned_TrimsComments: # lines in the buffer are
-// stripped before the body hits the wire so the comment prompt doesn't
-// leak into the issue.
-func TestDetail_EditorReturned_TrimsComments(t *testing.T) {
+// TestDetail_EditorReturned_StripsSentinelBlock: the sentinel-bracketed
+// prompt is removed from the buffer before the comment hits the wire,
+// but legitimate Markdown headings outside the block survive.
+func TestDetail_EditorReturned_StripsSentinelBlock(t *testing.T) {
 	api := &fakeDetailAPI{
 		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
 	}
 	km := newKeymap()
 	dm := dmFixture()
 
-	in := "hello\n# comment\nworld"
+	in := "# My update\nhello world\n" +
+		promptStartSentinel + "\nWrite your comment above\n" + promptEndSentinel
 	out, cmd := dm.Update(editorReturnedMsg{kind: "comment", content: in}, km, api)
 	if cmd == nil {
 		t.Fatal("expected dispatch cmd")
@@ -147,8 +148,11 @@ func TestDetail_EditorReturned_TrimsComments(t *testing.T) {
 	if api.addCommentCalls != 1 {
 		t.Fatalf("addCommentCalls = %d, want 1", api.addCommentCalls)
 	}
-	if api.lastBody != "hello\nworld" {
-		t.Fatalf("lastBody = %q, want %q", api.lastBody, "hello\nworld")
+	if !strings.Contains(api.lastBody, "# My update") {
+		t.Fatalf("Markdown heading dropped from comment body: %q", api.lastBody)
+	}
+	if strings.Contains(api.lastBody, "Write your comment above") {
+		t.Fatalf("sentinel block leaked into wire body: %q", api.lastBody)
 	}
 }
 

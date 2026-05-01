@@ -355,10 +355,12 @@ func TestList_NewIssue_EditorError_SurfacesStatus(t *testing.T) {
 	}
 }
 
-// TestList_NewIssue_TrimsCommentsFromBody: # lines are stripped from
-// the editor buffer so a "scratch your message above" prompt doesn't
-// leak into the issue body.
-func TestList_NewIssue_TrimsCommentsFromBody(t *testing.T) {
+// TestList_NewIssue_PreservesMarkdownHeadings: the create flow does
+// NOT strip Markdown headings from the body. Earlier the # strip
+// destroyed legitimate headings; the sentinel-block strip leaves them
+// intact. The create-kind template seeds an empty buffer, so there is
+// nothing to strip in this path.
+func TestList_NewIssue_PreservesMarkdownHeadings(t *testing.T) {
 	api := &fakeListAPI{
 		createResult: &MutationResp{Issue: &Issue{Number: 42}},
 	}
@@ -366,14 +368,15 @@ func TestList_NewIssue_TrimsCommentsFromBody(t *testing.T) {
 	sc := scope{projectID: 7}
 
 	lm := listModel{actor: "tester", pendingTitle: "fix bug"}
-	msg := editorReturnedMsg{kind: "create", content: "real body\n# hidden\n"}
+	msg := editorReturnedMsg{kind: "create", content: "# Heading\nbody"}
 	lm, cmd := lm.Update(msg, km, api, sc)
 	if cmd == nil {
 		t.Fatal("expected create cmd")
 	}
 	_ = drainCmd(t, lm, cmd, km, api, sc)
-	if api.lastCreateBody.Body != "real body" {
-		t.Fatalf("body = %q, want %q", api.lastCreateBody.Body, "real body")
+	if api.lastCreateBody.Body != "# Heading\nbody" {
+		t.Fatalf("body = %q, want %q (heading preserved)",
+			api.lastCreateBody.Body, "# Heading\nbody")
 	}
 }
 
