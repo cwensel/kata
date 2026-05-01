@@ -3,6 +3,8 @@ package tui
 import (
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // sseUpdateFixture builds a minimal Model wired for the SSE Update-side
@@ -139,9 +141,10 @@ func TestHandleEventReceived_NoEffect_NoStale(t *testing.T) {
 
 // TestHandleEventReceived_DetailViewSingleIssueRefetch: when the user
 // is in detail-view and the event names dm.issue.Number,
-// maybeRefetchOpenDetail returns a non-nil cmd (the single-issue
-// fetch). We test the helper directly so we don't have to invoke a
-// 150ms tick to assert on cmd shape.
+// maybeRefetchOpenDetail returns a non-nil cmd (the batch of four
+// fetches: issue + comments + events + links). We test the helper
+// directly so we don't have to invoke a 150ms tick to assert on cmd
+// shape.
 func TestHandleEventReceived_DetailViewSingleIssueRefetch(t *testing.T) {
 	m := sseUpdateFixture()
 	m.scope = scope{projectID: 7}
@@ -155,7 +158,7 @@ func TestHandleEventReceived_DetailViewSingleIssueRefetch(t *testing.T) {
 		t.Fatal("maybeRefetchOpenDetail must return a fetch cmd for matching issueNumber")
 	}
 	// And the parent handler still reports pendingRefetch=true and a
-	// non-nil cmd (the tick + the fetch-issue cmd, batched).
+	// non-nil cmd (the tick + the four-tab fetch batch, batched).
 	out, parentCmd := m.handleEventReceived(eventReceivedMsg{projectID: 7, issueNumber: 42})
 	mm := out.(Model)
 	if !mm.pendingRefetch {
@@ -163,6 +166,38 @@ func TestHandleEventReceived_DetailViewSingleIssueRefetch(t *testing.T) {
 	}
 	if parentCmd == nil {
 		t.Fatal("handleEventReceived must return a non-nil cmd batch")
+	}
+}
+
+// TestHandleEventReceived_DetailViewRefetchesAllTabs: a matching SSE
+// event must batch the four detail fetches (issue + comments + events
+// + links) so every tab is refreshed regardless of event-kind. Earlier
+// the helper only refetched GetIssue, leaving comments/events/links
+// stale on issue.commented / issue.linked / issue.relabeled.
+//
+// We assert the cmd batch shape (4 children) rather than invoking the
+// children: maybeRefetchOpenDetail uses m.api (a real *Client), so
+// driving the children would actually hit the network.
+func TestHandleEventReceived_DetailViewRefetchesAllTabs(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	m.detail.scopePID = 7
+	m.detail.gen = 5
+
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 42})
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd for matching event")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg from refetch cmd, got %T", msg)
+	}
+	if got := len(batch); got != 4 {
+		t.Fatalf("expected 4 fetches in batch (issue + 3 tabs), got %d", got)
 	}
 }
 
@@ -180,6 +215,27 @@ func TestHandleEventReceived_DetailViewMismatch_NoRefetch(t *testing.T) {
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 99})
 	if cmd != nil {
 		t.Fatalf("maybeRefetchOpenDetail must return nil for non-matching issueNumber, got %T",
+			cmd)
+	}
+}
+
+// TestHandleEventReceived_CrossProjectMismatch_NoRefetch: in all-
+// projects scope, issue numbers are project-scoped — project A #42 is
+// not project B #42. An event for project B #42 must NOT trigger a
+// refetch of the open project A #42 detail. Earlier the helper
+// matched on issueNumber only, so a sibling project's event with the
+// same number would churn the wrong detail.
+func TestHandleEventReceived_CrossProjectMismatch_NoRefetch(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{allProjects: true}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	// Open detail is project A (#42); event is project B (#42).
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	m.detail.scopePID = 7
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 8, issueNumber: 42})
+	if cmd != nil {
+		t.Fatalf("cross-project event with same issueNumber must not refetch, got %T",
 			cmd)
 	}
 }

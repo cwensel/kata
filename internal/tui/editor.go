@@ -108,24 +108,34 @@ func commentTemplate() string {
 	}, "\n")
 }
 
-// trimComments removes the sentinel-bracketed prompt region (if any)
-// from user content. Lines outside the START/END markers are
+// trimComments removes the sentinel-bracketed prompt region from a
+// comment-kind editor buffer. Lines outside the START/END markers are
 // preserved verbatim — including legitimate Markdown headings. An
 // empty result after stripping + trimSpace signals the caller to
 // cancel the operation.
 //
+// Only comment-kind editor returns are stripped: edit and create kinds
+// have no seeded prompt block, so any sentinel-shaped text in those
+// buffers is user-authored and must survive. Callers pass kind to gate
+// the strip; an unknown kind is treated as "no strip" so future kinds
+// don't accidentally lose user content.
+//
 // If only one sentinel is present (or neither), no stripping happens
-// and the buffer is returned trimmed of trailing whitespace.
-func trimComments(s string) string {
-	stripped := stripSentinelBlock(s)
-	return strings.TrimSpace(stripped)
+// and the buffer is returned trimmed of surrounding whitespace.
+func trimComments(kind, s string) string {
+	if kind == "comment" {
+		s = stripSentinelBlock(s)
+	}
+	return strings.TrimSpace(s)
 }
 
 // stripSentinelBlock removes the first START..END bracketed block
 // from s. The function preserves a leading newline pattern so a buffer
 // of the form "user text\n<block>" becomes "user text\n" rather than
 // "user text<empty>", keeping the trailing newline ergonomics that
-// callers expect when joining with other text.
+// callers expect when joining with other text. CRLF line endings are
+// also consumed after END so a Windows-style editor doesn't leave a
+// stray "\r" behind.
 func stripSentinelBlock(s string) string {
 	startIdx := strings.Index(s, promptStartSentinel)
 	if startIdx < 0 {
@@ -136,9 +146,12 @@ func stripSentinelBlock(s string) string {
 		return s
 	}
 	endIdx += startIdx + len(promptEndSentinel)
-	// Consume one trailing newline after END so the surrounding text
-	// doesn't gain an extra blank line from the strip.
-	if endIdx < len(s) && s[endIdx] == '\n' {
+	// Consume one trailing line ending (\n or \r\n) after END so the
+	// surrounding text doesn't gain a blank line from the strip.
+	switch {
+	case endIdx+1 < len(s) && s[endIdx] == '\r' && s[endIdx+1] == '\n':
+		endIdx += 2
+	case endIdx < len(s) && s[endIdx] == '\n':
 		endIdx++
 	}
 	return s[:startIdx] + s[endIdx:]

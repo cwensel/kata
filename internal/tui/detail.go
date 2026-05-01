@@ -261,6 +261,12 @@ func (dm detailModel) handleBack() (detailModel, tea.Cmd) {
 // handleEnter dispatches the Enter-jump on events/links tabs. The
 // comments tab does not navigate. No-op when the api is unwired, the
 // stack is at cap, or there is no jump target under the cursor.
+//
+// Rather than building the new detailModel here, handleEnter emits
+// jumpDetailMsg so the top-level Model can allocate the new gen from
+// its monotonic m.nextGen counter — see Model.handleJumpDetail. dm is
+// returned unchanged because the navStack push and gen advance happen
+// at the Model level when it consumes jumpDetailMsg.
 func (dm detailModel) handleEnter(api detailAPI) (detailModel, tea.Cmd) {
 	if api == nil || len(dm.navStack) >= detailNavCap {
 		return dm, nil
@@ -269,7 +275,14 @@ func (dm detailModel) handleEnter(api detailAPI) (detailModel, tea.Cmd) {
 	if !ok {
 		return dm, nil
 	}
-	return dm.jumpTo(api, target)
+	return dm, jumpDetailCmd(target)
+}
+
+// jumpDetailCmd emits a jumpDetailMsg so Model.handleJumpDetail can
+// perform the actual jump (with a fresh monotonic gen). Splitting the
+// emit off handleEnter keeps the cmd shape obvious in tests.
+func jumpDetailCmd(number int64) tea.Cmd {
+	return func() tea.Msg { return jumpDetailMsg{number: number} }
 }
 
 // jumpTarget returns the issue number to jump to from the active tab+
@@ -289,40 +302,6 @@ func (dm detailModel) jumpTarget() (int64, bool) {
 		return linkJumpTarget(dm.links, dm.tabCursor, current)
 	}
 	return 0, false
-}
-
-// jumpTo pushes the current dm onto its own nav stack and swaps in a
-// fresh detail seeded with loading=true. The active tab is preserved
-// so the user lands on the same tab. Fetches run in parallel via Batch.
-// gen advances so any fetch already in flight from the prior detail
-// view is discarded by applyFetched when it lands on the new dm. The
-// actor is preserved so a detail-side mutation after the jump still
-// carries the resolved identity. Per-tab loading flags are seeded so
-// the post-jump view shows "(loading...)" until the tab fetches land.
-func (dm detailModel) jumpTo(api detailAPI, number int64) (detailModel, tea.Cmd) {
-	prior := dm
-	prior.navStack = nil
-	pid := dm.scopePID
-	gen := dm.gen + 1
-	next := detailModel{
-		loading:         true,
-		gen:             gen,
-		activeTab:       dm.activeTab,
-		navStack:        append(dm.navStack, prior),
-		scopePID:        pid,
-		allProjects:     dm.allProjects,
-		actor:           dm.actor,
-		commentsLoading: true,
-		eventsLoading:   true,
-		linksLoading:    true,
-	}
-	cmds := []tea.Cmd{
-		fetchIssue(api, pid, number, gen),
-		fetchComments(api, pid, number, gen),
-		fetchEvents(api, pid, number, gen),
-		fetchLinks(api, pid, number, gen),
-	}
-	return next, tea.Batch(cmds...)
 }
 
 // activeRowCount is the row count for the active tab.

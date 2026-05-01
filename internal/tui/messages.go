@@ -3,15 +3,22 @@ package tui
 import "time"
 
 // initialFetchMsg is delivered after the first ListIssues call returns.
+// dispatchKey captures the scope/filter at dispatch time so
+// Model.populateCache can drop stale responses that arrive after a
+// scope toggle or filter change.
 type initialFetchMsg struct {
-	issues []Issue
-	err    error
+	dispatchKey cacheKey
+	issues      []Issue
+	err         error
 }
 
-// refetchedMsg carries the result of a debounced or scope-change refetch.
+// refetchedMsg carries the result of a debounced or scope-change
+// refetch. dispatchKey captures the scope/filter at dispatch time so
+// Model.populateCache can drop stale responses — see initialFetchMsg.
 type refetchedMsg struct {
-	issues []Issue
-	err    error
+	dispatchKey cacheKey
+	issues      []Issue
+	err         error
 }
 
 // detailFetchedMsg carries the result of a single-issue refetch. It is
@@ -59,6 +66,19 @@ type openDetailMsg struct {
 // viewList. The list cursor and filter state are preserved because
 // listModel is held by value and never reset on the round trip.
 type popDetailMsg struct{}
+
+// jumpDetailMsg asks the top-level Model to jump the detail view to
+// the named issue. detail.handleEnter emits this message rather than
+// performing the jump itself so the new generation comes from
+// Model.nextGen — a counter that monotonically increases across the
+// model's lifetime, never reused even after handleBack restores an
+// older detailModel snapshot from the navStack. Without the hoist,
+// jumpTo's `dm.gen+1` could collide with an in-flight fetch from a
+// previously-jumped issue once the user backs to the smaller-gen
+// snapshot and re-jumps.
+type jumpDetailMsg struct {
+	number int64
+}
 
 // mutationDoneMsg is the result of any single mutation (create now,
 // close/reopen/label/owner in Task 9). kind names which mutation so the

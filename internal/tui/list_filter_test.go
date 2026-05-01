@@ -349,6 +349,37 @@ func TestList_NewIssue_NonEmptyTitleStagesAndDispatchesEditor(t *testing.T) {
 	}
 }
 
+// TestList_NewIssue_PreservesTitleWhitespace: a title with intentional
+// surrounding whitespace ("  spaced title  ") must reach pendingTitle
+// verbatim. submitNewIssue uses TrimSpace only for the emptiness gate;
+// the original buffer is staged so the wire receives what the user
+// typed, matching cmd/kata/create.go's no-strip behavior.
+func TestList_NewIssue_PreservesTitleWhitespace(t *testing.T) {
+	api := &fakeListAPI{
+		createResult: &MutationResp{Issue: &Issue{Number: 42}},
+	}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+
+	lm := listModel{actor: "tester"}
+	lm, _ = lm.submitNewIssue("  spaced title  ", api, sc)
+	if lm.pendingTitle != "  spaced title  " {
+		t.Fatalf("pendingTitle = %q, want %q (whitespace preserved)",
+			lm.pendingTitle, "  spaced title  ")
+	}
+	// Drive the editor return to confirm the wire body sees the same.
+	msg := editorReturnedMsg{kind: "create", content: ""}
+	lm, cmd := lm.Update(msg, km, api, sc)
+	if cmd == nil {
+		t.Fatal("expected create cmd from editor return")
+	}
+	_ = drainCmd(t, lm, cmd, km, api, sc)
+	if api.lastCreateBody.Title != "  spaced title  " {
+		t.Fatalf("create title = %q, want %q (whitespace preserved on wire)",
+			api.lastCreateBody.Title, "  spaced title  ")
+	}
+}
+
 // TestList_NewIssue_BodyFlow_PostsTitleAndBody: the editor returns
 // content="some body". CreateIssue must be called with both the staged
 // title and the body. lm.pendingTitle is cleared after dispatch.

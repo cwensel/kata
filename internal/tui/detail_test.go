@@ -763,9 +763,10 @@ func runBatch(cmd tea.Cmd) {
 }
 
 // TestDetail_EnterOnEventWithIssueRef_JumpsAndStacks: pressing Enter on
-// a link event whose payload carries to_number pushes the current dm
-// onto the nav stack and dispatches a GetIssue for the referenced
-// issue. The fake API captures the issue number requested.
+// a link event whose payload carries to_number emits a jumpDetailMsg
+// with that number. The actual navStack push and fetch dispatch happen
+// at the Model level (Model.handleJumpDetail) so the new gen comes
+// from the monotonic m.nextGen counter.
 func TestDetail_EnterOnEventWithIssueRef_JumpsAndStacks(t *testing.T) {
 	api := &fakeDetailAPI{
 		getIssueResult: &Issue{Number: 11, Title: "linked target"},
@@ -780,24 +781,21 @@ func TestDetail_EnterOnEventWithIssueRef_JumpsAndStacks(t *testing.T) {
 	}
 	dm.tabCursor = 0
 	km := newKeymap()
-	dm, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
+	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
 	if cmd == nil {
 		t.Fatal("expected jump cmd from Enter")
 	}
-	if len(dm.navStack) != 1 {
-		t.Fatalf("navStack length = %d, want 1", len(dm.navStack))
+	jm, ok := cmd().(jumpDetailMsg)
+	if !ok {
+		t.Fatalf("expected jumpDetailMsg, got %T", cmd())
 	}
-	if dm.issue != nil {
-		t.Fatalf("expected new dm to be loading (issue=nil), got %+v", dm.issue)
-	}
-	runBatch(cmd)
-	if api.lastGetIssue != 11 {
-		t.Fatalf("api.lastGetIssue = %d, want 11", api.lastGetIssue)
+	if jm.number != 11 {
+		t.Fatalf("jumpDetailMsg.number = %d, want 11", jm.number)
 	}
 }
 
 // TestDetail_EnterOnLinkEntry_JumpsToTarget: pressing Enter on a link
-// row jumps to the link's ToNumber.
+// row emits a jumpDetailMsg targeting the link's ToNumber.
 func TestDetail_EnterOnLinkEntry_JumpsToTarget(t *testing.T) {
 	api := &fakeDetailAPI{
 		getIssueResult: &Issue{Number: 7, Title: "target"},
@@ -806,23 +804,23 @@ func TestDetail_EnterOnLinkEntry_JumpsToTarget(t *testing.T) {
 	dm.activeTab = tabLinks
 	dm.tabCursor = 0
 	km := newKeymap()
-	dm, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
+	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
 	if cmd == nil {
 		t.Fatal("expected jump cmd from Enter on link")
 	}
-	if len(dm.navStack) != 1 {
-		t.Fatalf("navStack length = %d, want 1", len(dm.navStack))
+	jm, ok := cmd().(jumpDetailMsg)
+	if !ok {
+		t.Fatalf("expected jumpDetailMsg, got %T", cmd())
 	}
-	runBatch(cmd)
-	if api.lastGetIssue != 7 {
-		t.Fatalf("api.lastGetIssue = %d, want 7", api.lastGetIssue)
+	if jm.number != 7 {
+		t.Fatalf("jumpDetailMsg.number = %d, want 7", jm.number)
 	}
 }
 
 // TestDetail_EnterOnIncomingLink_JumpsToFromNumber: when the cursor is
 // on a link whose ToNumber matches the current issue (i.e. an incoming
-// "X blocks me" entry), Enter must jump to FromNumber rather than
-// re-opening the current issue.
+// "X blocks me" entry), Enter must emit a jumpDetailMsg targeting
+// FromNumber rather than re-opening the current issue.
 func TestDetail_EnterOnIncomingLink_JumpsToFromNumber(t *testing.T) {
 	api := &fakeDetailAPI{
 		getIssueResult: &Issue{Number: 99, Title: "from"},
@@ -842,10 +840,13 @@ func TestDetail_EnterOnIncomingLink_JumpsToFromNumber(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected jump cmd from Enter on incoming link")
 	}
-	runBatch(cmd)
-	if api.lastGetIssue != 99 {
-		t.Fatalf("api.lastGetIssue = %d, want 99 (incoming → FromNumber)",
-			api.lastGetIssue)
+	jm, ok := cmd().(jumpDetailMsg)
+	if !ok {
+		t.Fatalf("expected jumpDetailMsg, got %T", cmd())
+	}
+	if jm.number != 99 {
+		t.Fatalf("jumpDetailMsg.number = %d, want 99 (incoming → FromNumber)",
+			jm.number)
 	}
 }
 
@@ -1127,22 +1128,31 @@ func TestDetail_StaleFetch_DroppedAcrossOpen(t *testing.T) {
 }
 
 // TestDetail_StaleFetch_DroppedAcrossJump: a detail-side jump advances
-// dm.gen; an in-flight fetch from before the jump must not seed the
-// post-jump view.
+// dm.gen via Model.handleJumpDetail; an in-flight fetch from before
+// the jump must not seed the post-jump view. The flow is exercised at
+// the Model level so the monotonic m.nextGen counter is the authority.
 func TestDetail_StaleFetch_DroppedAcrossJump(t *testing.T) {
-	api := &fakeDetailAPI{
-		getIssueResult: &Issue{Number: 11, Title: "linked"},
-	}
-	dm := detailFixture()
-	dm.gen = 5
-	dm.activeTab = tabLinks
-	dm.tabCursor = 0
-	priorGen := dm.gen
-	// Press Enter to jump → gen advances.
-	km := newKeymap()
-	dm, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
-	if dm.gen == priorGen {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	m.view = viewDetail
+	m.detail = detailFixture()
+	m.detail.activeTab = tabLinks
+	m.detail.tabCursor = 0
+	// Bump nextGen so the active dm.gen reflects an open already done.
+	m.nextGen = 5
+	m.detail.gen = m.nextGen
+	priorGen := m.detail.gen
+
+	// jumpDetailMsg drives the jump path: m.handleJumpDetail allocates
+	// a fresh gen, pushes prior onto navStack, and dispatches fetches.
+	out, cmd := m.Update(jumpDetailMsg{number: 11})
+	m = out.(Model)
+	if m.detail.gen == priorGen {
 		t.Fatal("gen should advance on jump")
+	}
+	if len(m.detail.navStack) != 1 {
+		t.Fatalf("navStack length = %d, want 1", len(m.detail.navStack))
 	}
 	if cmd == nil {
 		t.Fatal("expected jump cmd")
@@ -1152,9 +1162,99 @@ func TestDetail_StaleFetch_DroppedAcrossJump(t *testing.T) {
 		gen:      priorGen,
 		comments: []CommentEntry{{ID: 99, Body: "stale"}},
 	}
-	dm, _ = dm.Update(stale, km, api)
-	if len(dm.comments) != 0 {
-		t.Fatalf("stale comments leaked into post-jump view: %+v", dm.comments)
+	out, _ = m.Update(stale)
+	m = out.(Model)
+	if len(m.detail.comments) != 0 {
+		t.Fatalf("stale comments leaked into post-jump view: %+v", m.detail.comments)
+	}
+}
+
+// TestModel_GenMonotonicAcrossJumpBackOpen: the gen-reuse regression.
+// User opens A → jumps to B → backs to A → opens C from list. Without
+// a Model-level monotonic counter, C's gen could equal B's gen
+// (because handleBack restored A's smaller gen and the next +1 from
+// that lands on B's value). A stale B fetch arriving after C is open
+// would then match C.gen and corrupt the new view.
+//
+// This regression test seeds a stale B fetch after the open of C and
+// asserts C's data survives — the gen on C must be strictly greater
+// than B's gen.
+func TestModel_GenMonotonicAcrossJumpBackOpen(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	// List has issues A (#1) and C (#3); B (#2) is the jump target.
+	m.list.loading = false
+	m.list.issues = []Issue{
+		{ProjectID: 7, Number: 1, Title: "A"},
+		{ProjectID: 7, Number: 3, Title: "C"},
+	}
+
+	// Open A.
+	out, _ := m.Update(openDetailMsg{issue: m.list.issues[0]})
+	m = out.(Model)
+	genA := m.detail.gen
+	if genA == 0 {
+		t.Fatal("genA should be non-zero after open")
+	}
+	// Hydrate A so the snapshot in navStack carries a non-nil issue.
+	out, _ = m.Update(detailFetchedMsg{gen: genA, issue: &Issue{Number: 1, Title: "A"}})
+	m = out.(Model)
+
+	// Jump to B (#2). genB allocated from m.nextGen.
+	out, _ = m.Update(jumpDetailMsg{number: 2})
+	m = out.(Model)
+	genB := m.detail.gen
+	if genB <= genA {
+		t.Fatalf("genB (%d) should exceed genA (%d) after jump", genB, genA)
+	}
+
+	// Back to A. handleBack restores A's snapshot — including its
+	// smaller gen. m.detail.gen is now genA again (this is the bug
+	// surface a Model-level counter has to defend against).
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = out.(Model)
+	if m.detail.gen != genA {
+		t.Fatalf("after back, dm.gen = %d, want %d (snapshot restore)",
+			m.detail.gen, genA)
+	}
+
+	// Pop to list (Esc again from the now-top-level A). handleBack
+	// returns popDetailCmd; we invoke the cmd to feed popDetailMsg
+	// back into the model so the view actually transitions.
+	out, popCmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = out.(Model)
+	if popCmd == nil {
+		t.Fatal("expected popDetailCmd from Esc on top-level detail")
+	}
+	out, _ = m.Update(popCmd())
+	m = out.(Model)
+	if m.view != viewList {
+		t.Fatalf("after second Esc + popDetailMsg, view = %v, want viewList", m.view)
+	}
+
+	// Open C (#3). The new gen MUST exceed genB so a stale B fetch
+	// can't pass the gen check on C.
+	out, _ = m.Update(openDetailMsg{issue: m.list.issues[1]})
+	m = out.(Model)
+	genC := m.detail.gen
+	if genC <= genB {
+		t.Fatalf("genC (%d) must exceed genB (%d) — gen reuse regression",
+			genC, genB)
+	}
+
+	// A stale B fetch lands. With a monotonic counter, genB != genC so
+	// applyFetched drops the message. With the buggy +1-from-restored-
+	// gen scheme, genB would equal genC and the stale data would seed
+	// C's view.
+	staleB := detailFetchedMsg{
+		gen:   genB,
+		issue: &Issue{Number: 2, Title: "B clobbered"},
+	}
+	out, _ = m.Update(staleB)
+	m = out.(Model)
+	if m.detail.issue == nil || m.detail.issue.Number != 3 {
+		t.Fatalf("stale B fetch leaked into C view: %+v", m.detail.issue)
 	}
 }
 

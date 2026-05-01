@@ -50,6 +50,14 @@ type Model struct {
 	cache          *issueCache
 	toast          *toast
 	toastNow       func() time.Time
+	// nextGen is the monotonic detail-open generation counter. Every
+	// open or jump allocates a fresh value via ++ so a fetch in flight
+	// from a previously-jumped issue cannot match a newly-opened issue
+	// that happens to occupy the smaller-gen snapshot's place after a
+	// handleBack restoration. Detail-side fetches and mutations carry
+	// the gen at dispatch time; applyFetched/applyMutation drop
+	// messages whose gen no longer matches dm.gen.
+	nextGen int64
 }
 
 // initialModel constructs the root Bubble Tea model. Style vars are
@@ -130,8 +138,16 @@ func (m Model) waitForSSE() tea.Cmd {
 // fetchInitial returns a command that issues the first list fetch. The
 // scope drives whether this is single-project or cross-project. The
 // 5s ceiling matches the daemon's typical p95 list latency.
+//
+// dispatchKey captures the scope/filter the request was sent under;
+// populateCache drops the response if the user has changed scope or
+// filter since dispatch so a slow initial fetch can't clobber a fresh
+// post-toggle list.
 func (m Model) fetchInitial() tea.Cmd {
 	api, sc, filter := m.api, m.scope, initialFilter(m.opts)
+	dispatchKey := cacheKey{
+		allProjects: sc.allProjects, projectID: sc.projectID, filter: filter,
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -144,7 +160,7 @@ func (m Model) fetchInitial() tea.Cmd {
 		} else {
 			issues, err = api.ListIssues(ctx, sc.projectID, filter)
 		}
-		return initialFetchMsg{issues: issues, err: err}
+		return initialFetchMsg{dispatchKey: dispatchKey, issues: issues, err: err}
 	}
 }
 
@@ -177,9 +193,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.(type) {
 	case initialFetchMsg, refetchedMsg:
+		if m.isStaleListFetch(msg) {
+			return m, nil
+		}
 		m = m.populateCache(msg)
 	}
+	if mut, ok := msg.(mutationDoneMsg); ok {
+		next, cmd := m.routeMutation(mut)
+		return next, cmd
+	}
 	return m.dispatchToView(msg)
+}
+
+// isStaleListFetch reports whether a list-fetch message was dispatched
+// under a scope/filter that no longer matches the current state. Stale
+// fetches are dropped before reaching populateCache or dispatchToView
+// so the cache/list aren't churned by a slow reply that the user has
+// already moved past.
+func (m Model) isStaleListFetch(msg tea.Msg) bool {
+	dispatchKey, _, _ := fetchPayload(msg)
+	return !cacheKeysEqual(dispatchKey, m.currentCacheKey())
+}
+
+// routeMutation dispatches a mutationDoneMsg to the view that
+// originated the mutation, regardless of which view is now active. If
+// the originating view is also the active view, the result is just one
+// dispatch (the active sub-view consumes it). If the user view-switched
+// after dispatching the mutation (e.g. closed an issue from the list,
+// then opened a different issue's detail before the close completed),
+// we still apply the result to the originating model so its next
+// render is correct — list and detail each keep their own cache.
+//
+// Without this top-level routing, listModel.applyMutation drops
+// origin != "list" and detailModel.applyMutation drops origin !=
+// "detail", so a view-switched mutation completion would land nowhere
+// and the originating cache would stay stale until SSE invalidation
+// caught up.
+func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
+	if mut.origin == "list" && m.view != viewList {
+		var cmd tea.Cmd
+		m.list, cmd = m.list.applyMutation(mut, m.api, m.scope)
+		return m, cmd
+	}
+	if mut.origin == "detail" && m.view != viewDetail {
+		var cmd tea.Cmd
+		m.detail, cmd = m.detail.applyMutation(mut, m.api)
+		return m, cmd
+	}
+	return m.dispatchToView(mut)
 }
 
 // routeTopLevel handles non-SSE messages that the parent Model owns:
@@ -196,6 +257,9 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		}
 	case openDetailMsg:
 		next, cmd := m.handleOpenDetail(msg)
+		return next, cmd, true
+	case jumpDetailMsg:
+		next, cmd := m.handleJumpDetail(msg)
 		return next, cmd, true
 	case popDetailMsg:
 		m.view = viewList
@@ -275,29 +339,62 @@ func (m Model) routeSSE(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 // snapshot. Errors still update lm.err and clear loading via
 // applyFetched but leave the cache untouched so a transient failure
 // does not erase the prior snapshot.
+//
+// Caller responsibility: drop stale fetches via isStaleListFetch
+// before invoking populateCache — see Update.
 func (m Model) populateCache(msg tea.Msg) Model {
-	issues, err := fetchPayload(msg)
+	_, issues, err := fetchPayload(msg)
 	if err == nil && m.cache != nil {
-		m.cache.put(cacheKey{
-			allProjects: m.scope.allProjects,
-			projectID:   m.scope.projectID,
-			filter:      m.list.filter,
-		}, issues)
+		m.cache.put(m.currentCacheKey(), issues)
 	}
 	m.list = m.list.applyFetched(msg)
 	return m
 }
 
-// fetchPayload extracts (issues, err) from the two list-fetch message
-// shapes so populateCache can share one cache-update path across them.
-func fetchPayload(msg tea.Msg) ([]Issue, error) {
+// currentCacheKey is the cacheKey for the current scope/filter — the
+// authority for "is this fetch still relevant" comparisons.
+func (m Model) currentCacheKey() cacheKey {
+	return cacheKey{
+		allProjects: m.scope.allProjects,
+		projectID:   m.scope.projectID,
+		filter:      m.list.filter,
+	}
+}
+
+// fetchPayload extracts (dispatchKey, issues, err) from the two list-
+// fetch message shapes so populateCache can share one staleness +
+// cache-update path across them.
+func fetchPayload(msg tea.Msg) (cacheKey, []Issue, error) {
 	switch m := msg.(type) {
 	case initialFetchMsg:
-		return m.issues, m.err
+		return m.dispatchKey, m.issues, m.err
 	case refetchedMsg:
-		return m.issues, m.err
+		return m.dispatchKey, m.issues, m.err
 	}
-	return nil, nil
+	return cacheKey{}, nil, nil
+}
+
+// cacheKeysEqual reports whether two cacheKeys denote the same
+// scope+filter. cacheKey can't be compared with == because filter.Labels
+// is a slice — Go's spec disallows slice equality outside reflect.
+func cacheKeysEqual(a, b cacheKey) bool {
+	if a.allProjects != b.allProjects || a.projectID != b.projectID {
+		return false
+	}
+	af, bf := a.filter, b.filter
+	if af.Status != bf.Status || af.Owner != bf.Owner ||
+		af.Author != bf.Author || af.Search != bf.Search {
+		return false
+	}
+	if len(af.Labels) != len(bf.Labels) {
+		return false
+	}
+	for i := range af.Labels {
+		if af.Labels[i] != bf.Labels[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // handleEventReceived marks the cache stale, kicks off (or coalesces
@@ -339,10 +436,20 @@ func (m Model) eventAffectsView(msg eventReceivedMsg) bool {
 	return msg.projectID == m.scope.projectID
 }
 
-// maybeRefetchOpenDetail dispatches a single-issue GetIssue refetch
-// when the event names the currently-open detail issue. The fetch is
-// tagged with the current detail-open gen so applyFetched can drop it
-// if the user navigates away before the response lands.
+// maybeRefetchOpenDetail dispatches the four detail fetches (issue +
+// per-tab) when an SSE event names the currently-open detail issue.
+// All four run because the event-kind alone isn't enough to know which
+// tab needs refreshing — for example, issue.commented refreshes
+// comments but issue.linked refreshes links, and issue.relabeled
+// touches the body header. Refetching all four is cheap (the daemon
+// has these in cache) and keeps every tab fresh without a kind switch.
+//
+// The match requires both projectID and issueNumber to align with the
+// open detail. In all-projects scope, issue numbers are project-scoped,
+// so a project-B #42 event must NOT churn an open project-A #42 view.
+// Each fetch is tagged with the current detail-open gen so applyFetched
+// drops the result if the user navigates away before the response
+// lands.
 func (m Model) maybeRefetchOpenDetail(msg eventReceivedMsg) tea.Cmd {
 	if m.view != viewDetail || m.api == nil {
 		return nil
@@ -353,7 +460,18 @@ func (m Model) maybeRefetchOpenDetail(msg eventReceivedMsg) tea.Cmd {
 	if msg.issueNumber == 0 || msg.issueNumber != m.detail.issue.Number {
 		return nil
 	}
-	return fetchIssue(m.api, m.detail.scopePID, m.detail.issue.Number, m.detail.gen)
+	if msg.projectID != m.detail.scopePID {
+		return nil
+	}
+	pid := m.detail.scopePID
+	num := m.detail.issue.Number
+	gen := m.detail.gen
+	return tea.Batch(
+		fetchIssue(m.api, pid, num, gen),
+		fetchComments(m.api, pid, num, gen),
+		fetchEvents(m.api, pid, num, gen),
+		fetchLinks(m.api, pid, num, gen),
+	)
 }
 
 // handleRefetchTick fires after the debounce window. Clears the
@@ -452,20 +570,20 @@ func (m Model) canQuit() bool {
 // the three concurrent tab fetches via tea.Batch. The fetches run in
 // parallel so the user sees data on whichever tab is active first. The
 // detail model also remembers the project_id and all-projects flag so
-// the Enter-jump path (Task 8) has them without re-resolving scope.
+// the Enter-jump path has them without re-resolving scope.
 //
-// The detail-open generation increments on every open so an in-flight
-// fetch from a previously-open issue is dropped by applyFetched when
-// its tagged gen no longer matches dm.gen. The actor is seeded from
-// the list model so detail-side mutations carry the resolved identity
-// rather than the empty string.
+// The detail-open generation is allocated from m.nextGen — a Model-
+// level monotonic counter — so it never collides with a previously
+// jumped-and-backed snapshot's gen. The actor is seeded from the list
+// model so detail-side mutations carry the resolved identity rather
+// than the empty string.
 func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	iss := msg.issue
 	pid := detailProjectID(iss, m.scope)
-	priorGen := m.detail.gen
+	m.nextGen++
 	// Reset on open is the spec — no per-issue scroll memory.
 	m.detail = newDetailModel()
-	m.detail.gen = priorGen + 1
+	m.detail.gen = m.nextGen
 	m.detail.issue = &iss
 	m.detail.scopePID = pid
 	m.detail.allProjects = m.scope.allProjects
@@ -485,6 +603,51 @@ func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 		fetchComments(m.api, pid, iss.Number, gen),
 		fetchEvents(m.api, pid, iss.Number, gen),
 		fetchLinks(m.api, pid, iss.Number, gen),
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// handleJumpDetail performs an Enter-jump from the detail view to a
+// referenced issue. The current detailModel is snapshotted onto its
+// own navStack so handleBack can restore it; a fresh detailModel is
+// seeded with a new monotonic gen and the four fetches dispatch in
+// parallel. The active tab and actor are preserved so the user lands
+// in the same context.
+//
+// detail.handleEnter emits jumpDetailMsg rather than building the new
+// detail itself: the gen must come from m.nextGen so a snapshot
+// restored by handleBack with an older gen can't trick the next
+// jump's gen into colliding with a stale fetch.
+func (m Model) handleJumpDetail(msg jumpDetailMsg) (tea.Model, tea.Cmd) {
+	if m.api == nil {
+		return m, nil
+	}
+	if len(m.detail.navStack) >= detailNavCap {
+		return m, nil
+	}
+	prior := m.detail
+	prior.navStack = nil
+	pid := m.detail.scopePID
+	m.nextGen++
+	gen := m.nextGen
+	next := detailModel{
+		loading:         true,
+		gen:             gen,
+		activeTab:       m.detail.activeTab,
+		navStack:        append(m.detail.navStack, prior),
+		scopePID:        pid,
+		allProjects:     m.detail.allProjects,
+		actor:           m.detail.actor,
+		commentsLoading: true,
+		eventsLoading:   true,
+		linksLoading:    true,
+	}
+	m.detail = next
+	cmds := []tea.Cmd{
+		fetchIssue(m.api, pid, msg.number, gen),
+		fetchComments(m.api, pid, msg.number, gen),
+		fetchEvents(m.api, pid, msg.number, gen),
+		fetchLinks(m.api, pid, msg.number, gen),
 	}
 	return m, tea.Batch(cmds...)
 }

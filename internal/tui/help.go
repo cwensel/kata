@@ -56,7 +56,9 @@ func renderHelp(km keymap, width int, filter ListFilter) string {
 		subtleStyle.Render("press ? to return")), "\n")
 }
 
-// helpColumnCount picks how many sections share a row at width w.
+// helpColumnCount picks how many on-screen columns the layout uses at
+// width w. Wide terminals get the sections side-by-side; narrow ones
+// stack everything in a single column.
 func helpColumnCount(w int) int {
 	switch {
 	case w >= 120:
@@ -67,14 +69,26 @@ func helpColumnCount(w int) int {
 	return 1
 }
 
-// chunkSections splits sections into rows of n (clamped to ≥1).
-func chunkSections(s []helpSection, n int) [][]helpSection {
-	if n < 1 {
-		n = 1
+// chunkSections splits sections into cols on-screen columns by packing
+// sections vertically per column (ceil(len/cols) sections per column).
+// cols < 1 is clamped so a zero/negative width still renders something.
+//
+// Earlier this function treated the second argument as "sections per
+// chunk", which inverted the layout: helpColumnCount(120)=3 produced one
+// chunk of three sections (one screen column) instead of three single-
+// section chunks (three screen columns). The reframe matches the
+// helpColumnCount contract.
+func chunkSections(s []helpSection, cols int) [][]helpSection {
+	if cols < 1 {
+		cols = 1
+	}
+	perCol := (len(s) + cols - 1) / cols
+	if perCol < 1 {
+		perCol = 1
 	}
 	out := [][]helpSection{}
-	for i := 0; i < len(s); i += n {
-		out = append(out, s[i:min(i+n, len(s))])
+	for i := 0; i < len(s); i += perCol {
+		out = append(out, s[i:min(i+perCol, len(s))])
 	}
 	return out
 }

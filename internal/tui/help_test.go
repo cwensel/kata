@@ -138,13 +138,22 @@ func TestHelpToggle_QuitFromHelp(t *testing.T) {
 
 // TestHelp_GatedByInputting: pressing ? while a list-view inline prompt
 // is open must reach the buffer instead of opening help. The gate lives
-// on canQuit (model.go), shared with q and R.
+// on canQuit (model.go), shared with q and R. We assert both the
+// negative (view didn't switch) and the positive (the rune landed in
+// the search buffer) so a future "drop the rune entirely" regression
+// is also caught.
 func TestHelp_GatedByInputting(t *testing.T) {
 	m := initialModel(Options{})
 	m.list.search.inputting = true
+	m.list.search.field = searchFieldQuery
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	if out.(Model).view == viewHelp {
+	nm := out.(Model)
+	if nm.view == viewHelp {
 		t.Fatal("? opened help while inputting; should be gated")
+	}
+	if nm.list.search.buffer != "?" {
+		t.Fatalf("search.buffer = %q, want %q (rune must reach prompt)",
+			nm.list.search.buffer, "?")
 	}
 }
 
@@ -162,7 +171,8 @@ func TestHelp_RefetchWhileOpen_KeepsListInSync(t *testing.T) {
 	m.prevView = viewList
 	m.view = viewHelp
 	out, _ := m.Update(refetchedMsg{
-		issues: []Issue{{Number: 2, Title: "new"}},
+		dispatchKey: cacheKey{projectID: 1},
+		issues:      []Issue{{Number: 2, Title: "new"}},
 	})
 	nm := out.(Model)
 	if got := len(nm.list.issues); got != 1 {
@@ -178,5 +188,36 @@ func TestHelp_RefetchWhileOpen_KeepsListInSync(t *testing.T) {
 	}
 	if out2.(Model).list.issues[0].Number != 2 {
 		t.Fatal("returning to list must show refetched issues, not stale snapshot")
+	}
+}
+
+// TestHelp_InitialFetchAfterScopeToggle_KeepsListInSync: pressing R
+// (scope toggle) while the help overlay is open dispatches a fresh
+// fetchInitial that lands as initialFetchMsg. populateCache must apply
+// it to m.list at the top level so toggling back to the list shows
+// the new scope's rows. The earlier regression covered refetchedMsg
+// only; this exercises the initialFetchMsg path of the same bug.
+func TestHelp_InitialFetchAfterScopeToggle_KeepsListInSync(t *testing.T) {
+	m := initialModel(Options{})
+	m.scope = scope{projectID: 1, homeProjectID: 1, homeProjectName: "home"}
+	m.list.issues = []Issue{{Number: 1, Title: "single-project"}}
+	m.prevView = viewList
+	m.view = viewHelp
+	// Simulate an initialFetchMsg from a scope-toggle's fetchInitial.
+	out, _ := m.Update(initialFetchMsg{
+		dispatchKey: cacheKey{projectID: 1},
+		issues:      []Issue{{Number: 99, Title: "all-projects row"}},
+	})
+	nm := out.(Model)
+	if got := len(nm.list.issues); got != 1 || nm.list.issues[0].Number != 99 {
+		t.Fatalf("list.issues = %+v, want [{Number:99 ...}]", nm.list.issues)
+	}
+	// Closing the overlay must surface the refreshed rows.
+	out2, _ := nm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if out2.(Model).view != viewList {
+		t.Fatalf("after ? from help, view = %v, want viewList", out2.(Model).view)
+	}
+	if out2.(Model).list.issues[0].Number != 99 {
+		t.Fatal("returning to list must show post-toggle rows, not stale snapshot")
 	}
 }

@@ -92,7 +92,7 @@ func TestEditorTemplate_CreateIsEmpty(t *testing.T) {
 func TestTrimComments_PreservesMarkdownHeadings(t *testing.T) {
 	in := "# Heading\nbody"
 	want := "# Heading\nbody"
-	if got := trimComments(in); got != want {
+	if got := trimComments("comment", in); got != want {
 		t.Fatalf("trimComments() = %q, want %q", got, want)
 	}
 }
@@ -102,7 +102,7 @@ func TestTrimComments_PreservesMarkdownHeadings(t *testing.T) {
 func TestTrimComments_PreservesIndentedMarkdown(t *testing.T) {
 	in := "  # not a comment\nfoo"
 	want := "# not a comment\nfoo"
-	if got := trimComments(in); got != want {
+	if got := trimComments("comment", in); got != want {
 		t.Fatalf("trimComments() = %q, want %q", got, want)
 	}
 }
@@ -115,7 +115,7 @@ func TestTrimComments_StripsSentinelBlock(t *testing.T) {
 	in := "user body\n" +
 		promptStartSentinel + "\nignore me\n" + promptEndSentinel + "\nmore"
 	want := "user body\nmore"
-	if got := trimComments(in); got != want {
+	if got := trimComments("comment", in); got != want {
 		t.Fatalf("trimComments() = %q, want %q", got, want)
 	}
 }
@@ -127,7 +127,7 @@ func TestTrimComments_StripsSentinelBlock(t *testing.T) {
 func TestTrimComments_HeadingAndSentinelBlock(t *testing.T) {
 	in := "# My summary\nactual content\n" +
 		promptStartSentinel + "\nremoved\n" + promptEndSentinel
-	got := trimComments(in)
+	got := trimComments("comment", in)
 	if !strings.Contains(got, "# My summary") {
 		t.Fatalf("trimComments dropped Markdown heading: %q", got)
 	}
@@ -141,7 +141,7 @@ func TestTrimComments_HeadingAndSentinelBlock(t *testing.T) {
 // the caller can cancel the operation.
 func TestTrimComments_OnlySentinelBlockTrimsToEmpty(t *testing.T) {
 	in := "\n" + promptStartSentinel + "\nprompt\n" + promptEndSentinel + "\n"
-	if got := trimComments(in); got != "" {
+	if got := trimComments("comment", in); got != "" {
 		t.Fatalf("trimComments() = %q, want empty", got)
 	}
 }
@@ -153,11 +153,54 @@ func TestTrimComments_OnlySentinelBlockTrimsToEmpty(t *testing.T) {
 // content.
 func TestTrimComments_OrphanSentinelLeavesBufferAlone(t *testing.T) {
 	in := "real text\n" + promptStartSentinel + "\nrest"
-	got := trimComments(in)
+	got := trimComments("comment", in)
 	if !strings.Contains(got, promptStartSentinel) {
 		t.Fatalf("orphan sentinel should pass through, got %q", got)
 	}
 	if !strings.Contains(got, "rest") {
 		t.Fatalf("content after orphan sentinel dropped: %q", got)
+	}
+}
+
+// TestTrimComments_EditKindPreservesSentinelLiterals: an edit-kind
+// editor return must not strip sentinel-shaped text from user content.
+// The edit template seeds the existing body, so any START/END markers
+// in the buffer were typed by the user and need to survive.
+func TestTrimComments_EditKindPreservesSentinelLiterals(t *testing.T) {
+	in := "before\n" + promptStartSentinel + "\nuser typed this\n" +
+		promptEndSentinel + "\nafter"
+	got := trimComments("edit", in)
+	if !strings.Contains(got, promptStartSentinel) ||
+		!strings.Contains(got, promptEndSentinel) {
+		t.Fatalf("edit kind stripped sentinel literals: %q", got)
+	}
+	if !strings.Contains(got, "user typed this") {
+		t.Fatalf("edit kind dropped sentinel-block content: %q", got)
+	}
+}
+
+// TestTrimComments_CreateKindPreservesSentinelLiterals: same guarantee
+// as edit — the create template is empty, so sentinel-shaped text in
+// the buffer is user-authored.
+func TestTrimComments_CreateKindPreservesSentinelLiterals(t *testing.T) {
+	in := promptStartSentinel + "\nbody\n" + promptEndSentinel
+	got := trimComments("create", in)
+	if !strings.Contains(got, promptStartSentinel) {
+		t.Fatalf("create kind stripped sentinel literals: %q", got)
+	}
+}
+
+// TestTrimComments_HandlesCRLFAfterEnd: a Windows-style editor writes
+// CRLF after the END sentinel. stripSentinelBlock must consume the
+// full \r\n sequence so no stray \r leaks into the saved body.
+func TestTrimComments_HandlesCRLFAfterEnd(t *testing.T) {
+	in := "before\n" + promptStartSentinel + "\nprompt\n" +
+		promptEndSentinel + "\r\nafter"
+	got := trimComments("comment", in)
+	if strings.Contains(got, "\r") {
+		t.Fatalf("CRLF after END left stray carriage return: %q", got)
+	}
+	if !strings.Contains(got, "after") {
+		t.Fatalf("content after CRLF dropped: %q", got)
 	}
 }

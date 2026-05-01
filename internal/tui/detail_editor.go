@@ -42,7 +42,7 @@ func (dm detailModel) applyEditorReturned(
 		dm.status = errorStyle.Render("editor: " + m.err.Error())
 		return dm, nil
 	}
-	content := trimComments(m.content)
+	content := trimComments(m.kind, m.content)
 	if content == "" {
 		return dm, nil
 	}

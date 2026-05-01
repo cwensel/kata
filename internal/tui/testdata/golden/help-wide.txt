@@ -1,40 +1,20 @@
 kata — keybindings
 
-Global
-?         help
-q/ctrl+c  quit
-R         toggle project / all-projects
-
-List
-k/up    up
-j/down  down
-pgup    page up
-pgdown  page down
-g       first
-G       last
-enter   open detail
-n       new issue
-/       search
-s       cycle status filter
-o       filter by owner
-l       filter by label
-c       clear filters
-x       close
-r       reopen
-
-Detail
-tab            next tab
-shift+tab      prev tab
-enter          jump to referenced issue
-esc/backspace  back
-e              edit body
-c              new comment
-p              set parent
-b              add blocker
-L              add link
-+              add label
--              remove label
-a              assign owner
-A              clear owner    
+Global                                 List                       Detail                                 
+?         help                         k/up    up                 tab            next tab                
+q/ctrl+c  quit                         j/down  down               shift+tab      prev tab                
+R         toggle project / all-projectspgup    page up            enter          jump to referenced issue
+                                       pgdown  page down          esc/backspace  back                    
+                                       g       first              e              edit body               
+                                       G       last               c              new comment             
+                                       enter   open detail        p              set parent              
+                                       n       new issue          b              add blocker             
+                                       /       search             L              add link                
+                                       s       cycle status filter+              add label               
+                                       o       filter by owner    -              remove label            
+                                       l       filter by label    a              assign owner            
+                                       c       clear filters      A              clear owner             
+                                       x       close                                                     
+                                       r       reopen                                                    
 
 press ? to return

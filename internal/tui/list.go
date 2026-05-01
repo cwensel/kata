@@ -489,14 +489,17 @@ func (lm listModel) commitLabelPrompt(buf string) listModel {
 // anyway. The actual CreateIssue runs from applyEditorReturned once
 // $EDITOR exits — the user can save an empty buffer to skip the body,
 // in which case CreateIssue posts with body="".
+//
+// The original (untrimmed) title is staged so leading/trailing
+// whitespace the user typed deliberately survives to the wire, matching
+// the CLI's create flow which only trims for the emptiness check.
 func (lm listModel) submitNewIssue(
 	title string, _ listAPI, _ scope,
 ) (listModel, tea.Cmd) {
-	t := strings.TrimSpace(title)
-	if t == "" {
+	if strings.TrimSpace(title) == "" {
 		return lm, nil
 	}
-	lm.pendingTitle = t
+	lm.pendingTitle = title
 	return lm, editorCmd("create", editorTemplate("create", ""))
 }
 
@@ -519,7 +522,7 @@ func (lm listModel) applyEditorReturned(
 		lm.status = errorStyle.Render("editor: " + m.err.Error())
 		return lm, nil
 	}
-	body := trimComments(m.content)
+	body := trimComments(m.kind, m.content)
 	actor := lm.actor
 	pid := sc.projectID
 	return lm, func() tea.Msg {
@@ -537,14 +540,16 @@ func (lm listModel) applyEditorReturned(
 // Status. The command path mirrors fetchInitial. Owner/Author/Search
 // narrow the result via filteredIssues at render time.
 //
-// Note: rapid filter changes dispatch concurrent refetches. The latest
-// reply wins via simple last-write to lm.issues; older replies can race
-// over newer state when network latency reorders them. Task 11's SSE
-// consumer would amplify this — when SSE invalidation lands, consider
-// tagging refetchedMsg with a generation counter so applyFetched can
-// drop stale replies.
+// dispatchKey captures the scope/filter at dispatch time;
+// Model.populateCache compares it against the current state and drops
+// stale responses so a slow refetch can't overwrite the list after
+// the user has changed filter, switched scope, or another refetch
+// reordered ahead of it.
 func (lm listModel) refetchCmd(api listAPI, sc scope) tea.Cmd {
 	filter := lm.filter
+	dispatchKey := cacheKey{
+		allProjects: sc.allProjects, projectID: sc.projectID, filter: filter,
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -557,7 +562,7 @@ func (lm listModel) refetchCmd(api listAPI, sc scope) tea.Cmd {
 		} else {
 			issues, err = api.ListIssues(ctx, sc.projectID, filter)
 		}
-		return refetchedMsg{issues: issues, err: err}
+		return refetchedMsg{dispatchKey: dispatchKey, issues: issues, err: err}
 	}
 }
 
