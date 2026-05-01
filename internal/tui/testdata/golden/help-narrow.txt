@@ -1,0 +1,20 @@
+kata — keybindings
+
+Global                                 List                       Detail                                 
+?         help                         k/up    up                 tab            next tab                
+q/ctrl+c  quit                         j/down  down               shift+tab      prev tab                
+R         toggle project / all-projectspgup    page up            enter          jump to referenced issue
+                                       pgdown  page down          esc/backspace  back                    
+                                       g       first              e              edit body               
+                                       G       last               c              new comment             
+                                       enter   open detail        p              set parent              
+                                       n       new issue          b              add blocker             
+                                       /       search             L              add link                
+                                       s       cycle status filter+              add label               
+                                       o       filter by owner    -              remove label            
+                                       l       filter by label    a              assign owner            
+                                       c       clear filters      A              clear owner             
+                                       x       close                                                     
+                                       r       reopen                                                    
+
+press ? to return

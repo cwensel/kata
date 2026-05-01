@@ -239,6 +239,11 @@ func truncate(s string, w int) string {
 	return runewidth.Truncate(s, w-1, "…")
 }
 
+// renderNow is the clock injection point for humanizeRelative. Production
+// uses time.Now; snapshot tests override this to freeze time so the "Nh
+// ago" column in golden files doesn't churn as wall-clock advances.
+var renderNow = time.Now
+
 // humanizeRelative renders a timestamp as a small human delta
 // (e.g. "30s ago", "2h ago", "3d ago"). The zero value renders as a
 // dash so empty rows in tests stay readable; malformed inputs fail
@@ -247,7 +252,7 @@ func humanizeRelative(t time.Time) string {
 	if t.IsZero() {
 		return "-"
 	}
-	d := time.Since(t)
+	d := renderNow().Sub(t)
 	switch {
 	case d < time.Minute:
 		return fmt.Sprintf("%ds ago", int(d.Seconds()))
