@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"context"
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -17,6 +20,8 @@ const (
 // value so Update can mutate them in place without indirection.
 type Model struct {
 	opts   Options
+	api    *Client
+	scope  scope
 	view   viewID
 	width  int
 	height int
@@ -26,21 +31,46 @@ type Model struct {
 
 func initialModel(opts Options) Model {
 	applyDefaultColorMode()
-	m := Model{
+	return Model{
 		opts:   opts,
 		view:   viewList,
 		keymap: newKeymap(),
 		list:   newListModel(),
 	}
-	// Seed a fixture so Task 4's binary renders without a network. Task 5
-	// replaces this with a real fetch driven by Init().
-	m.list.issues = fixtureIssues()
-	return m
 }
 
-// Init returns startup commands for the TEA loop. Task 5 wires the
-// initial daemon fetch here.
-func (m Model) Init() tea.Cmd { return nil }
+// Init dispatches the initial fetch unless boot landed on the empty
+// state or no client is wired (the latter happens in unit tests that
+// drive the model directly via teatest.NewTestModel and feed
+// initialFetchMsg by hand). The list view sets loading=true at
+// construction so the spinner shows until initialFetchMsg arrives.
+func (m Model) Init() tea.Cmd {
+	if m.view == viewEmpty || m.api == nil {
+		return nil
+	}
+	return m.fetchInitial()
+}
+
+// fetchInitial returns a command that issues the first list fetch. The
+// scope drives whether this is single-project or cross-project. The
+// 5s ceiling matches the daemon's typical p95 list latency.
+func (m Model) fetchInitial() tea.Cmd {
+	api, sc := m.api, m.scope
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var (
+			issues []Issue
+			err    error
+		)
+		if sc.allProjects {
+			issues, err = api.ListAllIssues(ctx, ListFilter{})
+		} else {
+			issues, err = api.ListIssues(ctx, sc.projectID, ListFilter{})
+		}
+		return initialFetchMsg{issues: issues, err: err}
+	}
+}
 
 // Update routes messages to the active sub-view, with quit handled at
 // the top level so it works from every view.
@@ -57,7 +87,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case viewList:
 		var cmd tea.Cmd
-		m.list, cmd = m.list.Update(msg)
+		m.list, cmd = m.list.Update(msg, m.keymap)
 		return m, cmd
 	}
 	return m, nil
@@ -71,28 +101,3 @@ func (m Model) View() string {
 	}
 	return ""
 }
-
-// fixtureIssues seeds the list view for Task 4's smoke test. Task 5
-// replaces this with a real ListIssues call.
-func fixtureIssues() []Issue {
-	return []Issue{
-		{
-			Number: 1, Title: "fix login bug on Safari",
-			Status: "open", Owner: ptrString("claude-4.7"),
-			UpdatedAt: "2026-04-30T10:00:00Z",
-		},
-		{
-			Number: 2, Title: "rebuild search index",
-			Status: "closed", Owner: ptrString("wesm"),
-			UpdatedAt: "2026-04-29T10:00:00Z",
-		},
-		{
-			Number: 3, Title: "deleted example",
-			Status:    "open",
-			DeletedAt: ptrString("2026-04-28T10:00:00Z"),
-			UpdatedAt: "2026-04-28T10:00:00Z",
-		},
-	}
-}
-
-func ptrString(s string) *string { return &s }

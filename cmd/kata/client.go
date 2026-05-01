@@ -20,8 +20,6 @@ func ensureDaemon(ctx context.Context) (string, error) {
 // unix-socket base URL emitted by ensureDaemon. The TUI calls into
 // daemonclient directly; this wrapper exists only because every existing
 // CLI command site is already named for it.
-//
-//nolint:unused // consumed by upcoming command implementations (Tasks 22-27)
 func httpClientFor(ctx context.Context, baseURL string) (*http.Client, error) {
 	return daemonclient.NewHTTPClient(ctx, baseURL,
 		daemonclient.Opts{Timeout: 5 * time.Second})

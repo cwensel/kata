@@ -7,9 +7,10 @@ import (
 // listModel owns list-view state: the current rows, cursor, the filter
 // in effect, an optional active search prompt, and any boot/refetch
 // error to surface. filter and search.buffer are forward-declared for
-// Task 6 — read sites land then.
+// Task 6 — read sites land then. The keymap lives on the parent Model
+// and is passed into Update/View; one instance keeps the help view in
+// lockstep with what handlers actually do.
 type listModel struct {
-	keymap  keymap
 	issues  []Issue
 	cursor  int
 	filter  ListFilter //nolint:unused // Task 6
@@ -25,20 +26,21 @@ type searchState struct {
 	buffer    string //nolint:unused // Task 6 inline search
 }
 
-// newListModel returns a zero-valued listModel with the canonical keymap.
+// newListModel returns a listModel waiting for its first fetch. loading=true
+// keeps the spinner-equivalent on screen until initialFetchMsg lands.
 func newListModel() listModel {
-	return listModel{keymap: newKeymap()}
+	return listModel{loading: true}
 }
 
 // Update handles list-view keys and fetch results. The top-level Model
 // keeps responsibility for global keys (q, ?, R) and SSE messages.
-func (lm listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
+func (lm listModel) Update(msg tea.Msg, km keymap) (listModel, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.KeyMsg:
 		if lm.search.inputting {
 			return lm.handleSearchKey(m)
 		}
-		lm = lm.applyNavKey(m)
+		lm = lm.applyNavKey(m, km)
 	case initialFetchMsg, refetchedMsg:
 		lm = lm.applyFetched(m)
 	}
@@ -48,19 +50,19 @@ func (lm listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 // applyNavKey handles cursor navigation. Filter bindings (s/o/l/c),
 // inline search ('/'), and the inline create prompt ('n') land in
 // Task 6. Mutation keys (x/r) land in Task 9.
-func (lm listModel) applyNavKey(msg tea.KeyMsg) listModel {
+func (lm listModel) applyNavKey(msg tea.KeyMsg, km keymap) listModel {
 	switch {
-	case lm.keymap.Up.matches(msg):
+	case km.Up.matches(msg):
 		if lm.cursor > 0 {
 			lm.cursor--
 		}
-	case lm.keymap.Down.matches(msg):
+	case km.Down.matches(msg):
 		if lm.cursor < len(lm.issues)-1 {
 			lm.cursor++
 		}
-	case lm.keymap.Home.matches(msg):
+	case km.Home.matches(msg):
 		lm.cursor = 0
-	case lm.keymap.End.matches(msg):
+	case km.End.matches(msg):
 		if n := len(lm.issues); n > 0 {
 			lm.cursor = n - 1
 		}
