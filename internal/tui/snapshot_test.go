@@ -185,6 +185,24 @@ func TestSnapshot_List_EmptyAfterFilter(t *testing.T) {
 // with two active filters: status:open and owner:alice. The label chip
 // is intentionally skipped (Issue projection lacks labels) so the
 // scenario uses owner instead of label per Roborev-fix #2's guidance.
+// TestSnapshot_List_NewIssueRow covers the M3.5c inline new-issue
+// row at the top of the table. The row hosts a textinput; the
+// underlying issues shift down by one within the data window.
+func TestSnapshot_List_NewIssueRow(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = snapListFixture()
+	chrome := viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+		input:     newNewIssueRow(),
+	}
+	got := lm.View(120, 30, chrome)
+	assertGolden(t, "list-new-issue-row", got)
+}
+
 // TestSnapshot_QuitConfirmModal covers the M3.5b quit-confirm
 // modal overlaid on a list view. The modal sits centered over the
 // rendered background; underlying content stays painted around it.

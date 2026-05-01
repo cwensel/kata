@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -253,53 +252,44 @@ func TestList_ClearFilters_ZeroesEveryField(t *testing.T) {
 	}
 }
 
-// TestList_NewIssue_EmptyTitleDoesNotCallAPI: the user opens `n`, hits
-// Enter immediately, and the create endpoint must not be called.
-func TestList_NewIssue_EmptyTitleDoesNotCallAPI(t *testing.T) {
+// TestList_NewIssueRow_EmptyTitleDoesNotCallAPI: pressing `n` opens
+// the M3.5c inline new-issue row at the top of the table. Pressing
+// Enter on an empty buffer closes the row without calling
+// api.CreateIssue.
+func TestList_NewIssueRow_EmptyTitleDoesNotCallAPI(t *testing.T) {
 	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm, _ := lmFromUpdate(listModel{}, runeKey('n'), km, api, sc)
-	if !lm.search.inputting || lm.search.field != searchFieldNewTitle {
-		t.Fatalf("expected new-title prompt, got %+v", lm.search)
+	m := mFixtureForBar()
+	m = openBarFromCmd(t, m, 'n')
+	if m.input.kind != inputNewIssueRow {
+		t.Fatalf("expected inputNewIssueRow, got %v", m.input.kind)
 	}
-	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := out.(Model)
 	if cmd != nil {
-		// commitPrompt returns nil for empty new title; cmd should be nil.
-		t.Fatal("empty title must not return a command")
+		t.Fatalf("empty title must not dispatch a cmd, got %T", cmd)
 	}
 	if api.createCalls != 0 {
 		t.Fatalf("createCalls = %d, want 0", api.createCalls)
 	}
-	if lm.search.inputting {
-		t.Fatal("prompt should close after Enter even on empty title")
+	if nm.input.kind != inputNone {
+		t.Fatalf("row should close after empty Enter, got %v", nm.input.kind)
 	}
 }
 
-// TestList_NewIssue_WhitespaceTitleDoesNotCallAPI: a buffer of only
-// spaces (or other whitespace) is also a no-op rather than a server
-// round-trip that the daemon would reject anyway. Regression for
-// finding 28: trim before the empty-check so " " doesn't churn the
-// daemon.
-func TestList_NewIssue_WhitespaceTitleDoesNotCallAPI(t *testing.T) {
+// TestList_NewIssueRow_WhitespaceTitleDoesNotCallAPI: a buffer of
+// only spaces/tabs trims to "" — same no-op path.
+func TestList_NewIssueRow_WhitespaceTitleDoesNotCallAPI(t *testing.T) {
 	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm, _ := lmFromUpdate(listModel{}, runeKey('n'), km, api, sc)
+	m := mFixtureForBar()
+	m.api = nil // force test path even though the empty branch returns nil cmd
+	_ = api
+	m = openBarFromCmd(t, m, 'n')
 	for _, r := range "   \t  " {
-		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
+		m, _ = stepModel(m, runeKey(r))
 	}
-	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
-		t.Fatal("whitespace-only title must not dispatch an editor cmd")
-	}
-	if api.createCalls != 0 {
-		t.Fatalf("createCalls = %d, want 0", api.createCalls)
-	}
-	if lm.pendingTitle != "" {
-		t.Fatalf("pendingTitle = %q, want empty", lm.pendingTitle)
+		t.Fatalf("whitespace-only title must not dispatch a cmd, got %T", cmd)
 	}
 }
 
@@ -337,176 +327,94 @@ func TestList_Cursor_MovesInFilteredSpace(t *testing.T) {
 	}
 }
 
-// TestList_NewIssue_NonEmptyTitleStagesAndDispatchesEditor: `n` then
-// "fix bug" then Enter stages the title in lm.pendingTitle and returns
-// a tea.Cmd that suspends to $EDITOR. CreateIssue must NOT have run
-// yet — the body comes back via editorReturnedMsg in a second pass.
-func TestList_NewIssue_NonEmptyTitleStagesAndDispatchesEditor(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm, _ := lmFromUpdate(listModel{actor: "tester"}, runeKey('n'), km, api, sc)
-	for _, r := range "fix bug" {
-		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
-	}
-	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
-	if cmd == nil {
-		t.Fatal("expected editor cmd from Enter on non-empty title")
-	}
-	if lm.pendingTitle != "fix bug" {
-		t.Fatalf("pendingTitle = %q, want %q", lm.pendingTitle, "fix bug")
-	}
-	if api.createCalls != 0 {
-		t.Fatalf("createCalls = %d, want 0 (must wait for editor)",
-			api.createCalls)
-	}
-}
-
-// TestList_NewIssue_PreservesTitleWhitespace: a title with intentional
-// surrounding whitespace ("  spaced title  ") must reach pendingTitle
-// verbatim. submitNewIssue uses TrimSpace only for the emptiness gate;
-// the original buffer is staged so the wire receives what the user
-// typed, matching cmd/kata/create.go's no-strip behavior.
-func TestList_NewIssue_PreservesTitleWhitespace(t *testing.T) {
+// TestList_NewIssueRow_TitleCreatesImmediately: typing a title and
+// pressing Enter dispatches CreateIssue with that title and an
+// empty body. M4 will chain a centered body form after success for
+// optional refinement; M3.5c's contract is "create now, refine later
+// or never."
+func TestList_NewIssueRow_TitleCreatesImmediately(t *testing.T) {
 	api := &fakeListAPI{
 		createResult: &MutationResp{Issue: &Issue{Number: 42}},
 	}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm := listModel{actor: "tester"}
-	lm, _ = lm.submitNewIssue("  spaced title  ", api, sc)
-	if lm.pendingTitle != "  spaced title  " {
-		t.Fatalf("pendingTitle = %q, want %q (whitespace preserved)",
-			lm.pendingTitle, "  spaced title  ")
-	}
-	// Drive the editor return to confirm the wire body sees the same.
-	msg := editorReturnedMsg{kind: "create", content: ""}
-	lm, cmd := lm.Update(msg, km, api, sc)
-	if cmd == nil {
-		t.Fatal("expected create cmd from editor return")
-	}
-	_ = drainCmd(t, lm, cmd, km, api, sc)
-	if api.lastCreateBody.Title != "  spaced title  " {
-		t.Fatalf("create title = %q, want %q (whitespace preserved on wire)",
-			api.lastCreateBody.Title, "  spaced title  ")
-	}
-}
-
-// TestList_NewIssue_BodyFlow_PostsTitleAndBody: the editor returns
-// content="some body". CreateIssue must be called with both the staged
-// title and the body. lm.pendingTitle is cleared after dispatch.
-func TestList_NewIssue_BodyFlow_PostsTitleAndBody(t *testing.T) {
-	api := &fakeListAPI{
-		createResult: &MutationResp{Issue: &Issue{Number: 42, Title: "fix bug"}},
-	}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm, _ := lmFromUpdate(listModel{actor: "tester"}, runeKey('n'), km, api, sc)
+	m := mFixtureForBar()
+	m.api = (*Client)(nil) // commitInput dispatches via m.list — needs scope only
+	m.scope = scope{projectID: 7}
+	m.list.actor = "tester"
+	m = openBarFromCmd(t, m, 'n')
 	for _, r := range "fix bug" {
-		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
+		m, _ = stepModel(m, runeKey(r))
 	}
-	lm, _ = lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
-	if lm.pendingTitle != "fix bug" {
-		t.Fatalf("pendingTitle = %q, want %q", lm.pendingTitle, "fix bug")
-	}
-	msg := editorReturnedMsg{kind: "create", content: "some body"}
-	lm, cmd := lmFromUpdate(lm, msg, km, api, sc)
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := out.(Model)
 	if cmd == nil {
-		t.Fatal("expected create cmd from editorReturnedMsg")
+		t.Fatal("expected create cmd from Enter on non-empty title")
 	}
-	if lm.pendingTitle != "" {
-		t.Fatalf("pendingTitle = %q, want empty after dispatch", lm.pendingTitle)
+	if nm.input.kind != inputNone {
+		t.Fatalf("row should close after Enter, got %v", nm.input.kind)
 	}
-	lm = drainCmd(t, lm, cmd, km, api, sc)
+	// Drive the cmd against the fake API to confirm the wire shape.
+	// Model.list.dispatchCreateIssue captures the api param via
+	// closure; we drive lm.dispatchCreateIssue directly here for the
+	// API assertion since the Model.api is *Client (not detailAPI-
+	// fitable). The behavior under test is dispatchCreateIssue's
+	// title/body assembly.
+	_, dispatchCmd := nm.list.dispatchCreateIssue(api, nm.scope, "fix bug")
+	if dispatchCmd == nil {
+		t.Fatal("expected dispatch cmd from non-empty title")
+	}
+	dispatchCmd()
 	if api.createCalls != 1 {
 		t.Fatalf("createCalls = %d, want 1", api.createCalls)
 	}
 	if api.lastCreateBody.Title != "fix bug" {
 		t.Fatalf("title = %q, want %q", api.lastCreateBody.Title, "fix bug")
 	}
-	if api.lastCreateBody.Body != "some body" {
-		t.Fatalf("body = %q, want %q", api.lastCreateBody.Body, "some body")
+	if api.lastCreateBody.Body != "" {
+		t.Fatalf("body = %q, want empty (M3.5c contract)", api.lastCreateBody.Body)
 	}
 	if api.lastCreateBody.Actor != "tester" {
 		t.Fatalf("actor = %q, want tester", api.lastCreateBody.Actor)
 	}
 }
 
-// TestList_NewIssue_EmptyBodyStillCreates: a saved-empty editor returns
-// kind=create content="" — CreateIssue should still post (body="")
-// because the title is what governs creation; body is optional.
-func TestList_NewIssue_EmptyBodyStillCreates(t *testing.T) {
+// TestList_NewIssueRow_PreservesTitleWhitespace: leading/trailing
+// whitespace the user typed reaches the wire untrimmed. dispatchCreateIssue
+// only TrimSpace's for the emptiness gate.
+func TestList_NewIssueRow_PreservesTitleWhitespace(t *testing.T) {
 	api := &fakeListAPI{
 		createResult: &MutationResp{Issue: &Issue{Number: 42}},
 	}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm := listModel{actor: "tester", pendingTitle: "fix bug"}
-	msg := editorReturnedMsg{kind: "create", content: ""}
-	lm, cmd := lm.Update(msg, km, api, sc)
-	if cmd == nil {
-		t.Fatal("expected create cmd even with empty body")
-	}
-	_ = drainCmd(t, lm, cmd, km, api, sc)
-	if api.createCalls != 1 {
-		t.Fatalf("createCalls = %d, want 1", api.createCalls)
-	}
-	if api.lastCreateBody.Body != "" {
-		t.Fatalf("body = %q, want empty", api.lastCreateBody.Body)
-	}
-}
-
-// TestList_NewIssue_EditorError_SurfacesStatus: if the editor exits
-// with an error, no CreateIssue is dispatched and the user sees a
-// hint on the status line.
-func TestList_NewIssue_EditorError_SurfacesStatus(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm := listModel{actor: "tester", pendingTitle: "fix bug"}
-	msg := editorReturnedMsg{kind: "create", err: errStub("boom")}
-	out, cmd := lm.Update(msg, km, api, sc)
-	if cmd != nil {
-		t.Fatalf("expected nil cmd on editor error, got %T", cmd)
-	}
-	if api.createCalls != 0 {
-		t.Fatalf("createCalls = %d, want 0", api.createCalls)
-	}
-	if !strings.Contains(out.status, "boom") {
-		t.Fatalf("status = %q, want to contain editor error", out.status)
-	}
-	if out.pendingTitle != "" {
-		t.Fatalf("pendingTitle should clear on error, got %q", out.pendingTitle)
-	}
-}
-
-// TestList_NewIssue_PreservesMarkdownHeadings: the create flow does
-// NOT strip Markdown headings from the body. Earlier the # strip
-// destroyed legitimate headings; the sentinel-block strip leaves them
-// intact. The create-kind template seeds an empty buffer, so there is
-// nothing to strip in this path.
-func TestList_NewIssue_PreservesMarkdownHeadings(t *testing.T) {
-	api := &fakeListAPI{
-		createResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm := listModel{actor: "tester", pendingTitle: "fix bug"}
-	msg := editorReturnedMsg{kind: "create", content: "# Heading\nbody"}
-	lm, cmd := lm.Update(msg, km, api, sc)
+	lm := listModel{actor: "tester"}
+	_, cmd := lm.dispatchCreateIssue(api, scope{projectID: 7}, "  spaced title  ")
 	if cmd == nil {
 		t.Fatal("expected create cmd")
 	}
-	_ = drainCmd(t, lm, cmd, km, api, sc)
-	if api.lastCreateBody.Body != "# Heading\nbody" {
-		t.Fatalf("body = %q, want %q (heading preserved)",
-			api.lastCreateBody.Body, "# Heading\nbody")
+	cmd()
+	if api.lastCreateBody.Title != "  spaced title  " {
+		t.Fatalf("title = %q, want %q (whitespace preserved)",
+			api.lastCreateBody.Title, "  spaced title  ")
+	}
+}
+
+// TestList_NewIssueRow_EscCancels: pressing Esc closes the row with
+// no API call.
+func TestList_NewIssueRow_EscCancels(t *testing.T) {
+	api := &fakeListAPI{}
+	m := mFixtureForBar()
+	m = openBarFromCmd(t, m, 'n')
+	for _, r := range "fix bug" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	nm := out.(Model)
+	if cmd != nil {
+		t.Fatalf("Esc must not dispatch a cmd, got %T", cmd)
+	}
+	if nm.input.kind != inputNone {
+		t.Fatal("Esc should close the new-issue row")
+	}
+	if api.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0", api.createCalls)
 	}
 }
 
@@ -518,9 +426,9 @@ func TestList_NewIssue_AllProjectsModeIsNoOp(t *testing.T) {
 	km := newKeymap()
 	sc := scope{allProjects: true}
 
-	lm, _ := lmFromUpdate(listModel{}, runeKey('n'), km, api, sc)
-	if lm.search.inputting {
-		t.Fatal("must not open prompt in all-projects mode")
+	lm, cmd := lmFromUpdate(listModel{}, runeKey('n'), km, api, sc)
+	if cmd != nil {
+		t.Fatalf("expected no openInputCmd in all-projects mode, got %T", cmd)
 	}
 	if lm.status == "" {
 		t.Fatal("expected status hint explaining the no-op")
@@ -565,9 +473,6 @@ func TestList_LabelKey_NoLongerOpensPrompt(t *testing.T) {
 	m, _ = stepModel(m, runeKey('l'))
 	if m.input.kind != inputNone {
 		t.Fatalf("'l' opened input shell: kind=%v", m.input.kind)
-	}
-	if m.list.search.inputting {
-		t.Fatalf("'l' opened legacy prompt: field=%v", m.list.search.field)
 	}
 }
 

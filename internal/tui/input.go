@@ -27,8 +27,10 @@ const (
 	inputParentPrompt      // detail `p` — set parent
 	inputBlockerPrompt     // detail `b` — add blocker
 	inputLinkPrompt        // detail `L` — add link "kind number"
+	inputNewIssueRow       // list `n` — inline title row at top of table
 	// M4 adds:
-	//   inputNewIssueForm, inputEditBodyForm, inputCommentForm
+	//   inputEditBodyForm, inputCommentForm (the body-form-after-create
+	//   path triggered by inputNewIssueRow's commit lands in M4 too)
 )
 
 // isPanelPrompt reports whether a kind is one of the M3b panel-local
@@ -223,6 +225,22 @@ func newOwnerBar(current ListFilter) inputState {
 		title:     "owner",
 		fields:    []inputField{{kind: fieldSingleLine, input: ti}},
 		preFilter: current,
+	}
+}
+
+// newNewIssueRow constructs the M3.5c inline new-issue row that
+// renders at the top of the list table. Single textinput field for
+// the title; commits to api.CreateIssue with empty body. M4 will
+// chain the centered body form after create for optional
+// refinement.
+func newNewIssueRow() inputState {
+	ti := textinput.New()
+	ti.Focus()
+	ti.Prompt = ""
+	return inputState{
+		kind:   inputNewIssueRow,
+		title:  "new issue",
+		fields: []inputField{{kind: fieldSingleLine, input: ti}},
 	}
 }
 

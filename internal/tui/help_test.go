@@ -133,24 +133,19 @@ func TestHelpToggle_QuitFromHelp(t *testing.T) {
 	}
 }
 
-// TestHelp_GatedByInputting: pressing ? while a list-view inline prompt
-// is open must reach the buffer instead of opening help. The gate lives
-// on canQuit (model.go), shared with q and R. We assert both the
-// negative (view didn't switch) and the positive (the rune landed in
-// the search buffer) so a future "drop the rune entirely" regression
-// is also caught.
+// TestHelp_GatedByInputting: pressing ? while the M3a inline command
+// bar is open must reach the bar's textinput buffer instead of
+// opening help. canQuit gates the global keys via m.input.kind.
 func TestHelp_GatedByInputting(t *testing.T) {
 	m := initialModel(Options{})
-	m.list.search.inputting = true
-	m.list.search.field = searchFieldQuery
+	m.input = newSearchBar(ListFilter{})
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
 	nm := out.(Model)
 	if nm.view == viewHelp {
-		t.Fatal("? opened help while inputting; should be gated")
+		t.Fatal("? opened help while bar was active; should be gated")
 	}
-	if nm.list.search.buffer != "?" {
-		t.Fatalf("search.buffer = %q, want %q (rune must reach prompt)",
-			nm.list.search.buffer, "?")
+	if v := nm.input.activeField().value(); v != "?" {
+		t.Fatalf("bar buffer = %q, want %q (rune must reach prompt)", v, "?")
 	}
 }
 

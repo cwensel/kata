@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -24,55 +23,32 @@ type listAPI interface {
 	Reopen(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
 }
 
-// searchField names which filter is being edited inline. The shared
-// searchState holds the buffer; field discriminates so Enter routes
-// the buffer to the right slot of ListFilter (or to CreateIssue).
+// listModel owns list-view state: the current rows, cursor, the
+// filter in effect, the resolved actor for mutations, and a one-shot
+// status line that the View renders inside the chrome's info-line
+// slot. The keymap lives on the parent Model and is passed into
+// Update; one instance keeps the help view in lockstep with what
+// handlers actually do.
 //
-// searchFieldLabel was removed when the label-filter UI was retired;
-// see keymap.go for the rationale (the wire doesn't carry Labels yet).
-type searchField int
-
-const (
-	searchFieldNone searchField = iota
-	searchFieldQuery
-	searchFieldOwner
-	searchFieldNewTitle
-)
-
-// listModel owns list-view state: the current rows, cursor, the filter
-// in effect, an optional active inline prompt, the resolved actor for
-// mutations, and a one-shot status line that the View renders below the
-// table. pendingTitle stages the new-issue title between the inline-
-// prompt commit and the editor-returned body so CreateIssue can be
-// posted with both fields once the user finishes editing. The keymap
-// lives on the parent Model and is passed into Update; one instance
-// keeps the help view in lockstep with what handlers actually do.
+// selectedNumber tracks the issue.Number under the cursor for
+// identity-based selection: when a refetch reorders rows (issues
+// are sorted by updated_at DESC, so any background mutation can
+// shuffle them), the cursor is restored onto the same issue rather
+// than the same index. Zero means "no selection" (empty list,
+// pre-fetch state).
 //
-// selectedNumber tracks the issue.Number under the cursor for identity-
-// based selection: when a refetch reorders rows (issues are sorted by
-// updated_at DESC, so any background mutation can shuffle them), the
-// cursor is restored onto the same issue rather than the same index.
-// Zero means "no selection" (empty list, pre-fetch state).
+// M3.5c retired lm.search and lm.pendingTitle: the inline command
+// bar (M3a) covers search/owner; the inline new-issue row (M3.5c)
+// covers `n`. All input flows now live on Model.input.
 type listModel struct {
 	issues         []Issue
 	cursor         int
 	selectedNumber int64
 	filter         ListFilter
-	search         searchState
 	actor          string
 	status         string
-	pendingTitle   string
 	err            error
 	loading        bool
-}
-
-// searchState tracks the inline prompt. inputting=true while the user
-// is typing; the buffer is committed on Enter into the slot named by
-// field (filter.Search/Owner/Labels, or a new-issue title).
-type searchState struct {
-	inputting bool
-	field     searchField
-	buffer    string
 }
 
 // newListModel returns a listModel waiting for its first fetch. loading=true
@@ -81,10 +57,9 @@ func newListModel() listModel {
 	return listModel{loading: true}
 }
 
-// Update handles list-view keys and fetch results. The top-level Model
-// keeps responsibility for global keys (q, ?, R) and SSE messages, but
-// it must skip those handlers while lm.search.inputting is true so
-// character keys reach the prompt buffer (see model.go::Update).
+// Update handles list-view keys and fetch results. The top-level
+// Model keeps responsibility for global keys (q, ?, R), input shells
+// (Model.input), modals (Model.modal), and SSE messages.
 //
 // initialFetchMsg/refetchedMsg are also applied by Model.populateCache
 // before dispatch (so help/detail-overlay refetches keep lm.issues in
@@ -96,16 +71,11 @@ func (lm listModel) Update(
 ) (listModel, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.KeyMsg:
-		if lm.search.inputting {
-			return lm.handleSearchKey(m, api, sc)
-		}
 		return lm.applyNavKey(m, km, api, sc)
 	case initialFetchMsg, refetchedMsg:
 		lm = lm.applyFetched(m)
 	case mutationDoneMsg:
 		return lm.applyMutation(m, api, sc)
-	case editorReturnedMsg:
-		return lm.applyEditorReturned(m, api, sc)
 	}
 	return lm, nil
 }
@@ -363,15 +333,15 @@ func (lm listModel) applyFilterKey(
 	return lm, nil, false
 }
 
-// applyPromptKey opens an input shell or the (still-inline) new-issue
-// prompt. `/` and `o` now hand off to the M3a inline command bar via
-// openInputMsg — Model.openInput constructs the inputState. `n`
-// stays on the inline-title prompt path until M4 lands the centered
-// new-issue form.
+// applyPromptKey opens an input shell. `/` and `o` open the inline
+// command bar (M3a); `n` opens the inline new-issue row at the top
+// of the table (M3.5c). All three hand off via openInputMsg so
+// Model.openInput constructs the inputState centrally.
 //
-// Returns (lm, openCmd, true) for `/`/`o` because the cmd is what the
-// parent dispatches; (lm, nil, true) for `n` (no cmd needed; the
-// state mutation happens locally via beginNewIssue).
+// The new-issue row is gated to non-all-projects scopes because the
+// daemon's create endpoint is project-scoped; in all-projects mode
+// (which is itself gated until daemon support lands) we surface a
+// status hint instead of opening the row.
 func (lm listModel) applyPromptKey(
 	msg tea.KeyMsg, km keymap, sc scope,
 ) (listModel, tea.Cmd, bool) {
@@ -381,8 +351,11 @@ func (lm listModel) applyPromptKey(
 	case km.FilterOwner.matches(msg):
 		return lm, openInputCmd(inputOwnerBar), true
 	case km.NewIssue.matches(msg):
-		next, ok := lm.beginNewIssue(sc), true
-		return next, nil, ok
+		if sc.allProjects {
+			lm.status = "cannot create from all-projects view; cd into a project"
+			return lm, nil, true
+		}
+		return lm, openInputCmd(inputNewIssueRow), true
 	}
 	return lm, nil, false
 }
@@ -409,28 +382,6 @@ func (lm listModel) clampCursorToFilter() listModel {
 	if lm.cursor >= visible {
 		lm.cursor = visible - 1
 	}
-	return lm
-}
-
-// beginNewIssue opens the title prompt unless the scope is all-projects
-// (the daemon's create endpoint is project-scoped and the TUI has no
-// project picker yet). The status-line message replaces the chip strip
-// briefly so the user knows why nothing happened.
-//
-// TODO(task-12): replace lm.status string with Model-level toast
-// machinery (messages.go::toastExpiredMsg + toast).
-func (lm listModel) beginNewIssue(sc scope) listModel {
-	if sc.allProjects {
-		lm.status = "cannot create from all-projects view; cd into a project"
-		return lm
-	}
-	return lm.startPrompt(searchFieldNewTitle)
-}
-
-// startPrompt seeds the inline prompt with an empty buffer.
-func (lm listModel) startPrompt(f searchField) listModel {
-	lm.search = searchState{inputting: true, field: f, buffer: ""}
-	lm.status = ""
 	return lm
 }
 
@@ -544,99 +495,29 @@ func listMutationSuccessText(m mutationDoneMsg) string {
 	return ""
 }
 
-// handleSearchKey processes characters while a prompt is open. Enter
-// commits the buffer to the right slot; Esc cancels; printable runes
-// append; Backspace deletes the trailing rune.
-func (lm listModel) handleSearchKey(
-	msg tea.KeyMsg, api listAPI, sc scope,
-) (listModel, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEnter:
-		return lm.commitPrompt(api, sc)
-	case tea.KeyEsc:
-		lm.search = searchState{}
-		return lm, nil
-	case tea.KeyBackspace:
-		lm.search.buffer = trimLastRune(lm.search.buffer)
-		return lm, nil
-	case tea.KeyRunes, tea.KeySpace:
-		lm.search.buffer += filterPrintable(string(msg.Runes))
-		return lm, nil
-	}
-	return lm, nil
-}
-
-// commitPrompt routes the buffer to the configured field. The empty
-// case for owner/search clears that filter; the empty case for a
-// new-issue title cancels the create entirely. The cursor is reset to
-// 0 on filter commits because the filtered-row count changes (and
-// lm.cursor indexes into the filtered slice).
-func (lm listModel) commitPrompt(api listAPI, sc scope) (listModel, tea.Cmd) {
-	field, buf := lm.search.field, lm.search.buffer
-	lm.search = searchState{}
-	switch field {
-	case searchFieldQuery:
-		lm.filter.Search = buf
-		lm.cursor = 0
-		return lm, lm.refetchCmd(api, sc)
-	case searchFieldOwner:
-		lm.filter.Owner = buf
-		lm.cursor = 0
-		return lm, lm.refetchCmd(api, sc)
-	case searchFieldNewTitle:
-		return lm.submitNewIssue(buf, api, sc)
-	}
-	return lm, nil
-}
-
-// submitNewIssue stages the title and dispatches the editor for an
-// optional body. Empty or whitespace-only titles are quiet no-ops so
-// accidental Enter (or a buffer of just spaces) doesn't churn the
-// daemon with a CreateIssue that would fail validation server-side
-// anyway. The actual CreateIssue runs from applyEditorReturned once
-// $EDITOR exits — the user can save an empty buffer to skip the body,
-// in which case CreateIssue posts with body="".
+// dispatchCreateIssue is the M3.5c commit path for the inline new-issue
+// row. Called from Model.commitInput when the user presses enter on
+// the new-issue title field. Empty/whitespace-only titles short-
+// circuit so accidental Enter in an empty row is a quiet no-op. The
+// untrimmed title reaches the wire so leading/trailing whitespace
+// the user deliberately typed survives.
 //
-// The original (untrimmed) title is staged so leading/trailing
-// whitespace the user typed deliberately survives to the wire, matching
-// the CLI's create flow which only trims for the emptiness check.
-func (lm listModel) submitNewIssue(
-	title string, _ listAPI, _ scope,
+// Body is left empty; M4 will chain a centered body form after the
+// successful create for optional refinement. For now, an immediate
+// create with body="" is the contract.
+func (lm listModel) dispatchCreateIssue(
+	api listAPI, sc scope, title string,
 ) (listModel, tea.Cmd) {
 	if strings.TrimSpace(title) == "" {
 		return lm, nil
 	}
-	lm.pendingTitle = title
-	return lm, editorCmd("create", editorTemplate("create", ""))
-}
-
-// applyEditorReturned routes a "create" editorReturnedMsg back into a
-// CreateIssue dispatch. Editor errors clear the pending title and
-// surface a status hint; otherwise the trimmed buffer becomes the body
-// (empty body is fine — Task 6 already supports body-less creates).
-func (lm listModel) applyEditorReturned(
-	m editorReturnedMsg, api listAPI, sc scope,
-) (listModel, tea.Cmd) {
-	if m.kind != "create" {
-		return lm, nil
-	}
-	title := lm.pendingTitle
-	lm.pendingTitle = ""
-	if title == "" {
-		return lm, nil
-	}
-	if m.err != nil {
-		lm.status = errorStyle.Render("editor: " + m.err.Error())
-		return lm, nil
-	}
-	body := trimComments(m.kind, m.content)
 	actor := lm.actor
 	pid := sc.projectID
 	return lm, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.CreateIssue(ctx, pid, CreateIssueBody{
-			Title: title, Body: body, Actor: actor,
+			Title: title, Body: "", Actor: actor,
 		})
 		return mutationDoneMsg{origin: "list", kind: "create", resp: resp, err: err}
 	}
@@ -718,28 +599,4 @@ func matchesFilter(iss Issue, f ListFilter) bool {
 		}
 	}
 	return true
-}
-
-// trimLastRune removes the last rune of s. Iterating once over the
-// string keeps multi-byte runes intact (a naive s[:len(s)-1] would
-// chop the trailing byte of a multi-byte rune in half).
-func trimLastRune(s string) string {
-	if s == "" {
-		return s
-	}
-	r := []rune(s)
-	return string(r[:len(r)-1])
-}
-
-// filterPrintable strips non-printable runes from the buffer keystroke.
-// tea.KeyRunes for control codes occasionally arrives as a rune slice
-// containing \x00 etc.; this keeps the prompt clean.
-func filterPrintable(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if unicode.IsPrint(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }

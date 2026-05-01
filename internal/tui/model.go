@@ -319,12 +319,16 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 // bars, the search/owner buffer pre-fills from the existing filter
 // so the user can refine an active filter without retyping. For
 // panel-local prompts, the issue number lands in the prompt title.
+// For the inline new-issue row (M3.5c), the row state has no issue
+// context — Enter dispatches CreateIssue with the typed title.
 func (m Model) openInput(kind inputKind) Model {
 	switch {
 	case kind == inputSearchBar:
 		m.input = newSearchBar(m.list.filter)
 	case kind == inputOwnerBar:
 		m.input = newOwnerBar(m.list.filter)
+	case kind == inputNewIssueRow:
+		m.input = newNewIssueRow()
 	case kind.isPanelPrompt():
 		num := int64(0)
 		if m.detail.issue != nil {
@@ -380,17 +384,25 @@ func (m Model) applyLiveBarFilter() Model {
 // commitInput closes the input shell. For command bars, the live-
 // mirrored filter stays applied. For panel-local prompts, the
 // trimmed buffer dispatches the corresponding detail-side mutation
-// via dispatchPanelPromptCommit before the input clears.
+// via dispatchPanelPromptCommit before the input clears. For the
+// inline new-issue row, the title (untrimmed — preserves intentional
+// whitespace) dispatches CreateIssue via lm.dispatchCreateIssue.
 func (m Model) commitInput() (Model, tea.Cmd) {
 	kind := m.input.kind
-	buf := ""
+	rawBuf := ""
 	if f := m.input.activeField(); f != nil {
-		buf = strings.TrimSpace(f.value())
+		rawBuf = f.value()
 	}
+	trimmed := strings.TrimSpace(rawBuf)
 	m.input = inputState{}
-	if kind.isPanelPrompt() && buf != "" {
+	switch {
+	case kind.isPanelPrompt() && trimmed != "":
 		var cmd tea.Cmd
-		m.detail, cmd = m.detail.dispatchPanelPromptCommit(m.api, kind, buf)
+		m.detail, cmd = m.detail.dispatchPanelPromptCommit(m.api, kind, trimmed)
+		return m, cmd
+	case kind == inputNewIssueRow:
+		var cmd tea.Cmd
+		m.list, cmd = m.list.dispatchCreateIssue(m.api, m.scope, rawBuf)
 		return m, cmd
 	}
 	return m, nil
@@ -728,23 +740,14 @@ func toastExpireCmd(d time.Duration) tea.Cmd {
 }
 
 // canQuit reports whether a global keystroke (q, ?, R) should be
-// honored. False while an input shell is open (search/owner bar from
-// M3a; panel-local prompts from M3b; centered forms from M4) or
-// while a confirm modal is open (M3.5b quit confirm). The input gate
-// is the single source of truth for "user is typing into a field"
-// — global keys must reach the field instead of firing.
-//
-// lm.search.inputting is still checked for the new-issue flow which
-// retains the inline-prompt path until M3.5c (inline new-issue row)
-// supersedes it.
+// honored. False while an input shell (M3a/M3b/M3.5c bars/prompts
+// /forms) or a confirm modal (M3.5b quit confirm) is open. Both
+// gates redirect global keys into the field instead of firing.
 func (m Model) canQuit() bool {
 	if m.modal != modalNone {
 		return false
 	}
 	if m.input.kind != inputNone {
-		return false
-	}
-	if m.list.search.inputting {
 		return false
 	}
 	return true

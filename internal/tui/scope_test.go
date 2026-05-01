@@ -73,24 +73,19 @@ func TestScopeToggle_RKeyDispatch_Gated(t *testing.T) {
 	}
 }
 
-// TestScopeToggle_GatedByInputting: pressing R while a list-view inline
-// prompt is open must reach the buffer instead of toggling scope. The
-// gate lives on canQuit (model.go), shared with q and ?. We assert
-// both the negative (scope didn't toggle) and the positive (the rune
-// landed in the search buffer) so a "drop the rune entirely"
-// regression is also caught.
+// TestScopeToggle_GatedByInputting: pressing R while the M3a inline
+// command bar is open must reach the bar's textinput buffer instead
+// of toggling scope. canQuit gates global keys via m.input.kind.
 func TestScopeToggle_GatedByInputting(t *testing.T) {
 	m := scopeFixtureSingle()
-	m.list.search.inputting = true
-	m.list.search.field = searchFieldQuery
+	m.input = newSearchBar(ListFilter{})
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
 	nm := out.(Model)
 	if nm.scope.allProjects {
-		t.Fatal("R toggled scope while inputting; should be gated")
+		t.Fatal("R toggled scope while bar was active; should be gated")
 	}
-	if nm.list.search.buffer != "R" {
-		t.Fatalf("search.buffer = %q, want %q (rune must reach prompt)",
-			nm.list.search.buffer, "R")
+	if v := nm.input.activeField().value(); v != "R" {
+		t.Fatalf("bar buffer = %q, want %q (rune must reach prompt)", v, "R")
 	}
 }
 
