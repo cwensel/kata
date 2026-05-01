@@ -25,7 +25,8 @@ func newRunsAppender(path string, maxSize int64, keep int) (*runsAppender, error
 	if maxSize <= 0 || keep < 1 {
 		return nil, fmt.Errorf("runs appender: maxSize=%d keep=%d invalid", maxSize, keep)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G304: path is daemon-controlled state-dir filename
+	a := &runsAppender{path: path, maxSize: maxSize, keep: keep}
+	f, err := a.openActive()
 	if err != nil {
 		return nil, fmt.Errorf("open runs.jsonl: %w", err)
 	}
@@ -34,7 +35,16 @@ func newRunsAppender(path string, maxSize int64, keep int) (*runsAppender, error
 		_ = f.Close()
 		return nil, fmt.Errorf("stat runs.jsonl: %w", err)
 	}
-	return &runsAppender{path: path, maxSize: maxSize, keep: keep, file: f, size: st.Size()}, nil
+	a.file = f
+	a.size = st.Size()
+	return a, nil
+}
+
+// openActive opens a.path with the appender's standard flags. Centralized
+// here so the four open sites (init, post-close recovery, rotate-final,
+// reopenActive) share one //nolint:gosec justification.
+func (a *runsAppender) openActive() (*os.File, error) {
+	return os.OpenFile(a.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G304: path is daemon-controlled state-dir filename
 }
 
 func (a *runsAppender) Append(r runRecord) {
@@ -58,13 +68,10 @@ func (a *runsAppender) Append(r runRecord) {
 	n, _ := a.file.Write(line)
 	a.size += int64(n)
 	if a.size >= a.maxSize {
-		if err := a.rotateLocked(); err != nil {
-			// Rotation failure is best-effort: keep appending to the
-			// active file — its size will keep growing past threshold
-			// rather than block writes. Surfaced via daemon log on
-			// next attempt.
-			_ = err
-		}
+		// Rotation failure is best-effort: subsequent appends keep
+		// targeting the active file (or are dropped via the nil-guard
+		// if reopen also failed). Append uptime > size cap.
+		_ = a.rotateLocked()
 	}
 }
 
@@ -93,7 +100,7 @@ func (a *runsAppender) rotateLocked() error {
 	if err := a.file.Close(); err != nil {
 		// Failed to close: try to reopen so subsequent appends still
 		// hit a valid handle.
-		if f, openErr := os.OpenFile(a.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); openErr == nil { //nolint:gosec // G304: path is daemon-controlled state-dir filename
+		if f, openErr := a.openActive(); openErr == nil {
 			a.file = f
 		}
 		return fmt.Errorf("close active before rotate: %w", err)
@@ -107,7 +114,7 @@ func (a *runsAppender) rotateLocked() error {
 		a.reopenActive()
 		return fmt.Errorf("rename active -> .1: %w", err)
 	}
-	f, err := os.OpenFile(a.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G304: path is daemon-controlled state-dir filename
+	f, err := a.openActive()
 	if err != nil {
 		// Active was renamed to .1; reopening creates a fresh file.
 		// If even that fails, append is broken until the next rotate
@@ -144,7 +151,7 @@ func (a *runsAppender) shiftRotated() error {
 // a.file stays nil and Append's nil-check skips the write rather than
 // panicking; the next rotateLocked attempt may succeed.
 func (a *runsAppender) reopenActive() {
-	if f, err := os.OpenFile(a.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil { //nolint:gosec // G304: path is daemon-controlled state-dir filename
+	if f, err := a.openActive(); err == nil {
 		a.file = f
 		if st, statErr := os.Stat(a.path); statErr == nil {
 			a.size = st.Size()

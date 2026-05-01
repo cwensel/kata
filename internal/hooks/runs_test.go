@@ -3,6 +3,7 @@ package hooks
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,8 +74,12 @@ func TestRunsAppender_KeepsAtMostKeepFiles(t *testing.T) {
 			HookCommand: "/usr/local/bin/notify"})
 	}
 	for _, n := range []string{".1", ".2"} {
-		if _, err := os.Stat(path + n); err != nil {
+		st, err := os.Stat(path + n)
+		if err != nil {
 			t.Fatalf("expected %s to exist: %v", path+n, err)
+		}
+		if st.Size() == 0 {
+			t.Fatalf("%s is empty; rotation produced an empty file", path+n)
 		}
 	}
 	if _, err := os.Stat(path + ".3"); err == nil {
@@ -85,7 +90,10 @@ func TestRunsAppender_KeepsAtMostKeepFiles(t *testing.T) {
 func TestRunsAppender_ConcurrentAppends_NoInterleave(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "runs.jsonl")
-	app, err := newRunsAppender(path, 1<<20, 5)
+	// Small threshold + many writes guarantees rotation happens
+	// concurrently with appends, so this also exercises locking
+	// across the rotate-while-writing path.
+	app, err := newRunsAppender(path, 1024, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,19 +104,34 @@ func TestRunsAppender_ConcurrentAppends_NoInterleave(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for i := 0; i < 100; i++ {
-				app.Append(runRecord{Version: 1, EventID: int64(id*1000 + i), Result: "ok"})
+				app.Append(runRecord{Version: 1, EventID: int64(id*1000 + i), Result: "ok",
+					HookCommand: "/usr/local/bin/something/longer"})
 			}
 		}(w)
 	}
 	wg.Wait()
-	data, err := os.ReadFile(path) //nolint:gosec // G304: test-controlled path under t.TempDir()
-	if err != nil {
-		t.Fatal(err)
+	files := []string{path}
+	for i := 1; i <= 5; i++ {
+		if _, err := os.Stat(fmt.Sprintf("%s.%d", path, i)); err == nil {
+			files = append(files, fmt.Sprintf("%s.%d", path, i))
+		}
 	}
-	for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		var r runRecord
-		if err := json.Unmarshal([]byte(line), &r); err != nil {
-			t.Fatalf("line %d invalid JSON: %v (line=%q)", i, err, line)
+	if len(files) < 2 {
+		t.Fatalf("expected rotation to produce at least one .N file, only saw active")
+	}
+	for _, f := range files {
+		data, err := os.ReadFile(f) //nolint:gosec // G304: test-controlled path under t.TempDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if line == "" {
+				continue
+			}
+			var r runRecord
+			if err := json.Unmarshal([]byte(line), &r); err != nil {
+				t.Fatalf("%s line %d invalid JSON: %v (line=%q)", f, i, err, line)
+			}
 		}
 	}
 }
