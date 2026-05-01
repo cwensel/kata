@@ -226,14 +226,19 @@ func runJob(ctx context.Context, shutdown <-chan struct{}, job HookJob, deps run
 	// Resolve the alias once and reuse for stdin payload AND env vars
 	// (spec §6.1). Doubling the resolver call would double DB load and
 	// risk inconsistent results if the underlying alias mutated.
+	// The frozen wrapper still reports aliasErr so buildAliasBlock can
+	// log it; buildEnv only sees the gated `useAlias` so a resolver
+	// that returns (snap, true, err) doesn't leak KATA_ALIAS_* env
+	// vars while the stdin payload omits the alias block.
 	asnap, hasAlias, aliasErr := deps.Alias(ctx, job.Event)
+	useAlias := hasAlias && aliasErr == nil
 	logf := func(format string, args ...any) { deps.DaemonLog.Printf(format, args...) }
 	stdinPayload, payloadTruncated := buildStdinJSON(ctx, job.Event, deps.Project, deps.Issue, deps.Comment,
 		frozenAliasResolver(asnap, hasAlias, aliasErr), logf)
 
 	cmd := exec.Command(job.Hook.Command, job.Hook.Args...) //nolint:gosec // G204: command validated at config load
 	cmd.Dir = job.Hook.WorkingDir
-	cmd.Env = buildEnv(job.Hook.UserEnv, job.Event, asnap, hasAlias)
+	cmd.Env = buildEnv(job.Hook.UserEnv, job.Event, asnap, useAlias)
 	cmd.Stdin = bytes.NewReader(stdinPayload)
 	cmd.Stdout = rc.outFile
 	cmd.Stderr = rc.errFile

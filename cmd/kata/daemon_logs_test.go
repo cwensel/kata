@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,6 +211,104 @@ func TestEmitNewLines_PartialTrailingLine_NotConsumed(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"event_id":2`) {
 		t.Fatalf("second line should print after completion: %q", stdout.String())
+	}
+}
+
+// TestFollowActive_NoMark_EmitsExistingContent pins the contract that
+// when runHookLogOnce did not see runs.jsonl (mark.set=false), follow
+// emits everything currently in the file. This covers the case where
+// the active file appears between one-shot and follow.
+func TestFollowActive_NoMark_EmitsExistingContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runs.jsonl")
+	if err := os.WriteFile(path, []byte(`{"event_id":42,"result":"ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	f := &hookLogFilter{hookIndex: -1}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := followActive(ctx, &buf, io.Discard, path, activeMark{}, f); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"event_id":42`) {
+		t.Fatalf("unset mark should emit existing content: %q", buf.String())
+	}
+}
+
+// TestFollowActive_MarkAtSize_DoesNotReEmit pins the contract that
+// when runHookLogOnce already consumed the file up to mark.size,
+// follow resumes there and does NOT re-print prior content.
+func TestFollowActive_MarkAtSize_DoesNotReEmit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runs.jsonl")
+	initial := []byte(`{"event_id":1,"result":"ok"}` + "\n")
+	if err := os.WriteFile(path, initial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	f := &hookLogFilter{hookIndex: -1}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	mark := activeMark{set: true, info: info, size: info.Size()}
+	if err := followActive(ctx, &buf, io.Discard, path, mark, f); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), `"event_id":1`) {
+		t.Fatalf("mark at size should suppress re-emission: %q", buf.String())
+	}
+}
+
+// TestRunHookLogOnce_Mark_ReportsActiveFileSize verifies that the
+// one-shot pass reports a set mark with the size of runs.jsonl after
+// it was read, so tail can resume at the exact byte offset.
+func TestRunHookLogOnce_Mark_ReportsActiveFileSize(t *testing.T) {
+	_, dir, _ := setupHooksDir(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := `{"event_id":1,"result":"ok"}` + "\n"
+	path := filepath.Join(dir, "runs.jsonl")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	mark, err := runHookLogOnce(&stdout, &stderr, 100, &hookLogFilter{hookIndex: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mark.set {
+		t.Fatal("mark should be set when runs.jsonl was in the snapshot")
+	}
+	if mark.size != int64(len(contents)) {
+		t.Fatalf("mark.size = %d, want %d", mark.size, len(contents))
+	}
+}
+
+// TestRunHookLogOnce_Mark_UnsetWhenActiveAbsent verifies that the
+// one-shot mark stays unset when runs.jsonl is absent — so follow
+// later starts at offset 0 once the file appears.
+func TestRunHookLogOnce_Mark_UnsetWhenActiveAbsent(t *testing.T) {
+	_, dir, _ := setupHooksDir(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Only a rotated file exists.
+	if err := os.WriteFile(filepath.Join(dir, "runs.jsonl.1"),
+		[]byte(`{"event_id":99,"result":"ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	mark, err := runHookLogOnce(&stdout, &stderr, 100, &hookLogFilter{hookIndex: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mark.set {
+		t.Fatal("mark must stay unset when runs.jsonl wasn't in snapshot")
 	}
 }
 

@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -142,6 +143,36 @@ func TestRunner_AliasResolverInvokedOnce(t *testing.T) {
 	runJob(context.Background(), make(chan struct{}), job, rs.deps)
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("alias resolver invocations = %d, want 1", got)
+	}
+}
+
+// TestRunner_AliasResolverErr_NoEnvLeak pins the contract that a
+// resolver returning (snap, hasAlias=true, err) must NOT export
+// KATA_ALIAS_* env vars: stdin's buildAliasBlock omits the alias
+// block on err, so env must agree to keep the two views consistent.
+func TestRunner_AliasResolverErr_NoEnvLeak(t *testing.T) {
+	rs := newRunnerSetup(t)
+	bin := hookprobePath(t)
+	rs.deps.Alias = func(_ context.Context, _ db.Event) (AliasSnapshot, bool, error) {
+		return AliasSnapshot{Identity: "github.com/wesm/kata", Kind: "git", RootPath: rs.dir},
+			true, errors.New("resolver boom")
+	}
+	var got runRecord
+	rs.deps.AppendRun = func(r runRecord) { got = r }
+	job := HookJob{
+		Event: sampleEvent("issue.created"),
+		Hook:  ResolvedHook{Index: 0, Command: bin, Args: []string{"env", "KATA_ALIAS_IDENTITY"}, Timeout: 2 * time.Second, WorkingDir: rs.dir},
+	}
+	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	if got.Result != "ok" {
+		t.Fatalf("expected ok, got %q", got.Result)
+	}
+	out, err := os.ReadFile(got.StdoutPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("KATA_ALIAS_IDENTITY must be empty when resolver returned err: %q", out)
 	}
 }
 

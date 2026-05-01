@@ -43,7 +43,8 @@ func daemonLogsCmd() *cobra.Command {
 			if tail {
 				return runHookLogTail(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), limit, f)
 			}
-			return runHookLogOnce(cmd.OutOrStdout(), cmd.ErrOrStderr(), limit, f)
+			_, err := runHookLogOnce(cmd.OutOrStdout(), cmd.ErrOrStderr(), limit, f)
+			return err
 		},
 	}
 	cmd.Flags().BoolVar(&hooks, "hooks", false, "show hook run logs")
@@ -95,21 +96,46 @@ func jsonInt(rec map[string]json.RawMessage, key string) int {
 	return n
 }
 
+// activeMark records the identity and size of runs.jsonl at the
+// moment runHookLogOnce finished consuming it. Tail uses the mark to
+// resume follow exactly where the one-shot pass stopped, so records
+// appended *between* one-shot and follow aren't dropped on the floor
+// even when awaitActiveFile's first stat happens after the new write.
+type activeMark struct {
+	set  bool
+	info os.FileInfo
+	size int64
+}
+
 // runHookLogOnce reads runs.jsonl.K → runs.jsonl in chronological order
 // and prints up to limit matching records (the *last* limit, not the
 // first — most recent failures are usually what the operator wants).
-func runHookLogOnce(stdout, stderr io.Writer, limit int, f *hookLogFilter) error {
+// The returned mark is set when runs.jsonl was part of the snapshot
+// and carries its post-read identity/size; followActive uses it to
+// pick the correct starting offset.
+func runHookLogOnce(stdout, stderr io.Writer, limit int, f *hookLogFilter) (activeMark, error) {
 	files, err := orderedRunsFiles()
 	if err != nil {
-		return err
+		return activeMark{}, err
 	}
-	var matches []string
+	var (
+		matches []string
+		mark    activeMark
+	)
 	for _, p := range files {
 		m, err := readMatchesFromFile(p, stderr, f)
 		if err != nil {
-			return err
+			return mark, err
 		}
 		matches = append(matches, m...)
+		if filepath.Base(p) == "runs.jsonl" {
+			// Stat AFTER reading so mark.size matches the byte boundary
+			// the bufio scanner consumed. Stat'ing before would race
+			// with concurrent appends and could leave a gap.
+			if info, statErr := os.Stat(p); statErr == nil {
+				mark = activeMark{set: true, info: info, size: info.Size()}
+			}
+		}
 	}
 	start := 0
 	if limit > 0 && len(matches) > limit {
@@ -118,7 +144,7 @@ func runHookLogOnce(stdout, stderr io.Writer, limit int, f *hookLogFilter) error
 	for _, m := range matches[start:] {
 		writeLine(stdout, m)
 	}
-	return nil
+	return mark, nil
 }
 
 // writeLine emits one log record + newline as raw bytes. Routed
@@ -167,50 +193,43 @@ func readMatchesFromFile(path string, stderr io.Writer, f *hookLogFilter) ([]str
 }
 
 // runHookLogTail prints the last `limit` matches from existing files,
-// then follows the active runs.jsonl. Detects rotation by os.SameFile
-// identity change or size shrink. When awaitActiveFile had to wait for
-// runs.jsonl to appear, follow starts at offset 0 so the file's initial
-// content (which runHookLogOnce missed) is emitted; otherwise follow
-// starts at the file's current size to avoid double-emitting content
-// that runHookLogOnce already printed.
+// then follows the active runs.jsonl. The mark from runHookLogOnce is
+// passed through so followActive resumes at the exact offset the
+// one-shot pass stopped consuming — rather than the file's current
+// size, which can have grown between one-shot and follow.
 func runHookLogTail(ctx context.Context, stdout, stderr io.Writer, limit int, f *hookLogFilter) error {
-	if err := runHookLogOnce(stdout, stderr, limit, f); err != nil {
+	mark, err := runHookLogOnce(stdout, stderr, limit, f)
+	if err != nil {
 		return err
 	}
-	active, waited, err := awaitActiveFile(ctx)
+	active, err := awaitActiveFile(ctx)
 	if err != nil || active == "" {
 		return err
 	}
-	return followActive(ctx, stdout, stderr, active, waited, f)
+	return followActive(ctx, stdout, stderr, active, mark, f)
 }
 
-// awaitActiveFile blocks until runs.jsonl exists (or ctx is done) and
-// reports whether the call had to wait. waited=false means the file
-// existed on the first stat (runHookLogOnce already saw it); waited=true
-// means it appeared later and its current contents are unprinted.
-//
-// Specifically watches for runs.jsonl rather than "any file in the
+// awaitActiveFile blocks until runs.jsonl exists (or ctx is done).
+// Watches runs.jsonl specifically rather than "any file in the
 // directory" — a rotated-only directory (runs.jsonl.N present, active
 // missing) must NOT short-circuit, otherwise --tail would follow a
 // rotated file that never gets new content.
-func awaitActiveFile(ctx context.Context) (path string, waited bool, err error) {
+func awaitActiveFile(ctx context.Context) (string, error) {
 	root, err := hookRunsRoot()
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	active := filepath.Join(root, "runs.jsonl")
-	first := true
 	for {
 		switch _, statErr := os.Stat(active); {
 		case statErr == nil:
-			return active, !first, nil
+			return active, nil
 		case !errors.Is(statErr, fs.ErrNotExist):
-			return "", false, statErr
+			return "", statErr
 		}
-		first = false
 		select {
 		case <-ctx.Done():
-			return "", false, nil
+			return "", nil
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
@@ -224,16 +243,18 @@ type followState struct {
 
 // followActive polls the active runs.jsonl, emitting newly appended
 // matching records. Detects rotation via os.SameFile identity change
-// or size shrink (rewinds prevSize to zero on rotation). When
-// startAtZero is true, prevSize stays 0 so the file's existing content
-// is emitted on the first tick — used when runs.jsonl appeared after
-// runHookLogOnce ran and its initial bytes are still unprinted.
-func followActive(ctx context.Context, stdout, stderr io.Writer, active string, startAtZero bool, f *hookLogFilter) error {
+// or size shrink. The mark from runHookLogOnce decides the starting
+// offset: when mark.set is true AND the active file is the same
+// inode/identity, follow resumes at mark.size (where the one-shot
+// pass stopped consuming); otherwise follow starts at 0, which covers
+// (a) the active file appeared after the one-shot, (b) rotation
+// happened between one-shot and follow, or (c) size shrank.
+func followActive(ctx context.Context, stdout, stderr io.Writer, active string, mark activeMark, f *hookLogFilter) error {
 	st := &followState{}
 	if info, err := os.Stat(active); err == nil {
 		st.prevInfo = info
-		if !startAtZero {
-			st.prevSize = info.Size()
+		if mark.set && os.SameFile(mark.info, info) && info.Size() >= mark.size {
+			st.prevSize = mark.size
 		}
 	}
 	for {
