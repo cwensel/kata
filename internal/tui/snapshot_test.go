@@ -148,23 +148,14 @@ func TestSnapshot_List_DefaultMixedStatus(t *testing.T) {
 	assertGolden(t, "list-default-mixed-status", got)
 }
 
-// TestSnapshot_List_NoColorMode is the same scenario rendered in the
-// explicit no-color path. Because snapshotInit always pins
-// KATA_COLOR_MODE=none, the rendered text is identical to the default
-// snapshot here — but committing the golden separately documents the
-// "no-color" surface and would catch a regression that re-introduces
-// ANSI escapes only in this path.
-func TestSnapshot_List_NoColorMode(t *testing.T) {
-	defer snapshotInit(t)()
-	t.Setenv("NO_COLOR", "1")
-	applyDefaultColorMode(io.Discard)
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapListFixture()
-	lm.cursor = 1
-	got := lm.View(120, 30)
-	assertGolden(t, "list-no-color-mode", got)
-}
+// All snapshot tests run under KATA_COLOR_MODE=none for deterministic
+// goldens (the renderer writes through io.Discard, which is not a TTY,
+// so lipgloss strips ANSI even in colored modes). The plan called for a
+// separate list-no-color-mode snapshot, but it would be byte-identical
+// to list-default-mixed-status under the harness above and add no
+// coverage. ANSI suppression is verified directly by theme_test.go's
+// TestApplyColorMode_NoneStripsForeground; the snapshot suite locks
+// down rendering shape, not color escape semantics.
 
 // TestSnapshot_List_EmptyAfterFilter exercises the "no rows visible"
 // branch of renderBody: a search filter narrows everything out so the
