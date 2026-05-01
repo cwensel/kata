@@ -59,10 +59,17 @@ type detailAPI interface {
 // support the Task 9 mutation path: modal is the inline label/owner/
 // link prompt, status is the one-shot toast text (Task 12 will swap to
 // timed expiry), and actor is the user identity threaded into mutations.
+//
+// gen is the detail-open generation: it increments every time the user
+// opens or jumps to a different issue. Every async fetch and detail-
+// originated mutation captures the current gen at dispatch time, and
+// applyFetched/applyMutation discard messages whose gen no longer
+// matches so an in-flight response cannot pollute a different issue.
 type detailModel struct {
 	issue       *Issue
 	loading     bool
 	err         error
+	gen         int64
 	activeTab   detailTab
 	scroll      int // body scroll offset in lines
 	tabCursor   int // active-tab row cursor
@@ -101,22 +108,36 @@ func (dm detailModel) Update(msg tea.Msg, km keymap, api detailAPI) (detailModel
 
 // applyFetched seeds dm with the payload from one of the four fetched-
 // messages. Errors are last-write-wins; mergeErr factors that out so
-// each branch is a two-liner.
+// each branch is a two-liner. Messages whose gen does not match dm.gen
+// are dropped so an in-flight fetch cannot pollute a different issue
+// after Esc + reopen or an Enter-jump to a referenced issue.
 func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
 	switch m := msg.(type) {
 	case detailFetchedMsg:
+		if m.gen != dm.gen {
+			return dm
+		}
 		dm.loading = false
 		if m.issue != nil {
 			dm.issue = m.issue
 		}
 		dm.err = mergeErr(dm.err, m.err)
 	case commentsFetchedMsg:
+		if m.gen != dm.gen {
+			return dm
+		}
 		dm.comments = m.comments
 		dm.err = mergeErr(dm.err, m.err)
 	case eventsFetchedMsg:
+		if m.gen != dm.gen {
+			return dm
+		}
 		dm.events = m.events
 		dm.err = mergeErr(dm.err, m.err)
 	case linksFetchedMsg:
+		if m.gen != dm.gen {
+			return dm
+		}
 		dm.links = m.links
 		dm.err = mergeErr(dm.err, m.err)
 	}
@@ -249,22 +270,29 @@ func (dm detailModel) jumpTarget() (int64, bool) {
 // jumpTo pushes the current dm onto its own nav stack and swaps in a
 // fresh detail seeded with loading=true. The active tab is preserved
 // so the user lands on the same tab. Fetches run in parallel via Batch.
+// gen advances so any fetch already in flight from the prior detail
+// view is discarded by applyFetched when it lands on the new dm. The
+// actor is preserved so a detail-side mutation after the jump still
+// carries the resolved identity.
 func (dm detailModel) jumpTo(api detailAPI, number int64) (detailModel, tea.Cmd) {
 	prior := dm
 	prior.navStack = nil
 	pid := dm.scopePID
+	gen := dm.gen + 1
 	next := detailModel{
 		loading:     true,
+		gen:         gen,
 		activeTab:   dm.activeTab,
 		navStack:    append(dm.navStack, prior),
 		scopePID:    pid,
 		allProjects: dm.allProjects,
+		actor:       dm.actor,
 	}
 	cmds := []tea.Cmd{
-		fetchIssue(api, pid, number),
-		fetchComments(api, pid, number),
-		fetchEvents(api, pid, number),
-		fetchLinks(api, pid, number),
+		fetchIssue(api, pid, number, gen),
+		fetchComments(api, pid, number, gen),
+		fetchEvents(api, pid, number, gen),
+		fetchLinks(api, pid, number, gen),
 	}
 	return next, tea.Batch(cmds...)
 }

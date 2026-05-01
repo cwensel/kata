@@ -451,21 +451,24 @@ func TestDetail_FetchCommands_RoundTrip(t *testing.T) {
 		eventsResult:   []EventLogEntry{{ID: 2, Type: "issue.created"}},
 		linksResult:    []LinkEntry{{ID: 3, Type: "blocks"}},
 	}
-	cm, ok := fetchComments(api, 7, 42)().(commentsFetchedMsg)
+	cm, ok := fetchComments(api, 7, 42, 1)().(commentsFetchedMsg)
 	if !ok {
 		t.Fatalf("expected commentsFetchedMsg")
 	}
 	if len(cm.comments) != 1 || cm.comments[0].Author != "a" {
 		t.Fatalf("comments payload wrong: %+v", cm.comments)
 	}
-	em, ok := fetchEvents(api, 7, 42)().(eventsFetchedMsg)
+	if cm.gen != 1 {
+		t.Fatalf("commentsFetchedMsg.gen = %d, want 1", cm.gen)
+	}
+	em, ok := fetchEvents(api, 7, 42, 1)().(eventsFetchedMsg)
 	if !ok {
 		t.Fatalf("expected eventsFetchedMsg")
 	}
 	if len(em.events) != 1 || em.events[0].Type != "issue.created" {
 		t.Fatalf("events payload wrong: %+v", em.events)
 	}
-	lm, ok := fetchLinks(api, 7, 42)().(linksFetchedMsg)
+	lm, ok := fetchLinks(api, 7, 42, 1)().(linksFetchedMsg)
 	if !ok {
 		t.Fatalf("expected linksFetchedMsg")
 	}
@@ -884,5 +887,247 @@ func TestDetail_ApplyRowCursor_StylesOnlyWhenSelected(t *testing.T) {
 	if styled != want {
 		t.Fatalf("cursor branch did not apply selectedStyle: got %q want %q",
 			styled, want)
+	}
+}
+
+// TestDetail_StaleFetch_DroppedAcrossOpen: open issue A → in-flight
+// fetch for A lands after the user has popped and reopened B. The B
+// view must not pick up A's comments/events/links/issue.
+func TestDetail_StaleFetch_DroppedAcrossOpen(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	m.list.loading = false
+	m.list.issues = []Issue{
+		{ProjectID: 7, Number: 1, Title: "A"},
+		{ProjectID: 7, Number: 2, Title: "B"},
+	}
+	// Open A.
+	out, _ := m.Update(openDetailMsg{issue: m.list.issues[0]})
+	m = out.(Model)
+	genA := m.detail.gen
+	// Pop back to list.
+	out, _ = m.Update(popDetailMsg{})
+	m = out.(Model)
+	// Open B — gen advances.
+	out, _ = m.Update(openDetailMsg{issue: m.list.issues[1]})
+	m = out.(Model)
+	if m.detail.gen == genA {
+		t.Fatal("gen should advance on second open")
+	}
+	// A stale fetch from A's gen lands.
+	staleComments := commentsFetchedMsg{
+		gen:      genA,
+		comments: []CommentEntry{{ID: 99, Body: "from A"}},
+	}
+	out, _ = m.Update(staleComments)
+	m = out.(Model)
+	if len(m.detail.comments) != 0 {
+		t.Fatalf("stale comments leaked into B view: %+v", m.detail.comments)
+	}
+	staleIssue := detailFetchedMsg{
+		gen:   genA,
+		issue: &Issue{Number: 1, Title: "A clobbered"},
+	}
+	out, _ = m.Update(staleIssue)
+	m = out.(Model)
+	if m.detail.issue.Number != 2 {
+		t.Fatalf("B issue clobbered by stale A fetch: %+v", m.detail.issue)
+	}
+}
+
+// TestDetail_StaleFetch_DroppedAcrossJump: a detail-side jump advances
+// dm.gen; an in-flight fetch from before the jump must not seed the
+// post-jump view.
+func TestDetail_StaleFetch_DroppedAcrossJump(t *testing.T) {
+	api := &fakeDetailAPI{
+		getIssueResult: &Issue{Number: 11, Title: "linked"},
+	}
+	dm := detailFixture()
+	dm.gen = 5
+	dm.activeTab = tabLinks
+	dm.tabCursor = 0
+	priorGen := dm.gen
+	// Press Enter to jump → gen advances.
+	km := newKeymap()
+	dm, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
+	if dm.gen == priorGen {
+		t.Fatal("gen should advance on jump")
+	}
+	if cmd == nil {
+		t.Fatal("expected jump cmd")
+	}
+	// Stale comments from the prior gen arrive after the jump.
+	stale := commentsFetchedMsg{
+		gen:      priorGen,
+		comments: []CommentEntry{{ID: 99, Body: "stale"}},
+	}
+	dm, _ = dm.Update(stale, km, api)
+	if len(dm.comments) != 0 {
+		t.Fatalf("stale comments leaked into post-jump view: %+v", dm.comments)
+	}
+}
+
+// TestDetail_MutationResp_FromListIgnored: a list-side mutation
+// completing after the user opened detail must not steal the detail
+// status line nor trigger a refetch in detail.
+func TestDetail_MutationResp_FromListIgnored(t *testing.T) {
+	api := &fakeDetailAPI{}
+	km := newKeymap()
+	dm := dmFixture()
+	dm.gen = 3
+	listDone := mutationDoneMsg{
+		origin: "list",
+		kind:   "close",
+		resp:   &MutationResp{Issue: &Issue{Number: 99}},
+	}
+	out, cmd := dm.Update(listDone, km, api)
+	if cmd != nil {
+		t.Fatalf("list-origin mutation must not refetch in detail, got %T", cmd)
+	}
+	if out.status != "" {
+		t.Fatalf("detail status should be untouched, got %q", out.status)
+	}
+}
+
+// TestDetail_StaleMutationResp_DroppedAcrossJump: a detail close in
+// flight when the user jumps must not refetch the now-current issue's
+// data with a stale generation.
+func TestDetail_StaleMutationResp_DroppedAcrossJump(t *testing.T) {
+	api := &fakeDetailAPI{}
+	km := newKeymap()
+	dm := dmFixture()
+	dm.gen = 7
+	stale := mutationDoneMsg{
+		origin: "detail",
+		gen:    1, // older than dm.gen
+		kind:   "close",
+		resp:   &MutationResp{Issue: &Issue{Number: 1}},
+	}
+	out, cmd := dm.Update(stale, km, api)
+	if cmd != nil {
+		t.Fatalf("stale mutation must not trigger refetch, got %T", cmd)
+	}
+	if out.status != "" {
+		t.Fatalf("stale mutation must not seed status, got %q", out.status)
+	}
+}
+
+// TestList_DetailMutation_Ignored: a detail-origin mutation lands on
+// the list view after the user pops; the list must not seed its status
+// line or refetch from it.
+func TestList_DetailMutation_Ignored(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+	lm := listModel{actor: "tester"}
+	detailDone := mutationDoneMsg{
+		origin: "detail",
+		gen:    1,
+		kind:   "close",
+		resp:   &MutationResp{Issue: &Issue{Number: 99}},
+	}
+	out, cmd := lm.Update(detailDone, km, api, sc)
+	if cmd != nil {
+		t.Fatalf("detail-origin mutation must not refetch list, got %T", cmd)
+	}
+	if out.status != "" {
+		t.Fatalf("list status should be untouched, got %q", out.status)
+	}
+}
+
+// TestDetail_Open_SeedsActorFromList: opening detail through the
+// model-level handler seeds dm.actor from lm.actor so a detail
+// mutation dispatched through Model.Update reaches the daemon with
+// the resolved identity instead of the empty string.
+func TestDetail_Open_SeedsActorFromList(t *testing.T) {
+	t.Setenv("KATA_AUTHOR", "wes")
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
+	out, _ := m.Update(openDetailMsg{issue: iss})
+	m = out.(Model)
+	if m.detail.actor != "wes" {
+		t.Fatalf("dm.actor = %q, want wes (seeded from list.actor)", m.detail.actor)
+	}
+}
+
+// TestDetail_Mutation_ThroughModelCarriesActor: a close dispatched via
+// Model.Update reaches the daemon with the seeded actor. Regression
+// for the bug where dm.actor was never populated and the daemon
+// rejected with empty actor.
+func TestDetail_Mutation_ThroughModelCarriesActor(t *testing.T) {
+	t.Setenv("KATA_AUTHOR", "wes")
+	m := initialModel(Options{})
+	m.scope = scope{projectID: 7}
+	api := &fakeDetailAPI{
+		mutationResult: &MutationResp{Issue: &Issue{Number: 1, Status: "closed"}},
+	}
+	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
+	// We can't pass api through Model.Update directly; thread it via
+	// the detail sub-model so handleOpenDetail's actor seeding lands
+	// before the close dispatch.
+	out, _ := m.Update(openDetailMsg{issue: iss})
+	m = out.(Model)
+	if m.detail.actor == "" {
+		t.Fatal("actor not seeded by open")
+	}
+	dm, cmd := m.detail.Update(runeKey('x'), m.keymap, api)
+	if cmd == nil {
+		t.Fatal("expected close cmd")
+	}
+	_ = dm
+	msg := cmd()
+	done, ok := msg.(mutationDoneMsg)
+	if !ok {
+		t.Fatalf("expected mutationDoneMsg, got %T", msg)
+	}
+	if api.lastActor != "wes" {
+		t.Fatalf("api.lastActor = %q, want wes", api.lastActor)
+	}
+	if done.origin != "detail" {
+		t.Fatalf("mutationDoneMsg.origin = %q, want detail", done.origin)
+	}
+}
+
+// TestDetail_Jump_PreservesActor: a jump preserves dm.actor so a
+// mutation in the post-jump view still carries the resolved identity.
+func TestDetail_Jump_PreservesActor(t *testing.T) {
+	api := &fakeDetailAPI{
+		getIssueResult: &Issue{Number: 11, Title: "linked"},
+	}
+	dm := detailFixture()
+	dm.actor = "wes"
+	dm.activeTab = tabLinks
+	dm.tabCursor = 0
+	km := newKeymap()
+	dm, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
+	if cmd == nil {
+		t.Fatal("expected jump cmd")
+	}
+	if dm.actor != "wes" {
+		t.Fatalf("post-jump dm.actor = %q, want wes (preserved)", dm.actor)
+	}
+}
+
+// TestDetail_Open_AdvancesGenAcrossReopens: opening the same issue
+// twice advances the generation each time so any in-flight fetch from
+// the first open is dropped on the second.
+func TestDetail_Open_AdvancesGenAcrossReopens(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
+	out, _ := m.Update(openDetailMsg{issue: iss})
+	m = out.(Model)
+	first := m.detail.gen
+	out, _ = m.Update(popDetailMsg{})
+	m = out.(Model)
+	out, _ = m.Update(openDetailMsg{issue: iss})
+	m = out.(Model)
+	if m.detail.gen <= first {
+		t.Fatalf("second open did not advance gen: first=%d second=%d",
+			first, m.detail.gen)
 	}
 }

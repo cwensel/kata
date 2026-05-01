@@ -56,31 +56,37 @@ func (dm detailModel) applyEditorReturned(
 }
 
 // dispatchEditBody returns a tea.Cmd that calls api.EditBody and
-// reports the result as a mutationDoneMsg{kind: "body.edit"}.
+// reports the result as a mutationDoneMsg{origin: "detail",
+// kind: "body.edit"}. gen pins the response to the detail-open
+// generation so a stale edit cannot apply to a newly-opened issue.
 func (dm detailModel) dispatchEditBody(api detailAPI, body string) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor := dm.scopePID, dm.issue.Number, dm.actor
+	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.EditBody(ctx, pid, num, body, actor)
-		return mutationDoneMsg{kind: "body.edit", resp: resp, err: err}
+		return mutationDoneMsg{
+			origin: "detail", gen: gen, kind: "body.edit", resp: resp, err: err,
+		}
 	}
 }
 
 // dispatchAddComment posts a new comment and reports the result as a
-// mutationDoneMsg{kind: "comment.add"}.
+// mutationDoneMsg{origin: "detail", kind: "comment.add"}.
 func (dm detailModel) dispatchAddComment(api detailAPI, body string) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor := dm.scopePID, dm.issue.Number, dm.actor
+	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.AddComment(ctx, pid, num, body, actor)
-		return mutationDoneMsg{kind: "comment.add", resp: resp, err: err}
+		return mutationDoneMsg{
+			origin: "detail", gen: gen, kind: "comment.add", resp: resp, err: err,
+		}
 	}
 }

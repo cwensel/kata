@@ -188,12 +188,14 @@ func projectIDForRow(iss Issue, sc scope) int64 {
 }
 
 // closeIssueCmd wraps Close into a mutationDoneMsg-emitting tea.Cmd.
+// origin="list" routes the response to listModel.applyMutation even if
+// the user has switched to detail view between dispatch and arrival.
 func closeIssueCmd(api listAPI, pid, num int64, actor string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.Close(ctx, pid, num, actor)
-		return mutationDoneMsg{kind: "close", resp: resp, err: err}
+		return mutationDoneMsg{origin: "list", kind: "close", resp: resp, err: err}
 	}
 }
 
@@ -203,7 +205,7 @@ func reopenIssueCmd(api listAPI, pid, num int64, actor string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.Reopen(ctx, pid, num, actor)
-		return mutationDoneMsg{kind: "reopen", resp: resp, err: err}
+		return mutationDoneMsg{origin: "list", kind: "reopen", resp: resp, err: err}
 	}
 }
 
@@ -348,9 +350,11 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 // applyMutation handles a mutationDoneMsg arriving at the list view.
 // "create", "close", "reopen" kinds all seed the status line and (on
 // success) dispatch a refetch so the row updates without waiting for
-// SSE invalidation (Task 11). Detail-driven mutations stay scoped to
-// the detail view; SSE-driven invalidation will keep the list cache
-// in sync once Task 11 lands.
+// SSE invalidation (Task 11). Mutations whose origin is "detail" are
+// dropped here so a detail-side close that completes after the user
+// pops back to the list does not steal the list status line; SSE-
+// driven invalidation will keep the list cache in sync once Task 11
+// lands.
 //
 // TODO(task-12): replace lm.status string with Model-level toast
 // machinery (messages.go::toastExpiredMsg + toast). The status line is
@@ -358,6 +362,9 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 func (lm listModel) applyMutation(
 	m mutationDoneMsg, api listAPI, sc scope,
 ) (listModel, tea.Cmd) {
+	if m.origin != "list" {
+		return lm, nil
+	}
 	if m.err != nil {
 		lm.status = errorStyle.Render(
 			fmt.Sprintf("%s failed: %s", m.kind, m.err.Error()),
@@ -474,7 +481,7 @@ func (lm listModel) applyEditorReturned(
 		resp, err := api.CreateIssue(ctx, pid, CreateIssueBody{
 			Title: title, Body: body, Actor: actor,
 		})
-		return mutationDoneMsg{kind: "create", resp: resp, err: err}
+		return mutationDoneMsg{origin: "list", kind: "create", resp: resp, err: err}
 	}
 }
 

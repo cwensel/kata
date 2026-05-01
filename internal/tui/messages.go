@@ -17,25 +17,33 @@ type refetchedMsg struct {
 // detailFetchedMsg carries the result of a single-issue refetch. It is
 // produced by the Enter-jump path (Task 8) when a user navigates to a
 // referenced issue, and will also be produced by the SSE-driven refetch
-// in Task 11. The dm.applyFetched handler treats it as last-write-wins.
+// in Task 11. gen tags the detail-open generation that dispatched the
+// fetch — applyFetched discards messages whose gen no longer matches
+// dm.gen so a fetch in flight when the user pops/jumps cannot pollute
+// the new view with stale data.
 type detailFetchedMsg struct {
+	gen   int64
 	issue *Issue
 	err   error
 }
 
 // commentsFetchedMsg, eventsFetchedMsg, and linksFetchedMsg carry the
-// per-tab fetch results dispatched in parallel by openDetailMsg.
+// per-tab fetch results dispatched in parallel by openDetailMsg. gen
+// is the detail-open generation; see detailFetchedMsg for the rationale.
 type commentsFetchedMsg struct {
+	gen      int64
 	comments []CommentEntry
 	err      error
 }
 
 type eventsFetchedMsg struct {
+	gen    int64
 	events []EventLogEntry
 	err    error
 }
 
 type linksFetchedMsg struct {
+	gen   int64
 	links []LinkEntry
 	err   error
 }
@@ -55,10 +63,24 @@ type popDetailMsg struct{}
 // mutationDoneMsg is the result of any single mutation (create now,
 // close/reopen/label/owner in Task 9). kind names which mutation so the
 // list/detail Update can route to the right post-success behavior.
+//
+// origin discriminates which view dispatched the mutation: "list"
+// mutations land in listModel.applyMutation, "detail" mutations land in
+// detailModel.applyMutation. Without this tag, a list-side close
+// completing after the user opened detail (or a detail close that
+// arrives after Esc) would route the response to the wrong view, churn
+// the wrong status line, and (for detail) trigger an unwanted refetch.
+//
+// gen is the detail-open generation that dispatched the mutation, set
+// only when origin == "detail". The detail Update path drops responses
+// whose gen does not match dm.gen so a mutation in flight when the user
+// jumps or pops cannot apply to the new view.
 type mutationDoneMsg struct {
-	kind string
-	resp *MutationResp
-	err  error
+	origin string
+	gen    int64
+	kind   string
+	resp   *MutationResp
+	err    error
 }
 
 // editorReturnedMsg carries the result of a $EDITOR suspend/resume

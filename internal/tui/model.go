@@ -152,22 +152,32 @@ func (m Model) canQuit() bool {
 // parallel so the user sees data on whichever tab is active first. The
 // detail model also remembers the project_id and all-projects flag so
 // the Enter-jump path (Task 8) has them without re-resolving scope.
+//
+// The detail-open generation increments on every open so an in-flight
+// fetch from a previously-open issue is dropped by applyFetched when
+// its tagged gen no longer matches dm.gen. The actor is seeded from
+// the list model so detail-side mutations carry the resolved identity
+// rather than the empty string.
 func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	iss := msg.issue
 	pid := detailProjectID(iss, m.scope)
+	priorGen := m.detail.gen
 	// Reset on open is the spec — no per-issue scroll memory.
 	m.detail = newDetailModel()
+	m.detail.gen = priorGen + 1
 	m.detail.issue = &iss
 	m.detail.scopePID = pid
 	m.detail.allProjects = m.scope.allProjects
+	m.detail.actor = m.list.actor
 	m.view = viewDetail
 	if m.api == nil {
 		return m, nil
 	}
+	gen := m.detail.gen
 	cmds := []tea.Cmd{
-		fetchComments(m.api, pid, iss.Number),
-		fetchEvents(m.api, pid, iss.Number),
-		fetchLinks(m.api, pid, iss.Number),
+		fetchComments(m.api, pid, iss.Number, gen),
+		fetchEvents(m.api, pid, iss.Number, gen),
+		fetchLinks(m.api, pid, iss.Number, gen),
 	}
 	return m, tea.Batch(cmds...)
 }

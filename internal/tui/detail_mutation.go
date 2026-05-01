@@ -122,9 +122,17 @@ func (dm detailModel) dispatchForKind(
 // view. Success seeds a status hint and dispatches a single-issue
 // refetch (so the body, comments, events, and links reflect the new
 // state); failure surfaces an error toast in dm.status.
+//
+// Messages with origin != "detail" or gen != dm.gen are dropped: a list
+// mutation that completed after the user opened detail must not steal
+// the detail status line, and a detail mutation in flight when the user
+// jumped or popped must not refetch the now-stale issue.
 func (dm detailModel) applyMutation(
 	m mutationDoneMsg, api detailAPI,
 ) (detailModel, tea.Cmd) {
+	if m.origin != "detail" || m.gen != dm.gen {
+		return dm, nil
+	}
 	if m.err != nil {
 		dm.err = m.err
 		dm.status = errorStyle.Render(
@@ -175,33 +183,38 @@ func mutationSuccessText(m mutationDoneMsg, iss *Issue) string {
 // rendered detail reflects the new state without waiting for the SSE
 // consumer (Task 11) to invalidate. The four fetches run in parallel
 // via tea.Batch — the order they land doesn't matter because each
-// fetch updates a distinct slice on dm.
+// fetch updates a distinct slice on dm. dm.gen rides every fetch so a
+// later jump/pop discards stale results.
 func (dm detailModel) refetchAfterMutation(api detailAPI) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
 	pid := dm.scopePID
 	num := dm.issue.Number
+	gen := dm.gen
 	return tea.Batch(
-		fetchIssue(api, pid, num),
-		fetchComments(api, pid, num),
-		fetchEvents(api, pid, num),
-		fetchLinks(api, pid, num),
+		fetchIssue(api, pid, num, gen),
+		fetchComments(api, pid, num, gen),
+		fetchEvents(api, pid, num, gen),
+		fetchLinks(api, pid, num, gen),
 	)
 }
 
 // dispatchClose returns a tea.Cmd that calls api.Close and reports the
 // result via mutationDoneMsg. Returns nil if the issue isn't seeded.
+// origin="detail" + gen route the response back to dm.applyMutation.
 func (dm detailModel) dispatchClose(api detailAPI) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor := dm.scopePID, dm.issue.Number, dm.actor
+	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.Close(ctx, pid, num, actor)
-		return mutationDoneMsg{kind: "close", resp: resp, err: err}
+		return mutationDoneMsg{
+			origin: "detail", gen: gen, kind: "close", resp: resp, err: err,
+		}
 	}
 }
 
@@ -210,12 +223,14 @@ func (dm detailModel) dispatchReopen(api detailAPI) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor := dm.scopePID, dm.issue.Number, dm.actor
+	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.Reopen(ctx, pid, num, actor)
-		return mutationDoneMsg{kind: "reopen", resp: resp, err: err}
+		return mutationDoneMsg{
+			origin: "detail", gen: gen, kind: "reopen", resp: resp, err: err,
+		}
 	}
 }
 
@@ -226,7 +241,7 @@ func (dm detailModel) dispatchLabel(
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor := dm.scopePID, dm.issue.Number, dm.actor
+	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -242,7 +257,9 @@ func (dm detailModel) dispatchLabel(
 			resp, err = api.RemoveLabel(ctx, pid, num, label, actor)
 			kind = "label.remove"
 		}
-		return mutationDoneMsg{kind: kind, resp: resp, err: err}
+		return mutationDoneMsg{
+			origin: "detail", gen: gen, kind: kind, resp: resp, err: err,
+		}
 	}
 }
 
@@ -252,7 +269,7 @@ func (dm detailModel) dispatchAssign(api detailAPI, owner string) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor := dm.scopePID, dm.issue.Number, dm.actor
+	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
 	kind := "owner.assign"
 	if owner == "" {
 		kind = "owner.clear"
@@ -261,7 +278,9 @@ func (dm detailModel) dispatchAssign(api detailAPI, owner string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.Assign(ctx, pid, num, owner, actor)
-		return mutationDoneMsg{kind: kind, resp: resp, err: err}
+		return mutationDoneMsg{
+			origin: "detail", gen: gen, kind: kind, resp: resp, err: err,
+		}
 	}
 }
 
@@ -276,9 +295,9 @@ func (dm detailModel) dispatchLink(
 	}
 	to, err := strconv.ParseInt(strings.TrimSpace(target), 10, 64)
 	if err != nil {
-		return parseFailedCmd(linkType, target)
+		return parseFailedCmd(linkType, target, dm.gen)
 	}
-	pid, num, actor := dm.scopePID, dm.issue.Number, dm.actor
+	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
 	kind := "link." + linkType
 	if linkType == "related" {
 		kind = "link.relates"
@@ -288,7 +307,9 @@ func (dm detailModel) dispatchLink(
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.AddLink(ctx, pid, num, body, actor)
-		return mutationDoneMsg{kind: kind, resp: resp, err: err}
+		return mutationDoneMsg{
+			origin: "detail", gen: gen, kind: kind, resp: resp, err: err,
+		}
 	}
 }
 
@@ -300,18 +321,22 @@ func (dm detailModel) dispatchAddLinkSyntax(
 ) tea.Cmd {
 	parts := strings.Fields(buf)
 	if len(parts) != 2 {
-		return parseFailedCmd("link", buf)
+		return parseFailedCmd("link", buf, dm.gen)
 	}
 	return dm.dispatchLink(api, parts[0], parts[1])
 }
 
 // parseFailedCmd surfaces a parse error as a synthetic mutationDoneMsg
-// so the standard error-handling path renders the status line.
-func parseFailedCmd(kind, input string) tea.Cmd {
+// so the standard error-handling path renders the status line. gen is
+// captured so the parse-error toast respects the same scoping rule as
+// real mutations.
+func parseFailedCmd(kind, input string, gen int64) tea.Cmd {
 	return func() tea.Msg {
 		return mutationDoneMsg{
-			kind: "link." + kind,
-			err:  fmt.Errorf("parse %q failed: expected '<kind> <number>'", input),
+			origin: "detail",
+			gen:    gen,
+			kind:   "link." + kind,
+			err:    fmt.Errorf("parse %q failed: expected '<kind> <number>'", input),
 		}
 	}
 }
