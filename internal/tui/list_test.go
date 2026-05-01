@@ -14,23 +14,30 @@ import (
 // DeletedAt) and Go forbids &"literal" so the fixtures need this.
 func ptrString(s string) *string { return &s }
 
+// ptrTime is the time.Time companion to ptrString.
+func ptrTime(t time.Time) *time.Time { return &t }
+
 // listFixture is the on-screen seed for the list tests. Three rows cover
 // the open, closed, and soft-deleted statusChip branches without booting
 // a real daemon. The deleted row keeps statusChip's DeletedAt branch
 // under test even after the Task 4 fixture moved into this file.
 func listFixture() []Issue {
+	deleted := time.Now().Add(-2 * time.Hour)
 	return []Issue{
 		{
 			Number: 1, Title: "fix login bug on Safari",
 			Status: "open", Owner: ptrString("claude-4.7"),
+			UpdatedAt: time.Now().Add(-3 * time.Hour),
 		},
 		{
 			Number: 2, Title: "rebuild search index",
 			Status: "closed", Owner: ptrString("wesm"),
+			UpdatedAt: time.Now().Add(-1 * time.Hour),
 		},
 		{
 			Number: 3, Title: "purge stale tokens",
-			Status: "open", DeletedAt: ptrString("2026-04-30T12:00:00Z"),
+			Status: "open", DeletedAt: ptrTime(deleted),
+			UpdatedAt: deleted,
 		},
 	}
 }

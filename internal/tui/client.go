@@ -39,7 +39,10 @@ func (c *Client) listIssuesAt(ctx context.Context, path string, f ListFilter) ([
 	var resp struct {
 		Issues []Issue `json:"issues"`
 	}
-	return resp.Issues, c.do(ctx, http.MethodGet, path, nil, &resp)
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Issues, nil
 }
 
 // GetIssue fetches a single issue by number.
@@ -167,7 +170,10 @@ func (c *Client) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 	var resp struct {
 		Projects []ProjectSummary `json:"projects"`
 	}
-	return resp.Projects, c.do(ctx, http.MethodGet, "/api/v1/projects", nil, &resp)
+	if err := c.do(ctx, http.MethodGet, "/api/v1/projects", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Projects, nil
 }
 
 // ListComments and ListLinks route through GET /issues/{number} because
@@ -185,10 +191,19 @@ func (c *Client) ListComments(
 
 // ListEvents returns the events tab data for one issue. See above note
 // on the client-side filter.
+//
+// TODO(plan-6/task-8): the 200-event window is a one-shot snapshot; full
+// pagination via next_after_id is deferred. The poll envelope's
+// reset_required is decoded but ignored here because Task 8 fetches once
+// per detail-view open; the SSE consumer (Task 11) handles reset_required
+// for the long-lived stream.
 func (c *Client) ListEvents(ctx context.Context, projectID, number int64) ([]EventLogEntry, error) {
 	path := fmt.Sprintf("/api/v1/projects/%d/events?limit=200", projectID)
 	var resp struct {
-		Events []EventLogEntry `json:"events"`
+		Events        []EventLogEntry `json:"events"`
+		NextAfterID   int64           `json:"next_after_id"`
+		ResetRequired bool            `json:"reset_required"`
+		ResetAfterID  int64           `json:"reset_after_id,omitempty"`
 	}
 	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err

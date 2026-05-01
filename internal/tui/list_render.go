@@ -101,16 +101,13 @@ func truncate(s string, w int) string {
 	return runewidth.Truncate(s, w-1, "…")
 }
 
-// humanizeRelative renders an RFC3339 timestamp as a small human delta
-// (e.g. "30s ago", "2h ago", "3d ago"). Unparseable input falls back to
-// the YYYY-MM-DD prefix or the raw string when too short.
-func humanizeRelative(rfc3339 string) string {
-	t, err := time.Parse(time.RFC3339, rfc3339)
-	if err != nil {
-		if len(rfc3339) >= 10 {
-			return rfc3339[:10]
-		}
-		return rfc3339
+// humanizeRelative renders a timestamp as a small human delta
+// (e.g. "30s ago", "2h ago", "3d ago"). The zero value renders as a
+// dash so empty rows in tests stay readable; malformed inputs fail
+// earlier at JSON decode time and never reach this function.
+func humanizeRelative(t time.Time) string {
+	if t.IsZero() {
+		return "-"
 	}
 	d := time.Since(t)
 	switch {

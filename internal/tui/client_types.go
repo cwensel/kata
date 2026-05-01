@@ -1,57 +1,51 @@
 package tui
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Issue is a strict subset of the daemon's wire shape: Labels and the
 // deleted bool live elsewhere on the wire (labels come from a separate
 // fetch; deleted is derived from DeletedAt being non-nil).
 type Issue struct {
-	ID           int64   `json:"id"`
-	ProjectID    int64   `json:"project_id"`
-	Number       int64   `json:"number"`
-	Title        string  `json:"title"`
-	Body         string  `json:"body"`
-	Status       string  `json:"status"`
-	ClosedReason *string `json:"closed_reason,omitempty"`
-	Owner        *string `json:"owner,omitempty"`
-	Author       string  `json:"author"`
-	CreatedAt    string  `json:"created_at"`
-	UpdatedAt    string  `json:"updated_at"`
-	ClosedAt     *string `json:"closed_at,omitempty"`
-	DeletedAt    *string `json:"deleted_at,omitempty"`
+	ID           int64      `json:"id"`
+	ProjectID    int64      `json:"project_id"`
+	Number       int64      `json:"number"`
+	Title        string     `json:"title"`
+	Body         string     `json:"body"`
+	Status       string     `json:"status"`
+	ClosedReason *string    `json:"closed_reason,omitempty"`
+	Owner        *string    `json:"owner,omitempty"`
+	Author       string     `json:"author"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	ClosedAt     *time.Time `json:"closed_at,omitempty"`
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
 }
 
-// ListFilter is the union of query params used by list views. status maps
-// to ?status=open|closed; the rest are reserved for client-side filtering
-// pending wider daemon support.
+// ListFilter is the union of filters used by list views. Only Status is
+// sent on the wire — api.ListIssuesRequest accepts {status, limit} and
+// nothing else. Owner/Author/Labels/Search are applied client-side after
+// the daemon returns results. IncludeDeleted is also client-side: the
+// list endpoint never returns soft-deleted rows, so the TUI fetches all
+// and the R toggle (Task 12) controls whether deleted issues remain
+// visible after an SSE invalidation.
 type ListFilter struct {
 	Status, Owner, Author, Search string
 	Labels                        []string
 	IncludeDeleted                bool
 }
 
+// values returns the query params the daemon honors. Status is the only
+// wire-level filter today; the rest are kept on the struct for
+// client-side filtering in later tasks.
 func (f ListFilter) values() url.Values {
 	v := url.Values{}
 	if f.Status != "" {
 		v.Set("status", f.Status)
-	}
-	if f.Owner != "" {
-		v.Set("owner", f.Owner)
-	}
-	if f.Author != "" {
-		v.Set("author", f.Author)
-	}
-	for _, l := range f.Labels {
-		v.Add("label", l)
-	}
-	if f.Search != "" {
-		v.Set("q", f.Search)
-	}
-	if f.IncludeDeleted {
-		v.Set("include_deleted", "true")
 	}
 	return v
 }
@@ -83,9 +77,9 @@ type MutationResp struct {
 // EventEnvelope is the minimal event projection embedded in mutation
 // responses. The richer poll/SSE shape uses EventLogEntry.
 type EventEnvelope struct {
-	ID        int64  `json:"id"`
-	Type      string `json:"type"`
-	CreatedAt string `json:"created_at"`
+	ID        int64     `json:"id"`
+	Type      string    `json:"type"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ResolveResp is the body of POST /projects/resolve.
@@ -108,10 +102,10 @@ type ProjectSummary struct {
 
 // CommentEntry is the per-comment projection rendered in the comments tab.
 type CommentEntry struct {
-	ID        int64  `json:"id"`
-	Author    string `json:"author"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"created_at"`
+	ID        int64     `json:"id"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // EventLogEntry is the per-event projection used by the events tab.
@@ -120,18 +114,18 @@ type EventLogEntry struct {
 	Type        string         `json:"type"`
 	Actor       string         `json:"actor"`
 	IssueNumber *int64         `json:"issue_number,omitempty"`
-	CreatedAt   string         `json:"created_at"`
+	CreatedAt   time.Time      `json:"created_at"`
 	Payload     map[string]any `json:"payload,omitempty"`
 }
 
 // LinkEntry mirrors the daemon's LinkOut wire shape.
 type LinkEntry struct {
-	ID         int64  `json:"id"`
-	Type       string `json:"type"`
-	FromNumber int64  `json:"from_number"`
-	ToNumber   int64  `json:"to_number"`
-	Author     string `json:"author"`
-	CreatedAt  string `json:"created_at"`
+	ID         int64     `json:"id"`
+	Type       string    `json:"type"`
+	FromNumber int64     `json:"from_number"`
+	ToNumber   int64     `json:"to_number"`
+	Author     string    `json:"author"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // APIError is the structured form of the §4.6 error envelope.
@@ -143,8 +137,14 @@ type APIError struct {
 	Hint         string
 }
 
-// Error returns "code: message[: hint: ...]".
+// Error returns "code: message[: hint: ...]" when the daemon supplied a
+// structured envelope. When Code and Message are both empty (a 404 with
+// no body, a 502 from a proxy, etc.) it falls back to a method+path+status
+// summary so toasts stay actionable.
 func (e *APIError) Error() string {
+	if e.Code == "" && e.Message == "" {
+		return fmt.Sprintf("%s %s: HTTP %d", e.Method, e.Path, e.Status)
+	}
 	parts := []string{e.Code, e.Message}
 	if e.Hint != "" {
 		parts = append(parts, "hint: "+e.Hint)

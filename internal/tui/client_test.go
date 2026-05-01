@@ -227,3 +227,115 @@ func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
 		}
 	}
 }
+
+// TestClient_ListIssues_NotNilOnSuccess guards the bug where listIssuesAt
+// returned resp.Issues evaluated *before* c.do filled it (the do call was
+// the second operand of the comma-statement, so resp was nil at capture).
+func TestClient_ListIssues_NotNilOnSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issues":[{"number":1,"title":"a","status":"open"}]}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+	got, err := c.ListIssues(context.Background(), 7, ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Number != 1 {
+		t.Fatalf("got %+v, want one issue with number=1", got)
+	}
+}
+
+// TestClient_ListAllIssues_NotNilOnSuccess covers the same regression on
+// the cross-project endpoint.
+func TestClient_ListAllIssues_NotNilOnSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issues":[{"number":2,"title":"b","status":"open"}]}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+	got, err := c.ListAllIssues(context.Background(), ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Number != 2 {
+		t.Fatalf("got %+v, want one issue with number=2", got)
+	}
+}
+
+// TestClient_ListProjects_NotNilOnSuccess is the analogue for ListProjects.
+func TestClient_ListProjects_NotNilOnSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"projects":[{"id":7,"identity":"x","name":"k"}]}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+	got, err := c.ListProjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != 7 {
+		t.Fatalf("got %+v, want one project with id=7", got)
+	}
+}
+
+// TestClient_ListIssues_FilterShape asserts only the daemon-honored
+// query params land on the wire. Owner/Author/Search/Labels are kept on
+// the struct for client-side filtering but must not leak as URL params.
+func TestClient_ListIssues_FilterShape(t *testing.T) {
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issues":[]}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+	if _, err := c.ListIssues(context.Background(), 7, ListFilter{
+		Status:         "open",
+		Owner:          "alice",
+		Author:         "bob",
+		Search:         "foo",
+		Labels:         []string{"x"},
+		IncludeDeleted: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotURL, "status=open") {
+		t.Fatalf("status not sent: %s", gotURL)
+	}
+	for _, leaked := range []string{"owner=", "author=", "q=", "label=", "include_deleted="} {
+		if strings.Contains(gotURL, leaked) {
+			t.Fatalf("client leaked %q to wire (daemon ignores it): %s", leaked, gotURL)
+		}
+	}
+}
+
+// TestAPIError_EmptyBodyFallback covers the 404 with no body case where
+// Code and Message are both blank. Without the fallback, Error() would
+// return ": ".
+func TestAPIError_EmptyBodyFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+	_, err := c.GetIssue(context.Background(), 7, 42)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T", err)
+	}
+	msg := apiErr.Error()
+	if !strings.Contains(msg, "HTTP 404") {
+		t.Fatalf("Error() = %q, want it to mention HTTP 404", msg)
+	}
+	if !strings.Contains(msg, "/api/v1/projects/7/issues/42") {
+		t.Fatalf("Error() = %q, want it to mention the path", msg)
+	}
+}
