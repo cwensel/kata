@@ -254,59 +254,38 @@ func buildEnv(userEnv []string, evt db.Event, deps runDeps) []string {
 	return env
 }
 
+// killTreeWithGrace asks the leader's process group to terminate
+// (SIGTERM on Unix; Process.Kill on Windows where there is no group).
+// After the grace window it unconditionally escalates to SIGKILL on
+// the group: children that ignored SIGTERM, or orphans whose leader
+// already exited, still need to be torn down. Errors are logged via
+// daemonLog and never surface — the runner has already classified
+// the result by the time we get here.
 func killTreeWithGrace(cmd *exec.Cmd, grace time.Duration, daemonLog *log.Logger) {
 	if cmd.Process == nil {
 		return
 	}
-	if err := signalGroup(cmd, syscallSIGTERM()); err != nil {
-		daemonLog.Printf("hooks: SIGTERM: %v", err)
+	if err := terminateGroup(cmd); err != nil {
+		daemonLog.Printf("hooks: terminate: %v", err)
 	}
-	timer := time.NewTimer(grace)
-	defer timer.Stop()
-
-	stop := make(chan struct{})
-	defer close(stop)
-	exited := pollProcessExit(cmd.Process.Pid, stop)
-
-	select {
-	case <-timer.C:
-		if err := signalGroup(cmd, syscallSIGKILL()); err != nil {
-			daemonLog.Printf("hooks: SIGKILL: %v", err)
+	if !waitGroupGone(cmd, grace) {
+		if err := killGroup(cmd); err != nil {
+			daemonLog.Printf("hooks: kill: %v", err)
 		}
-	case <-exited:
 	}
 }
 
-// pollProcessExit polls processAlive every 10ms in a goroutine and
-// closes the returned channel once the process is gone. The stop
-// channel bounds the goroutine's lifetime so a kernel reaping the
-// child + PID reuse can't keep it running past killTreeWithGrace's
-// return.
-func pollProcessExit(pid int, stop <-chan struct{}) <-chan struct{} {
-	exited := make(chan struct{})
-	go func() {
-		for {
-			if !processAlive(pid) {
-				close(exited)
-				return
-			}
-			select {
-			case <-stop:
-				return
-			case <-time.After(10 * time.Millisecond):
-			}
+// waitGroupGone returns true once the leader's process group has no
+// remaining members, or false on grace expiry. On platforms where
+// liveness can't be observed (Windows), it returns false after grace
+// so the caller escalates to a force kill.
+func waitGroupGone(cmd *exec.Cmd, grace time.Duration) bool {
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if !groupAlive(cmd) {
+			return true
 		}
-	}()
-	return exited
-}
-
-func processAlive(pid int) bool {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
+		time.Sleep(10 * time.Millisecond)
 	}
-	// On Unix, Signal(0) returns nil if the process is alive and ESRCH
-	// otherwise. We only call this on Unix in practice; Windows
-	// semantics differ and FindProcess always succeeds there.
-	return p.Signal(syscallSignal0()) == nil
+	return !groupAlive(cmd)
 }

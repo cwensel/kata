@@ -89,7 +89,12 @@ func main() {
 			time.Sleep(d)
 			return
 		}
-		select {}
+		// No-arg fallback: stay alive until SIGKILL. A bare select{}
+		// can trip Go's deadlock detector ("all goroutines are asleep -
+		// deadlock"); a timer-backed loop keeps the runtime busy.
+		for {
+			time.Sleep(time.Hour)
+		}
 	case "spawn-orphan":
 		if len(os.Args) != 3 {
 			fmt.Fprintln(os.Stderr, "usage: hookprobe spawn-orphan DURATION")
