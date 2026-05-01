@@ -134,17 +134,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleOpenDetail seeds m.detail with the chosen issue and dispatches
 // the three concurrent tab fetches via tea.Batch. The fetches run in
-// parallel so the user sees data on whichever tab is active first.
+// parallel so the user sees data on whichever tab is active first. The
+// detail model also remembers the project_id and all-projects flag so
+// the Enter-jump path (Task 8) has them without re-resolving scope.
 func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	iss := msg.issue
+	pid := detailProjectID(iss, m.scope)
 	// Reset on open is the spec — no per-issue scroll memory.
 	m.detail = newDetailModel()
 	m.detail.issue = &iss
+	m.detail.scopePID = pid
+	m.detail.allProjects = m.scope.allProjects
 	m.view = viewDetail
 	if m.api == nil {
 		return m, nil
 	}
-	pid := detailProjectID(iss, m.scope)
 	cmds := []tea.Cmd{
 		fetchComments(m.api, pid, iss.Number),
 		fetchEvents(m.api, pid, iss.Number),
@@ -162,7 +166,7 @@ func (m Model) dispatchToView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case viewDetail:
 		var cmd tea.Cmd
-		m.detail, cmd = m.detail.Update(msg, m.keymap)
+		m.detail, cmd = m.detail.Update(msg, m.keymap, m.api)
 		return m, cmd
 	}
 	return m, nil

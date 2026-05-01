@@ -14,11 +14,10 @@ type refetchedMsg struct {
 	err    error
 }
 
-// detailFetchedMsg carries the result of a single-issue refetch (Task 11
-// SSE-driven; Task 7 wires the consumer side so the detail view ignores
-// stale-projection drift once that lands).
-//
-//nolint:unused // dispatch lives in Task 11; the consumer is in detail.go.
+// detailFetchedMsg carries the result of a single-issue refetch. It is
+// produced by the Enter-jump path (Task 8) when a user navigates to a
+// referenced issue, and will also be produced by the SSE-driven refetch
+// in Task 11. The dm.applyFetched handler treats it as last-write-wins.
 type detailFetchedMsg struct {
 	issue *Issue
 	err   error

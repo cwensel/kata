@@ -32,10 +32,7 @@ func (dm detailModel) View(width, height int) string {
 	return strings.Join([]string{header, body, tabs, tabContent}, "\n")
 }
 
-// bodyHeight is the row count allotted to the body window. The header
-// and tab strip each consume one row; the rest is split 50/50 between
-// body and tab content with a 5-row floor for body so even tiny
-// terminals show something readable.
+// bodyHeight is the row count allotted to the body window.
 func (dm detailModel) bodyHeight(total int) int {
 	avail := total - 2 // header + tab strip
 	if avail < 6 {
@@ -47,8 +44,7 @@ func (dm detailModel) bodyHeight(total int) int {
 	return 5
 }
 
-// tabContentHeight is the complement of bodyHeight. The split mirrors
-// bodyHeight so the two stay in sync.
+// tabContentHeight is the complement of bodyHeight.
 func (dm detailModel) tabContentHeight(total int) int {
 	avail := total - 2
 	if avail < 6 {
@@ -58,9 +54,6 @@ func (dm detailModel) tabContentHeight(total int) int {
 }
 
 // renderHeader builds the top line: #N status[chip] [deleted?] title.
-// titleStyle highlights the title; statusChip handles the status pill
-// with the right color. Soft-deleted rows get a [deleted] marker so the
-// header mirrors the list row's status presentation.
 func (dm detailModel) renderHeader(width int) string {
 	iss := *dm.issue
 	parts := []string{
@@ -71,11 +64,9 @@ func (dm detailModel) renderHeader(width int) string {
 	return strings.Join(parts, " ")
 }
 
-// renderBody splits the issue body on newlines, hard-wraps each line to
-// width, then takes a window of length lines starting at dm.scroll. The
-// scroll offset is clamped here (not in Update) so the consumer is the
-// only place that reads the wrapped-line count. Hard-wrap (truncate)
-// keeps the v1 simple; soft word-wrap is deferred.
+// renderBody splits the issue body on newlines, hard-wraps each line,
+// and returns the dm.scroll-windowed slice. Hard-wrap (truncate) keeps
+// v1 simple; soft word-wrap is deferred.
 func (dm detailModel) renderBody(width, lines int) string {
 	wrapped := wrapBody(dm.issue.Body, width)
 	if len(wrapped) == 0 {
@@ -96,8 +87,6 @@ func (dm detailModel) renderBody(width, lines int) string {
 }
 
 // wrapBody splits s on newlines, then hard-wraps each segment to width.
-// The result is the flat sequence of display lines the body window
-// scrolls over. Empty input yields nil so renderBody can show a hint.
 func wrapBody(s string, width int) []string {
 	if s == "" {
 		return nil
@@ -116,20 +105,12 @@ func wrapBody(s string, width int) []string {
 	return out
 }
 
-// hardWrap breaks s into chunks no wider than width cells. We walk one
-// rune at a time and emit a chunk whenever the cell width crosses the
-// limit — runewidth.Truncate alone would drop the tail; the loop keeps
-// it as the next chunk. When the leading rune itself is wider than
-// width (e.g. a CJK glyph at width=1), Truncate returns "" because no
-// rune fits; we emit that single oversize rune as its own chunk and
-// advance so the loop terminates.
+// hardWrap breaks s into chunks no wider than width cells.
 func hardWrap(s string, width int) []string {
 	out := []string{}
 	for runewidth.StringWidth(s) > width {
 		head := runewidth.Truncate(s, width, "")
 		if head == "" {
-			// First rune is wider than `width` — emit it as oversize and
-			// advance one rune so we make progress.
 			_, sz := utf8.DecodeRuneInString(s)
 			out = append(out, s[:sz])
 			s = s[sz:]
@@ -144,9 +125,8 @@ func hardWrap(s string, width int) []string {
 	return out
 }
 
-// renderTabStrip renders the three tab titles. The active tab gets the
-// tabActive style; the rest get tabInactive. Two-space gaps separate
-// tabs so the strip reads like a tab-bar without box-drawing.
+// renderTabStrip renders the three tab titles. The active tab gets
+// tabActive; the rest get tabInactive.
 func (dm detailModel) renderTabStrip() string {
 	titles := [detailTabCount]string{"Comments", "Events", "Links"}
 	parts := make([]string, 0, detailTabCount)
@@ -160,65 +140,18 @@ func (dm detailModel) renderTabStrip() string {
 	return strings.Join(parts, "  ")
 }
 
-// renderActiveTab dispatches to the per-tab renderer. Task 7 stubs each
-// tab as a one-liner per row so the dispatch is exercised; Task 8
-// replaces these with the real renderers.
+// renderActiveTab dispatches to the per-tab renderer. The header line
+// "Comments (N)" / "Events (N)" / "Links (N)" sits above the entries
+// and is always rendered (even on empty data) so the tab strip + count
+// stays consistent across tab switches.
 func (dm detailModel) renderActiveTab(width, height int) string {
 	switch dm.activeTab {
 	case tabComments:
-		return renderTabStub(commentLines(dm.comments), width, height)
+		return renderCommentsTab(dm.comments, width, height, dm.tabCursor)
 	case tabEvents:
-		return renderTabStub(eventLines(dm.events), width, height)
+		return renderEventsTab(dm.events, width, height, dm.tabCursor)
 	case tabLinks:
-		return renderTabStub(linkLines(dm.links), width, height)
+		return renderLinksTab(dm.links, width, height, dm.tabCursor)
 	}
 	return ""
-}
-
-// renderTabStub is the shared frame for the v1 tab content: a header
-// line ("Comments (N)" etc. supplied by the caller as lines[0]) plus
-// the body. Width-truncates so long lines never wrap and break the
-// layout. Empty data renders the header alone — the caller already
-// formats the (0) count.
-func renderTabStub(lines []string, width, height int) string {
-	if height < 1 {
-		return ""
-	}
-	if len(lines) > height {
-		lines = lines[:height]
-	}
-	out := make([]string, 0, len(lines))
-	for _, ln := range lines {
-		out = append(out, truncate(ln, width))
-	}
-	return strings.Join(out, "\n")
-}
-
-// commentLines is the v1 stub renderer: "Comments (N)" header + one
-// "[author] body" line per comment. Task 8 replaces this with full
-// formatting (timestamps, multi-line bodies, author colors).
-func commentLines(cs []CommentEntry) []string {
-	out := []string{titleStyle.Render(fmt.Sprintf("Comments (%d)", len(cs)))}
-	for _, c := range cs {
-		out = append(out, fmt.Sprintf("[%s] %s", c.Author, c.Body))
-	}
-	return out
-}
-
-// eventLines is the v1 stub renderer for the events tab.
-func eventLines(es []EventLogEntry) []string {
-	out := []string{titleStyle.Render(fmt.Sprintf("Events (%d)", len(es)))}
-	for _, e := range es {
-		out = append(out, fmt.Sprintf("[%s] %s", e.Actor, e.Type))
-	}
-	return out
-}
-
-// linkLines is the v1 stub renderer for the links tab.
-func linkLines(ls []LinkEntry) []string {
-	out := []string{titleStyle.Render(fmt.Sprintf("Links (%d)", len(ls)))}
-	for _, l := range ls {
-		out = append(out, fmt.Sprintf("%s #%d → #%d", l.Type, l.FromNumber, l.ToNumber))
-	}
-	return out
 }
