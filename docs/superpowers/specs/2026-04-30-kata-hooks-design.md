@@ -53,7 +53,7 @@ mutation handler                      mutation handler
 | `internal/hooks/config.go` | TOML schema, parsing, validation; types `Snapshot`, `Config`, `LoadedConfig`, `ResolvedHook`; `LoadStartup`, `LoadReload` |
 | `internal/hooks/dispatcher.go` | `Sink` interface; `Dispatcher` type with `Enqueue`, `Reload`, `Shutdown`, `CurrentConfig`; `NewNoop()` returning a `Sink`; queue, `done` channel, `stopped` flag, snapshot pointer, queue-full counter |
 | `internal/hooks/runner.go` | Worker exec path: process spawn, stdin write, output capture, timeout SIGTERM/grace/SIGKILL, runs.jsonl record |
-| `internal/hooks/payload.go` | Stdin JSON envelope construction + truncation; calls `IssueResolver`/`CommentResolver`/`AliasResolver` and merges results into the envelope |
+| `internal/hooks/payload.go` | Stdin JSON envelope construction + truncation; calls `ProjectResolver`/`IssueResolver`/`CommentResolver`/`AliasResolver` and merges results into the envelope |
 | `internal/hooks/prune.go` | Output-dir disk-cap rescan + run-group delete; `runs.jsonl` rotation |
 | `internal/hooks/proc_unix.go` | `Setpgid: true` on `cmd.SysProcAttr` (build tag `!windows`) |
 | `internal/hooks/proc_windows.go` | No-op stub (build tag `windows`) |
@@ -378,19 +378,22 @@ if oErr != nil || eErr != nil {
     )
     return
 }
-// From this point both files exist as 0-byte handles. Defer close so
-// every exit path — happy and early — closes both files exactly once
-// before recordRun reads their final sizes.
-defer outFile.Close()
-defer errFile.Close()
+// From this point both files exist as 0-byte handles. Install
+// best-effort cleanup defers so a panic between here and recordRun
+// still releases the file descriptors. Closing an already-closed
+// *os.File returns ErrClosed, which we ignore.
+defer func() { _ = outFile.Close() }()
+defer func() { _ = errFile.Close() }()
 
-// recordRunWithFiles is a small helper that:
-//   1. closes outFile/errFile (idempotent via the defers above plus a
-//      sync of remaining buffered bytes),
-//   2. stats both paths to populate stdout_bytes / stderr_bytes,
-//   3. appends one line to runs.jsonl (under the appender mutex).
-// Used by every exit point below so paths and byte counts are
-// recorded uniformly.
+// recordRunWithFiles is the authoritative finalization path:
+//   1. close outFile/errFile (idempotent — the deferred closes above
+//      will also fire and tolerate the already-closed state),
+//   2. stat the on-disk paths to populate stdout_bytes / stderr_bytes
+//      (so we measure flushed bytes, not in-memory buffered ones),
+//   3. append one line to runs.jsonl (under the appender mutex).
+// Every reachable exit below calls this exactly once, so paths and
+// byte counts are recorded uniformly and the deferred closes become
+// no-op safety nets.
 
 // 2. Pre-spawn working_dir check.
 if st, e := os.Stat(job.Hook.WorkingDir); e != nil {
@@ -599,7 +602,7 @@ type CommentSnapshot struct {
 }
 ```
 
-All three resolvers receive `daemonCtx` so a daemon shutdown cancels DB calls in flight; canceled lookups are treated as "missing" with a rate-limited log line.
+All four resolvers receive `daemonCtx` so a daemon shutdown cancels DB calls in flight; canceled lookups are treated as "missing" with a rate-limited log line.
 
 ## 8. `runs.jsonl`
 
