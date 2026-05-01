@@ -1,7 +1,10 @@
 package hooks
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,4 +39,263 @@ func TestLoadedConfig_FieldsExist(t *testing.T) {
 		t.Fatal("UnchangedTunables field missing")
 	}
 	_ = time.Second
+}
+
+func writeTOML(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.toml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KATA_HOME", dir)
+	return path
+}
+
+func TestLoadStartup_FileMissing_EmptySnapshotDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KATA_HOME", dir)
+	lc, err := LoadStartup(filepath.Join(dir, "hooks.toml"))
+	if err != nil {
+		t.Fatalf("missing file should not be an error: %v", err)
+	}
+	if len(lc.Snapshot.Hooks) != 0 {
+		t.Fatalf("missing file: hooks should be empty, got %d", len(lc.Snapshot.Hooks))
+	}
+	if lc.Config.PoolSize != 4 || lc.Config.QueueCap != 1000 {
+		t.Fatalf("missing file: defaults wrong: pool=%d queue=%d", lc.Config.PoolSize, lc.Config.QueueCap)
+	}
+}
+
+func TestLoadStartup_Malformed_ReturnsError(t *testing.T) {
+	p := writeTOML(t, "[[hook]]\nevent = ")
+	if _, err := LoadStartup(p); err == nil {
+		t.Fatal("malformed TOML should error")
+	}
+}
+
+func TestLoadReload_Missing_EmptySnapshotNoError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KATA_HOME", dir)
+	cur := Config{PoolSize: 4, QueueCap: 1000}
+	lc, err := LoadReload(filepath.Join(dir, "hooks.toml"), cur)
+	if err != nil {
+		t.Fatalf("missing file on reload: %v", err)
+	}
+	if len(lc.Snapshot.Hooks) != 0 {
+		t.Fatal("missing reload should produce empty snapshot")
+	}
+}
+
+func TestLoadReload_StartupOnlyDiff_PopulatesUnchangedTunables(t *testing.T) {
+	p := writeTOML(t, `
+[hooks]
+pool_size = 8
+queue_cap = 1000
+[[hook]]
+event   = "issue.created"
+command = "/bin/true"
+`)
+	cur := Config{PoolSize: 4, QueueCap: 1000, OutputDiskCap: 100 << 20, RunsLogMaxBytes: 50 << 20, RunsLogKeep: 5, QueueFullLogInterval: 60 * time.Second}
+	lc, err := LoadReload(p, cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, msg := range lc.UnchangedTunables {
+		if strings.Contains(msg, "pool_size") && strings.Contains(msg, "8") && strings.Contains(msg, "4") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("UnchangedTunables missing pool_size diff: %v", lc.UnchangedTunables)
+	}
+}
+
+func TestLoad_UnknownTOMLKey_ErrorsCitesKey(t *testing.T) {
+	p := writeTOML(t, `
+[hooks]
+ploo_size = 8
+`)
+	_, err := LoadStartup(p)
+	if err == nil || !strings.Contains(err.Error(), "ploo_size") {
+		t.Fatalf("expected error citing 'ploo_size', got %v", err)
+	}
+}
+
+func TestLoad_EventStarCreated_Error(t *testing.T) {
+	p := writeTOML(t, `
+[[hook]]
+event   = "*.created"
+command = "/bin/true"
+`)
+	if _, err := LoadStartup(p); err == nil {
+		t.Fatal("event = *.created must be rejected")
+	}
+}
+
+func TestLoad_EventSyncResetRequired_Error(t *testing.T) {
+	p := writeTOML(t, `
+[[hook]]
+event   = "sync.reset_required"
+command = "/bin/true"
+`)
+	if _, err := LoadStartup(p); err == nil {
+		t.Fatal("event = sync.reset_required must be rejected")
+	}
+}
+
+func TestLoad_CommandPaths(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		ok   bool
+		desc string
+	}{
+		{"/usr/local/bin/notify", true, "absolute"},
+		{"notify", true, "bare name"},
+		{"./foo", false, "dot-relative"},
+		{"bin/foo", false, "embedded slash"},
+		{"", false, "empty"},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			p := writeTOML(t, "[[hook]]\nevent = \"issue.created\"\ncommand = \""+c.cmd+"\"\n")
+			_, err := LoadStartup(p)
+			if c.ok && err != nil {
+				t.Fatalf("command %q should be ok, got %v", c.cmd, err)
+			}
+			if !c.ok && err == nil {
+				t.Fatalf("command %q should be rejected", c.cmd)
+			}
+		})
+	}
+}
+
+func TestLoad_RelativeWorkingDir_Error(t *testing.T) {
+	p := writeTOML(t, `
+[[hook]]
+event       = "issue.created"
+command     = "/bin/true"
+working_dir = "relative/path"
+`)
+	if _, err := LoadStartup(p); err == nil {
+		t.Fatal("relative working_dir must be rejected")
+	}
+}
+
+func TestLoad_KataPrefixedEnv_Error(t *testing.T) {
+	p := writeTOML(t, `
+[[hook]]
+event   = "issue.created"
+command = "/bin/true"
+[hook.env]
+KATA_FOO = "x"
+`)
+	if _, err := LoadStartup(p); err == nil {
+		t.Fatal("[hook.env] keys matching ^KATA_ must be rejected")
+	}
+}
+
+func TestLoad_HookCountCap(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 257; i++ {
+		b.WriteString("[[hook]]\nevent = \"issue.created\"\ncommand = \"/bin/true\"\n")
+	}
+	p := writeTOML(t, b.String())
+	if _, err := LoadStartup(p); err == nil {
+		t.Fatal("257 [[hook]] entries must be rejected (cap 256)")
+	}
+}
+
+func TestLoad_SizeUnitsBinary(t *testing.T) {
+	p := writeTOML(t, `
+[hooks]
+output_disk_cap = "100k"
+runs_log_max    = "1MB"
+[[hook]]
+event   = "issue.created"
+command = "/bin/true"
+`)
+	lc, err := LoadStartup(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc.Config.OutputDiskCap != 100*1024 {
+		t.Fatalf("100k = %d, want %d", lc.Config.OutputDiskCap, 100*1024)
+	}
+	if lc.Config.RunsLogMaxBytes != 1024*1024 {
+		t.Fatalf("1MB = %d, want %d", lc.Config.RunsLogMaxBytes, 1024*1024)
+	}
+}
+
+func TestLoad_UserEnvSorted(t *testing.T) {
+	p := writeTOML(t, `
+[[hook]]
+event   = "issue.created"
+command = "/bin/true"
+[hook.env]
+ZED   = "z"
+ALPHA = "a"
+MID   = "m"
+`)
+	lc, err := LoadStartup(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := lc.Snapshot.Hooks[0].UserEnv
+	want := []string{"ALPHA=a", "MID=m", "ZED=z"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("UserEnv = %v, want %v", got, want)
+	}
+}
+
+func TestLoad_DefaultWorkingDir_IsKataHome(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KATA_HOME", dir)
+	path := filepath.Join(dir, "hooks.toml")
+	if err := os.WriteFile(path, []byte("[[hook]]\nevent = \"issue.created\"\ncommand = \"/bin/true\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lc, err := LoadStartup(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc.Snapshot.Hooks[0].WorkingDir != dir {
+		t.Fatalf("default working_dir = %q, want %q", lc.Snapshot.Hooks[0].WorkingDir, dir)
+	}
+}
+
+func TestLoad_TimeoutBounds(t *testing.T) {
+	cases := []struct {
+		v    string
+		ok   bool
+		desc string
+	}{
+		{"30s", true, "default-ish"},
+		{"0s", false, "zero rejected (open interval)"},
+		{"5m", true, "max"},
+		{"5m1s", false, "over max"},
+		{"-1s", false, "negative"},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			p := writeTOML(t, "[[hook]]\nevent=\"issue.created\"\ncommand=\"/bin/true\"\ntimeout=\""+c.v+"\"\n")
+			_, err := LoadStartup(p)
+			if c.ok && err != nil {
+				t.Fatalf("timeout %q should be ok: %v", c.v, err)
+			}
+			if !c.ok && err == nil {
+				t.Fatalf("timeout %q should be rejected", c.v)
+			}
+		})
+	}
+}
+
+func TestLoad_PoolSizeBounds(t *testing.T) {
+	for _, body := range []string{"[hooks]\npool_size = 0\n", "[hooks]\npool_size = 17\n"} {
+		p := writeTOML(t, body)
+		if _, err := LoadStartup(p); err == nil {
+			t.Fatalf("body %q should be rejected", body)
+		}
+	}
 }
