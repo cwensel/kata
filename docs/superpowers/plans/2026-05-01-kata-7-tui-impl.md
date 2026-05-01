@@ -321,19 +321,130 @@ If the smoke test panics or `go mod tidy` won't resolve, **stop**. Open a discus
 
 ---
 
-## Roborev-fix checkpoint #1 (after M3b)
+## Roborev-fix checkpoint #1 (after M3b) — completed pre-M3.5
 
-> Before committing M3b, run `roborev fix --open --list`. If any open reviews target the redesign work, address them or close as accepted-tradeoff with a comment. The input plumbing rewrite is a likely review trigger.
-
-- [ ] Run `roborev fix --open --list --all-branches`. Review each finding.
-- [ ] Address fixable findings; commit alongside M3b or as a follow-up commit before M4 starts.
-- [ ] Close all reviews via `roborev comment` + `roborev close` per project convention.
+> Done in commit `9d5f6a8` (pre-M3.5 surgical fixes). Internals/correctness findings from jobs 89, 90 landed as small fixes; chrome/input findings (jobs 94/95/96/97) are folded into M3.5 below; plan-doc findings (91, 92) close as superseded once M3.5 lands.
 
 ---
 
-## Milestone M4 — Centered forms (create / edit-body / add-comment)
+## Milestone M3.5 — msgvault-style layout shell refactor
 
-**Goal:** Replace the `$EDITOR`-driven create / edit-body / add-comment flows with in-app centered forms. Add `bubbles/textarea`. New-issue form is two-field (title singleLine + body multiLine). `ctrl+e` is the explicit `$EDITOR` escape hatch from any multiLine field. The existing `editorCmd` machinery in `editor.go` stays intact for the `ctrl+e` path.
+> **Why this exists.** The chrome shipped in M0–M3b is a structural mismatch with what daily-use TUIs look like (msgvault, cf. `~/code/msgvault/internal/tui/`). The footer doesn't pin to the terminal bottom; the search bar pops above the table; the SSE-status line is debugger noise; the brand strip reads `kata · kata · ...` (project name collision); `q` quits without confirmation. Wes pushed back hard after looking at M0–M3b live: "it is very bad. There is no TUI chrome, it doesn't feel like a real application."
+>
+> M3.5 reorganises the layout shell along msgvault's patterns. It is not optional polish — it is what the M0–M3b chrome should have been.
+
+**Reference**: msgvault TUI (`~/code/msgvault/internal/tui/{view,model,keys}.go`). Memory: `feedback_kata_tui_msgvault.md`.
+
+**Files in scope:**
+- Modify: `internal/tui/list_render.go` (layout shell rewrite, drop SSE line, title-bar restyle, footer-pin via fillScreen, info-line search, simplified table chrome)
+- Modify: `internal/tui/detail_render.go` (same chrome treatment + reserve toast/prompt height — addresses job 95/97 budget overflow)
+- Modify: `internal/tui/inputs_render.go` (renderInputBar takes width arg — addresses job 96 hardcoded 80; renderPanelPrompt reserves footer slot)
+- Modify: `internal/tui/model.go` (synchronous input open instead of openInputCmd async race — addresses job 96/97 race; quit-confirm modal routing)
+- Modify: `internal/tui/list.go` (inline new-issue title row at top of table; drop the searchFieldNewTitle inline-prompt vestige once the row replaces it)
+- Modify: `internal/tui/keymap.go` (Quit help text becomes "quit (confirm)"; drop ToggleScope from help row entirely until daemon lands; new-issue help labels)
+- Modify: `internal/tui/help.go` (renderHelpBar swap to `│`-separated joining; two-level rows when overflow)
+- Modify: `internal/tui/theme.go` (titleBarStyle / statsStyle / cursorRowStyle / altRowStyle / separatorStyle / footerStyle / modalStyle — borrow msgvault's exact style shapes)
+- New: `internal/tui/layout_fill.go` (fillScreen helper for the bottom-pin pattern)
+- New: `internal/tui/quit_modal.go` (or fold into modal.go-redux — quit-confirm modal: `[Y] Yes  [N] No`)
+- Test: `internal/tui/snapshot_test.go` (new fixtures: `list-msgvault-chrome`, `list-search-bar-info-line`, `list-new-issue-row`, `quit-confirm-modal`, `title-bar-narrow-80`, `title-bar-wide-200` — last two for the `kata かた` wide-character alignment guard)
+
+**Invariants touched:**
+- Sanitization (preserve every existing call; new title-bar `kata かた` text is daemon-side-known so no sanitize needed there).
+- Identity selection (untouched — state, not chrome).
+- Stale-fetch guards (untouched — preserved internals).
+- Help-during-overlay sync (extended: the new quit-confirm modal must not steal keys when the inline command bar is open).
+
+### M3.5 Step 1: Layout shell with `fillScreen` (footer pinning)
+
+- [ ] **Adopt msgvault's `fillScreen` pattern.** New `layout_fill.go` with `fillScreen(content string, usedLines, totalHeight int) string` that pads blank lines so the footer + info line always render at the absolute bottom of the terminal. Mirror `view.go::fillScreen` in msgvault.
+- [ ] **Restructure `lm.View`** to compose: `header (2 lines)` + `body (table with header + separator + rows, padded to fill)` + `info line (search bar OR scroll indicator OR blank)` + `footer (help row)`. Total height == terminal height; no overflow possible because the body absorbs the slack.
+- [ ] **Drop `listBodyHeight`'s reserve-then-render approach**; replace with the fillScreen pad-to-bottom pattern.
+- [ ] **Verify on 80×24, 100×30, 120×40** that footer is on the bottom row regardless of issue count.
+
+### M3.5 Step 2: Bottom utility line for search/owner
+
+- [ ] **Move the inline command bar from above-the-table to the info line above the footer.** msgvault renders search as `/` + textinput on the info line via `m.searchInput.View()`. Mirror that.
+- [ ] **Drop `chromeHeaderForList`'s switch-on-input-kind branch**; the chip strip stays where the inline bar used to sit (between status line and table) — but the bar itself moves to the info line.
+- [ ] **Update `listHelpItemsFor(input)`** to keep swapping the help row when bar is active (`enter commit · esc cancel · ctrl+u clear`).
+- [ ] **Pass actual terminal width into `renderInputBar`** instead of the hardcoded 80 — addresses roborev #96 finding 2.
+
+### M3.5 Step 3: Title bar + branding
+
+- [ ] **Restyle title bar with adaptive background.** New `titleBarStyle` in `theme.go` mirroring msgvault's: bold + adaptive bg + 1-cell horizontal padding. The bar reads as a window-chrome strip.
+- [ ] **Brand text becomes `kata かた · project: $name`** when scope.projectName is set. Falls back to `kata かた` alone when no project. Right-aligned `vX.Y.Z` slot stays as-is.
+- [ ] **Rendered counts move to the second header line** (alongside breadcrumb-equivalent — for kata that's the active filter chips). msgvault uses `breadcrumbStyled + gap + statsStyled`.
+- [ ] **Drop the persistent `SSE: connected · 0 pending events` line.** The SSE state surfaces ONLY when degraded — `sseReconnecting` / `sseDisconnected` becomes a flash on the info line, brief and dismissible.
+- [ ] **Drop the `actor` / `anonymous` slot.** `lm.actor` stays for mutation dispatch, but it doesn't render as chrome text.
+- [ ] **Wide-character alignment snapshots**: lock the title-bar render at widths 80, 100, 140, 200. The `かた` glyphs are 2 cells each; the right-aligned version text must not drift.
+
+### M3.5 Step 4: Table chrome simplification
+
+- [ ] **Drop the top + bottom hairline rules from the lipgloss table.** Keep ONLY the under-header separator (msgvault's `separatorStyle.Render(strings.Repeat("─", m.width))` immediately after the header row).
+- [ ] **Add alternating row backgrounds** via `normalRowStyle` (even rows) + `altRowStyle` (odd rows). Cursor row uses `cursorRowStyle` (a brighter background). Three-tier styling matches msgvault's table.
+- [ ] **Header row uses `tableHeaderStyle`** (bold + adaptive bg).
+- [ ] **Cursor glyph stays `▶`** (msgvault uses this; matches our existing `›` semantically but `▶` is more visible).
+
+### M3.5 Step 5: Quit-confirm modal
+
+- [ ] **New `quit_modal.go`** with `renderQuitConfirmModal()` returning a centered bordered panel with `Are you sure you want to quit? [Y] Yes [N] No`. Mirror msgvault's pattern.
+- [ ] **`q` opens the quit modal** instead of immediately quitting. `ctrl+c` keeps fast-quit semantics for power users.
+- [ ] **Modal overlay rendering**: `lipgloss.Place(width, height, Center, Center, ...)` with the modal box on top of whatever view was active. The underlying body stays painted (dimmed not strictly required — msgvault doesn't dim either).
+- [ ] **Modal key dispatch**: `y`/`Y` → `tea.Quit`; `n`/`N`/`esc` → close modal, no quit. Other keys ignored while modal is open.
+- [ ] **`canQuit()` extended**: while the quit modal is open, no other keys (including `q` again) propagate; the modal owns input.
+
+### M3.5 Step 6: Inline new-issue title row
+
+- [ ] **`n` opens a dedicated new-issue row at the top of the table** — NOT at the cursor position (recency-sorted lists make cursor-position fake; the row would jump after create anyway).
+- [ ] **The row hosts a `bubbles/textinput`** styled to look like the other table rows (same column widths). Cursor sits in the title cell; status/owner/updated cells render as `--`/blank/blank placeholders.
+- [ ] **`enter` commits the title immediately** — `api.CreateIssue(title, "", actor)` — and on success opens the centered body form for optional refinement (M4 wires the body form; M3.5 just leaves an empty body and shows the row at the top of the refreshed list).
+- [ ] **`esc` cancels** without creating.
+- [ ] **The row replaces** the current `n` → `searchFieldNewTitle` → `submitNewIssue` → `editorCmd("create")` chain. M4 layers the post-create body form on top.
+- [ ] **Footer help row swaps** when the inline new-issue row is active: `enter create · esc cancel`.
+- [ ] **Drop the now-dead `searchFieldNewTitle`, `lm.search`, `submitNewIssue`, and `pendingTitle` fields** from listModel.
+
+### M3.5 Step 7: Footer two-level + ` │ ` separators
+
+- [ ] **`renderHelpBar` joins items with ` │ `** (vertical bar + spaces) instead of `  ` (two spaces). msgvault's denser, easier-to-parse style.
+- [ ] **Position indicator on the right of the footer** — `[N/M issues]` or `N of M` — separated from the keys by gap. msgvault's pattern (`footerView`).
+- [ ] **Help labels are descriptive**: `c clear filters` not `c clear`; `s cycle status` not `s status`. The `│` separators give room.
+- [ ] **When the help overflows one line at 80 cols**, the existing `reflowHelpRows` already wraps to a second row. Verify under M3.5 with the new label lengths.
+
+### M3.5 tests + acceptance
+
+- [ ] **Snapshot fixtures** (regenerated under the new chrome):
+    - `list-msgvault-chrome` (80×24, 120×30, 200×40 — three width snapshots so the title-bar `かた` alignment is locked)
+    - `list-search-bar-info-line` (search bar active on the info line)
+    - `list-new-issue-row` (inline new-issue row at top of table, cursor in title field)
+    - `quit-confirm-modal` (centered overlay)
+    - `detail-toast-reserves-height` (regression for jobs 94/95 — footer must stay visible when toast is active)
+- [ ] **Behavior tests:**
+    - `TestQuit_QPressed_OpensConfirm`: q opens the modal, doesn't quit immediately.
+    - `TestQuit_CtrlCFastQuits`: ctrl+c bypasses the modal.
+    - `TestQuit_YConfirms`: y/Y inside the modal returns tea.Quit.
+    - `TestQuit_NCancels`: n/N/esc closes the modal without quitting.
+    - `TestNewIssueRow_EnterCreatesImmediately`: typing in the inline row + Enter calls api.CreateIssue with the title and empty body.
+    - `TestNewIssueRow_EscCancels`: Esc closes the row, no API call.
+    - `TestSearch_BarRendersOnInfoLine`: snapshot confirms the search bar is below the table, not above.
+    - `TestFooter_PinnedToBottom`: rendering at height 30 with 5 issues — the footer is on row 30, not row 8.
+    - `TestTitleBar_KataKanaAlignment`: render at 80, 100, 140 — verify the right-aligned version text appears at column == width-len(version), accounting for `かた` being 2 cells each.
+- [ ] **Synchronous input open**: drop `openInputCmd` indirection for `/`, `o`, the panel prompts, and `n`. The inputState constructor runs in the same Update tick that handled the key. Addresses roborev #96/#97 async-race findings.
+- [ ] **Lint clean, `go test ./...` green, all hard invariants hold.**
+
+**Acceptance criteria:**
+- `make build && ./kata tui` shows: bordered title bar at top with `kata かた · project: $name · vX.Y.Z`; second line with counts/filters; table flush against bg with one separator under header; alternating row stripes; footer pinned to absolute bottom row of terminal with `│`-separated descriptive keys; search bar shows on info line just above footer when `/` pressed; quit-confirm modal on `q`; new-issue row at top of table on `n`.
+- All hard invariants still hold (re-run the full TUI test suite + manual smoke).
+- Folded roborev reviews (94/95/96/97) close as superseded with comment pointing at the M3.5 commit.
+- Plan-doc reviews (91/92) close as superseded by the pre-M3.5 fixes (jobs 89/90) which removed the "preserved as-is" routing bugs.
+
+**Risks:** High. Largest single milestone. Touches every render file and the input plumbing. The `fillScreen` rewrite is the structural change most likely to regress snapshot tests. Manual smoke on a real terminal at three widths (80, 120, 160) is mandatory before commit.
+
+---
+
+## Milestone M4 — Centered body/comment forms (post-M3.5 scope)
+
+> **Scope-narrowed in M3.5.** The new-issue title flow moved to the inline new-issue row in M3.5 (top-of-table). M4 is now strictly about the centered **body** and **comment** forms — the post-create body refinement, the `e` edit-body form, and the `c` add-comment form. No new-issue title prompt here.
+
+**Goal:** Replace the `$EDITOR`-driven edit-body / add-comment flows with in-app centered forms (bubbles/textarea). Add the post-create body form that opens immediately after the M3.5 inline row commits a title. `ctrl+e` is the explicit `$EDITOR` escape hatch from any multiLine field. The existing `editorCmd` machinery in `editor.go` stays intact.
 
 **Files:**
 - Modify: `internal/tui/input.go` — add `inputNewIssueForm`/`inputEditBodyForm`/`inputCommentForm` kinds + constructors with `bubbles/textarea`
