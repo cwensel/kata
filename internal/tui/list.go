@@ -104,7 +104,33 @@ func (lm listModel) applyNavKey(
 	if next, ok := lm.applyPromptKey(msg, km, sc); ok {
 		return next, nil
 	}
+	if next, cmd, ok := lm.applyOpenKey(msg, km); ok {
+		return next, cmd
+	}
 	return lm, nil
+}
+
+// applyOpenKey handles Enter on a list row: emit openDetailMsg with the
+// issue under the cursor. The top-level Model handles the message by
+// switching to the detail view and dispatching the three tab fetches.
+// Empty list (cursor would point past the slice) is a quiet no-op so a
+// stray Enter on the empty-state hint does nothing.
+func (lm listModel) applyOpenKey(
+	msg tea.KeyMsg, km keymap,
+) (listModel, tea.Cmd, bool) {
+	if !km.Open.matches(msg) {
+		return lm, nil, false
+	}
+	rows := filteredIssues(lm.issues, lm.filter)
+	if len(rows) == 0 {
+		return lm, nil, true
+	}
+	idx := lm.cursor
+	if idx >= len(rows) {
+		idx = len(rows) - 1
+	}
+	iss := rows[idx]
+	return lm, func() tea.Msg { return openDetailMsg{issue: iss} }, true
 }
 
 // applyCursorKey handles the j/k/g/G family. ok=true means the key was

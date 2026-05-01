@@ -18,7 +18,10 @@ const (
 )
 
 // Model is the top-level Bubble Tea model. Sub-views are embedded by
-// value so Update can mutate them in place without indirection.
+// value so Update can mutate them in place without indirection. The
+// detail sub-view is held by value (not pointer) so its scroll/tab
+// state lives across opens of the same issue, and so popDetailMsg
+// returns to a list whose cursor and filters are unchanged.
 type Model struct {
 	opts   Options
 	api    *Client
@@ -28,6 +31,7 @@ type Model struct {
 	height int
 	keymap keymap
 	list   listModel
+	detail detailModel
 }
 
 // initialModel constructs the root Bubble Tea model. Style vars are
@@ -43,6 +47,7 @@ func initialModel(opts Options) Model {
 		view:   viewList,
 		keymap: newKeymap(),
 		list:   lm,
+		detail: newDetailModel(),
 	}
 }
 
@@ -103,6 +108,12 @@ func initialFilter(opts Options) ListFilter {
 // prompt is active: typing 'q' into the search/owner/title prompt must
 // reach the buffer instead of quitting. The same gate applies to ?, R,
 // and any future global key.
+//
+// openDetailMsg / popDetailMsg are intercepted before the per-view
+// dispatch because the view switch lives at this level. The detail
+// sub-model is reset on open so a new issue starts at scroll=0 with the
+// comments tab — but the list sub-model is untouched on pop, preserving
+// the user's cursor and filter state across the round trip.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -112,11 +123,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.list.search.inputting && m.keymap.Quit.matches(msg) {
 			return m, tea.Quit
 		}
+	case openDetailMsg:
+		return m.handleOpenDetail(msg)
+	case popDetailMsg:
+		m.view = viewList
+		return m, nil
 	}
+	return m.dispatchToView(msg)
+}
+
+// handleOpenDetail seeds m.detail with the chosen issue and dispatches
+// the three concurrent tab fetches via tea.Batch. The fetches run in
+// parallel so the user sees data on whichever tab is active first.
+func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
+	iss := msg.issue
+	m.detail = newDetailModel()
+	m.detail.issue = &iss
+	m.view = viewDetail
+	if m.api == nil {
+		return m, nil
+	}
+	pid := detailProjectID(iss, m.scope)
+	cmds := []tea.Cmd{
+		fetchComments(m.api, pid, iss.Number),
+		fetchEvents(m.api, pid, iss.Number),
+		fetchLinks(m.api, pid, iss.Number),
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// dispatchToView forwards msg to the active sub-view's Update.
+func (m Model) dispatchToView(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case viewList:
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg, m.keymap, m.api, m.scope)
+		return m, cmd
+	case viewDetail:
+		var cmd tea.Cmd
+		m.detail, cmd = m.detail.Update(msg, m.keymap)
 		return m, cmd
 	}
 	return m, nil
@@ -127,6 +172,8 @@ func (m Model) View() string {
 	switch m.view {
 	case viewList:
 		return m.list.View(m.width, m.height)
+	case viewDetail:
+		return m.detail.View(m.width, m.height)
 	}
 	return ""
 }
