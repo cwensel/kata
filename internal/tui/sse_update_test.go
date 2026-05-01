@@ -1,0 +1,312 @@
+package tui
+
+import (
+	"testing"
+	"time"
+)
+
+// sseUpdateFixture builds a minimal Model wired for the SSE Update-side
+// handler tests. sseCh is nil so waitForSSE returns nil; that way the
+// returned tea.Cmd shape is the handler's contribution alone (a tick or
+// nil), not noise from re-arming the SSE bridge. cache is allocated so
+// markStale doesn't nil-panic. toastNow is fixed so toast-expiry tests
+// have a deterministic clock to drive.
+func sseUpdateFixture() Model {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	return Model{
+		view:     viewList,
+		cache:    newIssueCache(),
+		toastNow: func() time.Time { return now },
+	}
+}
+
+// sseUpdateFixtureAt builds a fixture whose toastNow returns t — used by
+// the toast-expiry tests so the wall-clock check can be driven both
+// before and after a toast's expiresAt.
+func sseUpdateFixtureAt(t time.Time) Model {
+	m := sseUpdateFixture()
+	m.toastNow = func() time.Time { return t }
+	return m
+}
+
+// TestEventAffectsView_AllProjects: in all-projects scope, any event
+// with a non-zero projectID affects the view; projectID == 0 does not.
+func TestEventAffectsView_AllProjects(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{allProjects: true}
+	if !m.eventAffectsView(eventReceivedMsg{projectID: 1}) {
+		t.Fatal("projectID=1 in all-projects scope must affect view")
+	}
+	if !m.eventAffectsView(eventReceivedMsg{projectID: 999}) {
+		t.Fatal("projectID=999 in all-projects scope must affect view")
+	}
+	if m.eventAffectsView(eventReceivedMsg{projectID: 0}) {
+		t.Fatal("projectID=0 must not affect view (system-wide ignore)")
+	}
+}
+
+// TestEventAffectsView_SingleProject: in single-project scope, only the
+// matching projectID affects the view; other projects do not.
+func TestEventAffectsView_SingleProject(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	if !m.eventAffectsView(eventReceivedMsg{projectID: 7}) {
+		t.Fatal("matching projectID must affect view")
+	}
+	if m.eventAffectsView(eventReceivedMsg{projectID: 8}) {
+		t.Fatal("non-matching projectID must not affect view")
+	}
+}
+
+// TestEventAffectsView_ZeroProjectID_SingleScope: locks in the chosen
+// behavior — projectID==0 is treated as a system-wide event we ignore
+// regardless of scope, so the daemon can broadcast unscoped frames
+// without churning a single-project view.
+func TestEventAffectsView_ZeroProjectID_SingleScope(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	if m.eventAffectsView(eventReceivedMsg{projectID: 0}) {
+		t.Fatal("projectID=0 must not affect single-project view")
+	}
+}
+
+// TestHandleEventReceived_DispatchesDebouncedRefetch: a fresh
+// affects-view event flips pendingRefetch and returns a non-nil cmd
+// (the 150ms tick). The cache, primed with a put so isStale's set+stale
+// gate is meaningful, is marked stale so the tick's eventual refetch
+// path will run.
+func TestHandleEventReceived_DispatchesDebouncedRefetch(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 1}})
+	out, cmd := m.handleEventReceived(eventReceivedMsg{projectID: 7})
+	mm := out.(Model)
+	if !mm.pendingRefetch {
+		t.Fatal("pendingRefetch must be true after first affects-view event")
+	}
+	if !mm.cache.isStale() {
+		t.Fatal("cache must be marked stale (set+stale gate)")
+	}
+	if cmd == nil {
+		t.Fatal("cmd must be non-nil (the debounce tick)")
+	}
+}
+
+// TestHandleEventReceived_CoalescesBursts: three back-to-back
+// affects-view events coalesce — pendingRefetch stays true and only
+// the first dispatch returns a non-nil cmd.
+func TestHandleEventReceived_CoalescesBursts(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	out, cmd1 := m.handleEventReceived(eventReceivedMsg{projectID: 7})
+	m = out.(Model)
+	out, cmd2 := m.handleEventReceived(eventReceivedMsg{projectID: 7})
+	m = out.(Model)
+	out, cmd3 := m.handleEventReceived(eventReceivedMsg{projectID: 7})
+	m = out.(Model)
+	if cmd1 == nil {
+		t.Fatal("first cmd must be non-nil (the tick)")
+	}
+	if cmd2 != nil {
+		t.Fatalf("second cmd must coalesce to nil, got %T", cmd2)
+	}
+	if cmd3 != nil {
+		t.Fatalf("third cmd must coalesce to nil, got %T", cmd3)
+	}
+	if !m.pendingRefetch {
+		t.Fatal("pendingRefetch must remain true through the burst")
+	}
+}
+
+// TestHandleEventReceived_NoEffect_NoStale: an event for a different
+// project in single-project scope leaves the cache untouched and does
+// not flip pendingRefetch.
+func TestHandleEventReceived_NoEffect_NoStale(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	out, cmd := m.handleEventReceived(eventReceivedMsg{projectID: 8})
+	mm := out.(Model)
+	if mm.pendingRefetch {
+		t.Fatal("pendingRefetch must stay false for non-affecting event")
+	}
+	if mm.cache.isStale() {
+		t.Fatal("cache must not be marked stale for non-affecting event")
+	}
+	if cmd != nil {
+		t.Fatalf("cmd must be nil (no work), got %T", cmd)
+	}
+}
+
+// TestHandleEventReceived_DetailViewSingleIssueRefetch: when the user
+// is in detail-view and the event names dm.issue.Number,
+// maybeRefetchOpenDetail returns a non-nil cmd (the single-issue
+// fetch). We test the helper directly so we don't have to invoke a
+// 150ms tick to assert on cmd shape.
+func TestHandleEventReceived_DetailViewSingleIssueRefetch(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	m.detail.scopePID = 7
+	m.detail.gen = 5
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 42})
+	if cmd == nil {
+		t.Fatal("maybeRefetchOpenDetail must return a fetch cmd for matching issueNumber")
+	}
+	// And the parent handler still reports pendingRefetch=true and a
+	// non-nil cmd (the tick + the fetch-issue cmd, batched).
+	out, parentCmd := m.handleEventReceived(eventReceivedMsg{projectID: 7, issueNumber: 42})
+	mm := out.(Model)
+	if !mm.pendingRefetch {
+		t.Fatal("pendingRefetch must be set after detail-match event")
+	}
+	if parentCmd == nil {
+		t.Fatal("handleEventReceived must return a non-nil cmd batch")
+	}
+}
+
+// TestHandleEventReceived_DetailViewMismatch_NoRefetch: an event with a
+// different issueNumber than the open detail issue must not trigger a
+// detail refetch — maybeRefetchOpenDetail returns nil. Tested directly
+// to avoid invoking the 150ms debounce tick.
+func TestHandleEventReceived_DetailViewMismatch_NoRefetch(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	m.detail.scopePID = 7
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 99})
+	if cmd != nil {
+		t.Fatalf("maybeRefetchOpenDetail must return nil for non-matching issueNumber, got %T",
+			cmd)
+	}
+}
+
+// TestMaybeRefetchOpenDetail_ListView_NoRefetch: even with a matching
+// issueNumber, list-view (not detail) must not dispatch a refetch.
+func TestMaybeRefetchOpenDetail_ListView_NoRefetch(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewList
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 42})
+	if cmd != nil {
+		t.Fatalf("list-view must not refetch detail, got %T", cmd)
+	}
+}
+
+// TestHandleResetRequired_DropsCacheAndShowsToast: a reset frame drops
+// the cache, clears pendingRefetch, and seeds a "resynced" toast with
+// a 2s expiry from toastNow.
+func TestHandleResetRequired_DropsCacheAndShowsToast(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 1}})
+	m.cache.markStale()
+	m.pendingRefetch = true
+	out, _ := m.handleResetRequired(resetRequiredMsg{})
+	mm := out.(Model)
+	if mm.cache.set {
+		t.Fatal("cache must be empty after reset")
+	}
+	if mm.cache.isStale() {
+		t.Fatal("cache must not be marked stale after reset (it's empty)")
+	}
+	if mm.pendingRefetch {
+		t.Fatal("pendingRefetch must be cleared after reset")
+	}
+	if mm.toast == nil {
+		t.Fatal("toast must be set after reset")
+	}
+	if mm.toast.text != "resynced" {
+		t.Fatalf("toast.text = %q, want %q", mm.toast.text, "resynced")
+	}
+	want := mm.toastNow().Add(toastResyncedTTL)
+	if !mm.toast.expiresAt.Equal(want) {
+		t.Fatalf("toast.expiresAt = %v, want %v", mm.toast.expiresAt, want)
+	}
+}
+
+// TestHandleRefetchTick_ClearsPendingAndDispatchesIfStale: with stale
+// cache and pendingRefetch=true, the tick clears pendingRefetch and
+// dispatches a refetch (cmd is non-nil). We use a real *Client because
+// list.refetchCmd captures it; the lazy cmd is never invoked.
+func TestHandleRefetchTick_ClearsPendingAndDispatchesIfStale(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 1}})
+	m.cache.markStale()
+	m.pendingRefetch = true
+	out, cmd := m.handleRefetchTick()
+	mm := out.(Model)
+	if mm.pendingRefetch {
+		t.Fatal("pendingRefetch must be cleared after tick")
+	}
+	if cmd == nil {
+		t.Fatal("cmd must be non-nil when cache is stale")
+	}
+}
+
+// TestHandleRefetchTick_NoOpIfNotStale: with pendingRefetch=true but a
+// fresh cache (e.g., a manual filter change just refetched), the tick
+// clears pendingRefetch and returns nil — we don't spin a redundant
+// fetch.
+func TestHandleRefetchTick_NoOpIfNotStale(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 1}})
+	m.pendingRefetch = true
+	out, cmd := m.handleRefetchTick()
+	mm := out.(Model)
+	if mm.pendingRefetch {
+		t.Fatal("pendingRefetch must be cleared after tick")
+	}
+	if cmd != nil {
+		t.Fatalf("cmd must be nil when cache is fresh, got %T", cmd)
+	}
+}
+
+// TestHandleToastExpired_ClearsToast: with toastNow >= expiresAt, the
+// toast clears.
+func TestHandleToastExpired_ClearsToast(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	m := sseUpdateFixtureAt(now)
+	m.toast = &toast{
+		text:      "resynced",
+		level:     toastInfo,
+		expiresAt: now.Add(-time.Second), // already expired
+	}
+	out, _ := m.handleToastExpired()
+	mm := out.(Model)
+	if mm.toast != nil {
+		t.Fatalf("toast must be cleared, got %+v", mm.toast)
+	}
+}
+
+// TestHandleToastExpired_PreservesNewerToast: a fresher toast (expiresAt
+// in the future relative to toastNow) must NOT be cleared by a stale
+// expiry tick. This guards against a sequence like reset_required → 2s
+// later toastExpired arrives → user already replaced the toast with a
+// fresher one whose expiry hasn't fired yet.
+func TestHandleToastExpired_PreservesNewerToast(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	m := sseUpdateFixtureAt(now)
+	fresher := &toast{
+		text:      "fresher",
+		level:     toastInfo,
+		expiresAt: now.Add(2 * time.Second), // still in the future
+	}
+	m.toast = fresher
+	out, _ := m.handleToastExpired()
+	mm := out.(Model)
+	if mm.toast == nil {
+		t.Fatal("fresher toast must not be cleared by stale tick")
+	}
+	if mm.toast.text != "fresher" {
+		t.Fatalf("toast.text = %q, want fresher", mm.toast.text)
+	}
+}
