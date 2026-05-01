@@ -94,47 +94,56 @@ type editorReturnedMsg struct {
 	err           error
 }
 
-//nolint:unused // Task 11
+// eventReceivedMsg is the per-frame SSE message forwarded to the TEA
+// loop by startSSE. issueNumber is zero when the event has no
+// associated issue (project-level events).
 type eventReceivedMsg struct {
 	eventType              string
 	projectID, issueNumber int64
 }
 
-//nolint:unused // Task 11
+// resetRequiredMsg signals sync.reset_required: the daemon's purge
+// gap means the consumer's cursor is too old. The TEA loop drops the
+// cache and refetches from scratch.
 type resetRequiredMsg struct{ resetAfterID int64 }
 
-//nolint:unused // Task 11
+// sseStatusMsg carries connection-state transitions from the SSE
+// goroutine to the TEA loop so the status bar can render the
+// reconnect indicator.
 type sseStatusMsg struct{ state sseConnState }
 
-//nolint:unused // Task 11
+// sseConnState is the SSE consumer's connection state.
 type sseConnState int
 
-//nolint:unused // Task 11
 const (
 	sseConnected sseConnState = iota
 	sseReconnecting
 	sseDisconnected
 )
 
-//nolint:unused // Task 11
+// refetchTickMsg fires after the 150ms debounce window so a single
+// fetch covers a burst of events.
 type refetchTickMsg struct{}
 
-//nolint:unused // Task 12
+// toastExpiredMsg fires after a toast's TTL so Update can clear it.
 type toastExpiredMsg struct{}
 
-//nolint:unused // Task 12
+// toast is a transient status notification rendered below the active
+// view. Task 11 uses it for the 'resynced' notice; Task 12 will own
+// stacked toasts for mutation feedback.
 type toast struct {
 	text      string
 	level     toastLevel
 	expiresAt time.Time
 }
 
-//nolint:unused // Task 12
+// toastLevel discriminates toast styling.
 type toastLevel int
 
-//nolint:unused // Task 12
 const (
 	toastInfo toastLevel = iota
+	//nolint:unused // Task 12
 	toastSuccess
+	//nolint:unused // Task 12
 	toastError
 )

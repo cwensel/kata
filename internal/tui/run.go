@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"time"
 
@@ -36,51 +37,92 @@ func Run(ctx context.Context, opts Options) error {
 	if !isTerminal(os.Stdin) || !outputIsTerminal(opts.Stdout) {
 		return errNotATTY
 	}
-	c, sc, err := bootClient(ctx, opts)
+	c, sseHC, sc, endpoint, err := bootClient(ctx, opts)
 	if err != nil {
 		return err
 	}
+	m := buildRunModel(opts, c, sc)
+	sseCtx, cancelSSE := context.WithCancel(ctx)
+	defer cancelSSE()
+	if !sc.empty && sseHC != nil {
+		go startSSE(sseCtx, sseHC, endpoint, sseProjectScope(sc), m.sseCh)
+	}
+	if _, err := tea.NewProgram(m, programOpts(ctx, opts)...).Run(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// buildRunModel seeds the initial model with the resolved client and
+// scope. Splitting this off Run keeps the orchestration body small.
+func buildRunModel(opts Options, c *Client, sc scope) Model {
 	m := initialModel(opts)
 	m.api = c
 	m.scope = sc
 	if sc.empty {
 		m.view = viewEmpty
 	}
-	progOpts := []tea.ProgramOption{
+	return m
+}
+
+// programOpts returns the tea.ProgramOption slice for tea.NewProgram.
+// Splitting this off Run keeps Run's cyclomatic complexity within the
+// project's ≤8 limit.
+func programOpts(ctx context.Context, opts Options) []tea.ProgramOption {
+	out := []tea.ProgramOption{
 		tea.WithContext(ctx),
 		tea.WithAltScreen(),
 		tea.WithMouseAllMotion(), // future-proof; ignored by current handlers
 	}
 	if opts.Stdout != nil {
-		progOpts = append(progOpts, tea.WithOutput(opts.Stdout))
+		out = append(out, tea.WithOutput(opts.Stdout))
 	}
-	if _, err := tea.NewProgram(m, progOpts...).Run(); err != nil {
-		return err
-	}
-	return nil
+	return out
 }
 
-// bootClient discovers the daemon, constructs the typed HTTP client, and
-// resolves the initial scope. Splitting this off Run keeps Run's
-// cyclomatic complexity inside the project's ≤8 hard limit and isolates
-// the network preflight from the Bubble Tea wiring.
-func bootClient(ctx context.Context, opts Options) (*Client, scope, error) {
+// sseProjectScope picks the project_id pointer to thread into startSSE.
+// All-projects mode passes nil so the daemon broadcasts every event;
+// single-project mode constrains the stream to scope.projectID.
+func sseProjectScope(sc scope) *int64 {
+	if sc.allProjects || sc.projectID == 0 {
+		return nil
+	}
+	pid := sc.projectID
+	return &pid
+}
+
+// bootClient discovers the daemon, constructs the typed HTTP client, the
+// streaming-only client used for SSE, and resolves the initial scope.
+// Splitting this off Run keeps Run's cyclomatic complexity inside the
+// project's ≤8 hard limit and isolates the network preflight from the
+// Bubble Tea wiring.
+//
+// The SSE client is built with no overall Client.Timeout (only a 10s
+// response-header ceiling) so a long-lived stream isn't reaped after 5s.
+// We re-use NewHTTPClient with ResponseHeaderTimeout instead of building
+// a bespoke transport so unix-socket dialing stays in one place.
+func bootClient(ctx context.Context, opts Options) (*Client, *http.Client, scope, string, error) {
 	endpoint, err := daemonclient.EnsureRunning(ctx)
 	if err != nil {
-		return nil, scope{}, err
+		return nil, nil, scope{}, "", err
 	}
 	hc, err := daemonclient.NewHTTPClient(ctx, endpoint,
 		daemonclient.Opts{Timeout: 5 * time.Second})
 	if err != nil {
-		return nil, scope{}, err
+		return nil, nil, scope{}, "", err
+	}
+	sseHC, err := daemonclient.NewHTTPClient(ctx, endpoint,
+		daemonclient.Opts{ResponseHeaderTimeout: daemonclient.SSEHandshakeTimeout})
+	if err != nil {
+		return nil, nil, scope{}, "", err
 	}
 	c := NewClient(endpoint, hc)
 	cwd, _ := os.Getwd()
 	sc, err := bootResolveScope(ctx, c, opts.AllProjects, cwd)
 	if err != nil {
-		return nil, scope{}, err
+		return nil, nil, scope{}, "", err
 	}
-	return c, sc, nil
+	return c, sseHC, sc, endpoint, nil
 }
 
 // scope describes the issue-set the TUI is browsing. Exactly one of

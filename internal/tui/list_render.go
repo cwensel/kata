@@ -75,13 +75,38 @@ func (lm listModel) renderBody(width int) string {
 	return t.Render()
 }
 
-// renderFooter is the one-shot status line. It is the seed of the
-// future toast machinery (Task 12); for now it is plain text.
+// renderFooter is the one-shot status line. It renders the active
+// mutation status (lm.status), the SSE reconnect indicator (when the
+// SSE consumer is not in the connected state), and the active toast
+// (when present), each on its own line. Tests still see lm.status
+// because they drive Update directly without the SSE goroutine.
 func (lm listModel) renderFooter() string {
 	if lm.status == "" {
 		return ""
 	}
 	return statusStyle.Render(lm.status)
+}
+
+// renderSSEStatus returns the connection-status line rendered below the
+// list table. Empty when the consumer is in the connected state so the
+// steady state shows nothing extra.
+func renderSSEStatus(state sseConnState) string {
+	switch state {
+	case sseReconnecting:
+		return statusStyle.Render("kata: reconnecting…")
+	case sseDisconnected:
+		return statusStyle.Render("kata: disconnected (retrying)")
+	}
+	return ""
+}
+
+// renderToast wraps an active toast for footer display. nil toast
+// renders as empty so the steady state is unchanged.
+func renderToast(t *toast) string {
+	if t == nil {
+		return ""
+	}
+	return toastStyle.Render(t.text)
 }
 
 // renderPrompt formats the inline input. The cursor is a literal block
