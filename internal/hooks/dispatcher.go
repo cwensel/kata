@@ -27,7 +27,7 @@ type DispatcherDeps struct {
 	DBHash          string
 	KataHome        string
 	DaemonLog       *log.Logger
-	AliasResolver   func(evt db.Event) (AliasSnapshot, bool, error)
+	AliasResolver   func(ctx context.Context, evt db.Event) (AliasSnapshot, bool, error)
 	IssueResolver   func(ctx context.Context, issueID int64) (IssueSnapshot, error)
 	CommentResolver func(ctx context.Context, commentID int64) (CommentSnapshot, error)
 	ProjectResolver func(ctx context.Context, projectID int64) (ProjectSnapshot, error)
@@ -293,6 +293,11 @@ func (d *Dispatcher) runDeps() runDeps {
 		Comment:     d.deps.CommentResolver,
 		Alias:       d.deps.AliasResolver,
 		AppendRun: func(r runRecord) {
+			// Drop the active marker BEFORE asking the pruner whether to
+			// sweep so MaybeSweep can prune the just-finished group too.
+			// The deferred cleanup in runOne acts as a safety net for panic
+			// paths that bypass AppendRun.
+			d.active.Delete(groupKey{eventID: r.EventID, hookIndex: r.HookIndex})
 			d.appender.Append(r)
 			d.pruner.AddRun(r.EventID, r.HookIndex, r.StdoutBytes, r.StderrBytes)
 		},

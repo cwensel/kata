@@ -25,7 +25,7 @@ type (
 	projectResolver func(context.Context, int64) (ProjectSnapshot, error)
 	issueResolver   func(context.Context, int64) (IssueSnapshot, error)
 	commentResolver func(context.Context, int64) (CommentSnapshot, error)
-	aliasResolver   func(db.Event) (AliasSnapshot, bool, error)
+	aliasResolver   func(context.Context, db.Event) (AliasSnapshot, bool, error)
 	logfn           func(format string, args ...any)
 )
 
@@ -44,7 +44,7 @@ func buildStdinJSON(
 ) ([]byte, bool) {
 	env := baseEnvelope(evt)
 	env["project"] = buildProjectBlock(ctx, evt, rp, log)
-	if a := buildAliasBlock(evt, ra, log); a != nil {
+	if a := buildAliasBlock(ctx, evt, ra, log); a != nil {
 		env["alias"] = a
 	}
 	if i := buildIssueBlock(ctx, evt, ri, log); i != nil {
@@ -76,8 +76,8 @@ func buildProjectBlock(ctx context.Context, evt db.Event, rp projectResolver, lo
 	return proj
 }
 
-func buildAliasBlock(evt db.Event, ra aliasResolver, log logfn) map[string]any {
-	asnap, has, err := ra(evt)
+func buildAliasBlock(ctx context.Context, evt db.Event, ra aliasResolver, log logfn) map[string]any {
+	asnap, has, err := ra(ctx, evt)
 	if err != nil {
 		log("hooks: alias resolver: %v", err)
 		return nil

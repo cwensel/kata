@@ -210,7 +210,7 @@ func runJob(ctx context.Context, shutdown <-chan struct{}, job HookJob, deps run
 
 	cmd := exec.Command(job.Hook.Command, job.Hook.Args...) //nolint:gosec // G204: command validated at config load
 	cmd.Dir = job.Hook.WorkingDir
-	cmd.Env = buildEnv(job.Hook.UserEnv, job.Event, deps)
+	cmd.Env = buildEnv(ctx, job.Hook.UserEnv, job.Event, deps)
 	cmd.Stdin = bytes.NewReader(stdinPayload)
 	cmd.Stdout = rc.outFile
 	cmd.Stderr = rc.errFile
@@ -236,7 +236,7 @@ func exitCodeOf(err error) int {
 	return -1
 }
 
-func buildEnv(userEnv []string, evt db.Event, deps runDeps) []string {
+func buildEnv(ctx context.Context, userEnv []string, evt db.Event, deps runDeps) []string {
 	env := append([]string{}, os.Environ()...)
 	env = append(env, userEnv...)
 	env = append(env,
@@ -252,7 +252,7 @@ func buildEnv(userEnv []string, evt db.Event, deps runDeps) []string {
 		env = append(env, "KATA_ISSUE_NUMBER="+strconv.FormatInt(*evt.IssueNumber, 10))
 	}
 	// Errors degrade silently — alias env vars are best-effort and not part of the contract.
-	if asnap, has, err := deps.Alias(evt); err == nil && has {
+	if asnap, has, err := deps.Alias(ctx, evt); err == nil && has {
 		env = append(env,
 			"KATA_ALIAS_IDENTITY="+asnap.Identity,
 			"KATA_ROOT_PATH="+asnap.RootPath,

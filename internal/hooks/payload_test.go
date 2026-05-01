@@ -45,7 +45,7 @@ func okProject(_ context.Context, _ int64) (ProjectSnapshot, error) {
 	return ProjectSnapshot{Name: "kata"}, nil
 }
 
-func okAlias(_ db.Event) (AliasSnapshot, bool, error) {
+func okAlias(_ context.Context, _ db.Event) (AliasSnapshot, bool, error) {
 	return AliasSnapshot{Identity: "github.com/wesm/kata", Kind: "git", RootPath: "/Users/wesm/code/kata"}, true, nil
 }
 
@@ -85,7 +85,7 @@ func TestBuildStdin_HappyPath(t *testing.T) {
 
 func TestBuildStdin_AliasMissing_OmitsBlock(t *testing.T) {
 	evt := sampleEvent("issue.created")
-	noAlias := func(_ db.Event) (AliasSnapshot, bool, error) { return AliasSnapshot{}, false, nil }
+	noAlias := func(_ context.Context, _ db.Event) (AliasSnapshot, bool, error) { return AliasSnapshot{}, false, nil }
 	out, _ := buildStdinJSON(context.Background(), evt, okProject, okIssue, okComment, noAlias, nopLog())
 	var got map[string]any
 	_ = json.Unmarshal(out, &got)
@@ -96,7 +96,9 @@ func TestBuildStdin_AliasMissing_OmitsBlock(t *testing.T) {
 
 func TestBuildStdin_AliasError_OmitsBlockLogs(t *testing.T) {
 	evt := sampleEvent("issue.created")
-	errAlias := func(_ db.Event) (AliasSnapshot, bool, error) { return AliasSnapshot{}, false, errors.New("boom") }
+	errAlias := func(_ context.Context, _ db.Event) (AliasSnapshot, bool, error) {
+		return AliasSnapshot{}, false, errors.New("boom")
+	}
 	logged := []string{}
 	logger := func(format string, _ ...any) { logged = append(logged, format) }
 	out, _ := buildStdinJSON(context.Background(), evt, okProject, okIssue, okComment, errAlias, logger)

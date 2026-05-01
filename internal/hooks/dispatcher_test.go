@@ -23,7 +23,7 @@ func mustNewDispatcher(t *testing.T, hooks []ResolvedHook, cfg Config) (*Dispatc
 		DBHash:          dbHash,
 		KataHome:        root,
 		DaemonLog:       log.New(logBuf, "", 0),
-		AliasResolver:   func(_ db.Event) (AliasSnapshot, bool, error) { return AliasSnapshot{}, false, nil },
+		AliasResolver:   func(_ context.Context, _ db.Event) (AliasSnapshot, bool, error) { return AliasSnapshot{}, false, nil },
 		IssueResolver:   func(_ context.Context, _ int64) (IssueSnapshot, error) { return IssueSnapshot{}, nil },
 		CommentResolver: func(_ context.Context, _ int64) (CommentSnapshot, error) { return CommentSnapshot{}, nil },
 		ProjectResolver: func(_ context.Context, _ int64) (ProjectSnapshot, error) { return ProjectSnapshot{}, nil },
@@ -181,6 +181,73 @@ func TestDispatcher_Reload_AtomicWithEnqueue(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	wg.Wait()
+}
+
+func TestDispatcher_AliasResolverContext_CancelsOnShutdown(t *testing.T) {
+	bin := hookprobePath(t)
+	dir := t.TempDir()
+	h := ResolvedHook{Index: 0, Event: "*", Match: matchAlways(), Command: bin, Args: []string{"sleep", "5s"}, Timeout: 30 * time.Second, WorkingDir: dir}
+	cfg := defaultConfig()
+	cfg.PoolSize = 1
+	cfg.QueueCap = 1
+
+	// Capture the ctx the resolver was given.
+	var (
+		capturedCtx context.Context
+		captureMu   sync.Mutex
+		captured    sync.Once
+	)
+	deps := DispatcherDeps{
+		DBHash:    "testdbhash01",
+		KataHome:  t.TempDir(),
+		DaemonLog: log.New(&strings.Builder{}, "", 0),
+		AliasResolver: func(ctx context.Context, _ db.Event) (AliasSnapshot, bool, error) {
+			captured.Do(func() {
+				captureMu.Lock()
+				capturedCtx = ctx
+				captureMu.Unlock()
+			})
+			return AliasSnapshot{}, false, nil
+		},
+		IssueResolver:   func(_ context.Context, _ int64) (IssueSnapshot, error) { return IssueSnapshot{}, nil },
+		CommentResolver: func(_ context.Context, _ int64) (CommentSnapshot, error) { return CommentSnapshot{}, nil },
+		ProjectResolver: func(_ context.Context, _ int64) (ProjectSnapshot, error) { return ProjectSnapshot{}, nil },
+		Now:             time.Now,
+		GraceWindow:     50 * time.Millisecond,
+	}
+	loaded := LoadedConfig{Snapshot: Snapshot{Hooks: []ResolvedHook{h}}, Config: cfg}
+	d, err := New(loaded, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d.Enqueue(db.Event{ID: 500, Type: "issue.created", ProjectID: 1, ProjectIdentity: "x"})
+	// Wait briefly for the worker to invoke the resolver.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		captureMu.Lock()
+		got := capturedCtx
+		captureMu.Unlock()
+		if got != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	captureMu.Lock()
+	got := capturedCtx
+	captureMu.Unlock()
+	if got == nil {
+		t.Fatal("alias resolver was never invoked")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = d.Shutdown(ctx)
+	select {
+	case <-got.Done():
+	case <-time.After(time.Second):
+		t.Fatal("alias resolver context did not cancel after Shutdown")
+	}
 }
 
 func waitForLines(t *testing.T, path string, n int, timeout time.Duration) bool {

@@ -71,9 +71,8 @@ func makeCommentResolver(store *db.DB) func(context.Context, int64) (hooks.Comme
 // alias for the event's project is reported. Projects with zero aliases
 // produce (_, false, nil) and the alias block is omitted from the hook
 // payload.
-func makeAliasResolver(store *db.DB) func(db.Event) (hooks.AliasSnapshot, bool, error) {
-	return func(evt db.Event) (hooks.AliasSnapshot, bool, error) {
-		ctx := context.Background()
+func makeAliasResolver(store *db.DB) func(context.Context, db.Event) (hooks.AliasSnapshot, bool, error) {
+	return func(ctx context.Context, evt db.Event) (hooks.AliasSnapshot, bool, error) {
 		alias, has, err := store.LatestAliasForProject(ctx, evt.ProjectID)
 		if err != nil {
 			return hooks.AliasSnapshot{}, false, err
