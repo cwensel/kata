@@ -124,6 +124,95 @@ func TestDaemonLogs_Hooks_MalformedLineSkippedWithStderrWarning(t *testing.T) {
 	}
 }
 
+// TestDaemonLogs_Hooks_Tail_RotatedOnlyWaitsForActive guards the
+// awaitActiveFile contract that --tail will not latch onto a rotated
+// runs.jsonl.N when the active runs.jsonl is missing. Before the fix,
+// the tail loop would early-return with the smallest-numbered rotated
+// file and never observe future writes to runs.jsonl.
+func TestDaemonLogs_Hooks_Tail_RotatedOnlyWaitsForActive(t *testing.T) {
+	_, dir, _ := setupHooksDir(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Only a rotated file exists at startup.
+	if err := os.WriteFile(filepath.Join(dir, "runs.jsonl.1"),
+		[]byte(`{"event_id":99,"result":"ok"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd.SetArgs([]string{"daemon", "logs", "--hooks", "--tail"})
+	cmd.SetContext(ctx)
+
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = os.WriteFile(filepath.Join(dir, "runs.jsonl"),
+			[]byte(`{"event_id":7,"result":"ok"}`+"\n"), 0o600)
+	}()
+
+	_ = cmd.Execute()
+	out := buf.String()
+	if !strings.Contains(out, `"event_id":7`) {
+		t.Fatalf("tail must follow runs.jsonl after it appears: %q", out)
+	}
+}
+
+// TestEmitNewLines_PartialTrailingLine_NotConsumed pins the contract
+// that emitNewLines does NOT advance the caller's offset across a
+// partial trailing line. Before the fix, every scanned record advanced
+// `read` by len(line)+1, which over-counted the unflushed mid-line by
+// 1 byte and caused later ticks to miss content.
+func TestEmitNewLines_PartialTrailingLine_NotConsumed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runs.jsonl")
+	first := `{"event_id":1,"result":"ok"}` + "\n"
+	partial := `{"event_id":2`
+	if err := os.WriteFile(path, []byte(first+partial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &hookLogFilter{hookIndex: -1}
+	var stdout, stderr bytes.Buffer
+	n, err := emitNewLines(path, 0, &stdout, &stderr, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != int64(len(first)) {
+		t.Fatalf("read=%d, want %d (partial line must not advance offset)", n, len(first))
+	}
+	if !strings.Contains(stdout.String(), `"event_id":1`) {
+		t.Fatalf("first line should print, got %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), `"event_id":2`) {
+		t.Fatalf("partial line must not print, got %q", stdout.String())
+	}
+
+	fh, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: test-controlled temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fh.WriteString(`,"result":"ok"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = fh.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	n2, err := emitNewLines(path, n, &stdout, &stderr, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n2 == 0 {
+		t.Fatalf("second tick should consume the now-completed line, got n2=%d", n2)
+	}
+	if !strings.Contains(stdout.String(), `"event_id":2`) {
+		t.Fatalf("second line should print after completion: %q", stdout.String())
+	}
+}
+
 func TestDaemonLogs_Hooks_Tail_PicksUpNewLines(t *testing.T) {
 	_, dir, _ := setupHooksDir(t)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
