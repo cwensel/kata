@@ -13,17 +13,20 @@ import (
 
 	"github.com/wesm/kata/internal/api"
 	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/hooks"
 )
 
 // ServerConfig wires the daemon's runtime dependencies. DB and StartedAt are
 // required; Endpoint is only consulted by Run; Broadcaster is owned by the
 // server (NewServer fills it if nil so handler tests don't have to plumb one
-// through).
+// through). Hooks is optional and defaults to hooks.NewNoop() when nil so
+// mutation handlers can fan out events unconditionally.
 type ServerConfig struct {
 	DB          *db.DB
 	StartedAt   time.Time
 	Endpoint    DaemonEndpoint
 	Broadcaster *EventBroadcaster
+	Hooks       hooks.Sink
 }
 
 // Server bundles the http handler and lifecycle.
@@ -39,6 +42,9 @@ func NewServer(cfg ServerConfig) *Server {
 	api.InstallErrorFormatter()
 	if cfg.Broadcaster == nil {
 		cfg.Broadcaster = NewEventBroadcaster()
+	}
+	if cfg.Hooks == nil {
+		cfg.Hooks = hooks.NewNoop()
 	}
 
 	mux := http.NewServeMux()
