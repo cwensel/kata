@@ -2,9 +2,11 @@ package hooks
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -96,6 +98,49 @@ func TestPrune_AddAfterRun_TriggersSweep(t *testing.T) {
 	// and delete oldest (1.0) leaving 80.
 	if _, err := os.Stat(filepath.Join(dir, "1.0.out")); err == nil {
 		t.Fatal("oldest run should have been pruned by AddRun-triggered sweep")
+	}
+}
+
+// TestPrune_ConcurrentSweep_TotalMatchesDisk pins the spec contract
+// that two finishers calling MaybeSweep concurrently never corrupt the
+// running total. The deletion phase is serialized under p.mu, so the
+// post-condition is that p.total equals the sum of bytes still on disk.
+func TestPrune_ConcurrentSweep_TotalMatchesDisk(t *testing.T) {
+	dir := t.TempDir()
+	const groups = 12
+	const perStream = 100
+	for i := 1; i <= groups; i++ {
+		mustWrite(t, filepath.Join(dir, fmt.Sprintf("%d.0.out", i)), perStream)
+		mustWrite(t, filepath.Join(dir, fmt.Sprintf("%d.0.err", i)), perStream)
+	}
+	p := newPruner(dir, 400, log.New(&bytes.Buffer{}, "", 0))
+	if err := p.Seed(); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); p.MaybeSweep() }()
+	}
+	wg.Wait()
+
+	var diskBytes int64
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		diskBytes += info.Size()
+	}
+	if got := p.Total(); got != diskBytes {
+		t.Fatalf("p.Total()=%d, disk=%d (concurrent sweepers got out of sync)", got, diskBytes)
+	}
+	if diskBytes > 400 {
+		t.Fatalf("disk bytes %d > cap 400 after sweeps", diskBytes)
 	}
 }
 

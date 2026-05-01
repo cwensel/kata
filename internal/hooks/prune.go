@@ -3,6 +3,7 @@ package hooks
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -22,6 +23,9 @@ type pruner struct {
 }
 
 func newPruner(dir string, capBytes int64, daemonLog *log.Logger) *pruner {
+	if daemonLog == nil {
+		daemonLog = log.New(io.Discard, "", 0)
+	}
 	return &pruner{dir: dir, capBytes: capBytes, daemonLog: daemonLog}
 }
 
@@ -121,19 +125,24 @@ func (p *pruner) MaybeSweep() {
 // holds p.mu so total accounting stays consistent. Missing files are
 // silent (already gone is fine); other errors are logged.
 func (p *pruner) deleteGroupLocked(g groupInfo) {
-	if g.outPath != "" {
-		if err := os.Remove(g.outPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			p.daemonLog.Printf("hooks: prune remove %s: %v", g.outPath, err)
-		} else {
-			p.total -= g.outSize
-		}
+	p.removeStreamLocked(g.outPath, g.outSize)
+	p.removeStreamLocked(g.errPath, g.errSize)
+}
+
+// removeStreamLocked removes one captured stream file and decrements
+// the running total. Caller holds p.mu. "Already gone" is treated as
+// success so a concurrent sweep that won the race against this caller
+// is not double-counted.
+func (p *pruner) removeStreamLocked(path string, size int64) {
+	if path == "" {
+		return
 	}
-	if g.errPath != "" {
-		if err := os.Remove(g.errPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			p.daemonLog.Printf("hooks: prune remove %s: %v", g.errPath, err)
-		} else {
-			p.total -= g.errSize
-		}
+	err := os.Remove(path)
+	switch {
+	case err == nil, errors.Is(err, fs.ErrNotExist):
+		p.total -= size
+	default:
+		p.daemonLog.Printf("hooks: prune remove %s: %v", path, err)
 	}
 }
 

@@ -672,7 +672,7 @@ Algorithm (`prune.MaybeSweep`):
    - Delete `.out` + `.err` as a unit, subtracting both sizes from the running total, until total ≤ cap.
 4. `os.Stat` / `os.Remove` errors are rate-limit-logged via `daemonLog` and never fail the run.
 
-**Concurrency:** all access to the running total and any in-progress sweep is guarded by a single `sync.Mutex` on the pruner. Up to 16 workers may finish concurrently and call into `MaybeSweep`; the mutex serializes total updates and ensures only one sweep runs at a time. The mutex is released before file I/O when possible so a slow `os.Remove` doesn't stall every other worker, but `AddRun` (size accumulation) and the sweep critical sections are non-overlapping. Tests inject ≥2 concurrent finishers under `-race` to pin the contract.
+**Concurrency:** all access to the running total is guarded by a single `sync.Mutex` on the pruner. Up to 16 workers may finish concurrently and call into `MaybeSweep`; the mutex serializes total updates, and the deletion phase runs under the mutex so two concurrent sweepers cannot double-decrement the total. The mutex is released for the directory rescan/sort phase so a slow `ReadDir` doesn't stall `AddRun`. A second concurrent sweeper that lost the race observes the first's reductions via the per-group `total <= cap` early-exit and quietly returns. `AddRun` (size accumulation) and the sweep deletion phase are non-overlapping. Tests inject ≥2 concurrent finishers under `-race` to pin the contract: after the workers wait, `p.Total()` equals the bytes still on disk.
 
 Run-group atomic delete prevents `runs.jsonl` references from degrading into "half-present" output.
 
