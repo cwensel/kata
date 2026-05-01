@@ -21,7 +21,8 @@ type tabState struct {
 // the entries don't all fit in height.
 func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState) string {
 	headers := []string{titleStyle.Render(fmt.Sprintf("Comments (%d)", len(cs)))}
-	if placeholder := tabPlaceholder(ts, "comments", "(no comments yet)", len(cs)); placeholder != nil {
+	placeholder := tabPlaceholder(ts, "comments", "(no comments yet)", len(cs))
+	if placeholder != nil {
 		return assembleTab(headers, []entryChunk{*placeholder}, width, height, -1)
 	}
 	chunks := make([]entryChunk, 0, len(cs))

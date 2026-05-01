@@ -69,10 +69,14 @@ func buildRunModel(opts Options, c *Client, sc scope) Model {
 // Splitting this off Run keeps Run's cyclomatic complexity within the
 // project's ≤8 limit.
 func programOpts(ctx context.Context, opts Options) []tea.ProgramOption {
+	// Mouse capture is intentionally NOT enabled (plan §152): the TUI is
+	// keyboard-first, and tea.WithMouseAllMotion would emit mouse-tracking
+	// control sequences that prevent the user from selecting text natively
+	// in the alt-screen. Add it back in a future plan that actually wires
+	// MouseMsg handlers.
 	out := []tea.ProgramOption{
 		tea.WithContext(ctx),
 		tea.WithAltScreen(),
-		tea.WithMouseAllMotion(), // future-proof; ignored by current handlers
 	}
 	if opts.Stdout != nil {
 		out = append(out, tea.WithOutput(opts.Stdout))
