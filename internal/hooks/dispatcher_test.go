@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 func mustNewDispatcher(t *testing.T, hooks []ResolvedHook, cfg Config) (*Dispatcher, *strings.Builder, string) {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv("KATA_HOME", root)
 	dbHash := "testdbhash01"
 	logBuf := &strings.Builder{}
 	deps := DispatcherDeps{
@@ -87,7 +85,7 @@ func TestDispatcher_Enqueue_QueueFullDropsAndCounts(t *testing.T) {
 		d.Enqueue(db.Event{ID: int64(200 + i), Type: "issue.created", ProjectID: 1, ProjectIdentity: "x"})
 	}
 	// At least N-2 should drop (1 in queue + 1 in flight + N-2 dropped).
-	if got := atomic.LoadInt64(&d.dropped); got < 5 {
+	if got := d.dropped.Load(); got < 5 {
 		t.Fatalf("dropped=%d, want >=5", got)
 	}
 }

@@ -47,7 +47,7 @@ type Dispatcher struct {
 	stopped     atomic.Bool
 	wg          sync.WaitGroup
 	snapshot    atomic.Pointer[Snapshot]
-	dropped     int64
+	dropped     atomic.Int64
 	lastFullLog atomic.Int64 // unix nanos of last hook_queue_full log
 	appender    *runsAppender
 	pruner      *pruner
@@ -143,7 +143,7 @@ func (d *Dispatcher) Enqueue(evt db.Event) {
 		select {
 		case d.queue <- job:
 		default:
-			atomic.AddInt64(&d.dropped, 1)
+			d.dropped.Add(1)
 			d.maybeLogQueueFull()
 		}
 	}
@@ -156,7 +156,7 @@ func (d *Dispatcher) maybeLogQueueFull() {
 		return
 	}
 	if d.lastFullLog.CompareAndSwap(last, now) {
-		d.deps.DaemonLog.Printf("hooks: hook_queue_full (dropped=%d)", atomic.LoadInt64(&d.dropped))
+		d.deps.DaemonLog.Printf("hooks: hook_queue_full (dropped=%d)", d.dropped.Load())
 	}
 }
 
@@ -223,11 +223,23 @@ func (d *Dispatcher) worker() {
 				return // drop the just-popped job; do not start runJob
 			default:
 			}
-			d.inflight.Add(1)
-			runJob(context.Background(), d.done, job, rd)
-			d.inflight.Add(-1)
+			d.runOne(rd, job)
 		}
 	}
+}
+
+// runOne executes one job under inflight accounting that survives a
+// runJob panic (the deferred recover keeps the worker alive and the
+// counter accurate so Shutdown's "in-flight" log doesn't drift).
+func (d *Dispatcher) runOne(rd runDeps, job HookJob) {
+	d.inflight.Add(1)
+	defer d.inflight.Add(-1)
+	defer func() {
+		if r := recover(); r != nil {
+			d.deps.DaemonLog.Printf("hooks: runJob panic: %v", r)
+		}
+	}()
+	runJob(context.Background(), d.done, job, rd)
 }
 
 // runDeps builds the per-job runDeps from the dispatcher's state.
