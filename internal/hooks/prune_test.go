@@ -101,6 +101,60 @@ func TestPrune_AddAfterRun_TriggersSweep(t *testing.T) {
 	}
 }
 
+// TestPrune_SkipsActiveGroup pins the contract that MaybeSweep never
+// unlinks an in-flight group's .out/.err. Marking 10.0 active blocks
+// the oldest group from being deleted; the next-oldest is taken
+// instead even though it lives newer in the (event_id, hook_index)
+// ordering.
+func TestPrune_SkipsActiveGroup(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "10.0.out"), 100)
+	mustWrite(t, filepath.Join(dir, "10.0.err"), 50)
+	mustWrite(t, filepath.Join(dir, "20.0.out"), 100)
+	mustWrite(t, filepath.Join(dir, "20.0.err"), 50)
+	mustWrite(t, filepath.Join(dir, "30.0.out"), 100)
+	mustWrite(t, filepath.Join(dir, "30.0.err"), 50)
+	p := newPruner(dir, 200, log.New(&bytes.Buffer{}, "", 0))
+	if err := p.Seed(); err != nil {
+		t.Fatal(err)
+	}
+	p.SetActiveCheck(func(k groupKey) bool {
+		return k.eventID == 10
+	})
+	p.MaybeSweep()
+	if _, err := os.Stat(filepath.Join(dir, "10.0.out")); err != nil {
+		t.Fatalf("active group 10.0 must be preserved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "20.0.out")); err == nil {
+		t.Fatal("inactive next-oldest 20.0 should have been deleted")
+	}
+}
+
+// TestPrune_StaleScan_NoDoubleDecrement guards the
+// removeStreamLocked accounting: when a file disappears between scan
+// and remove (stat-locked path), p.total must not be decremented for
+// it. Hand-rolled by faking a stale groupInfo whose file never existed.
+func TestPrune_StaleScan_NoDoubleDecrement(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "1.0.out"), 100)
+	p := newPruner(dir, 1024, log.New(&bytes.Buffer{}, "", 0))
+	if err := p.Seed(); err != nil {
+		t.Fatal(err)
+	}
+	startTotal := p.Total()
+	stale := groupInfo{
+		key:     groupKey{eventID: 999, hookIndex: 0},
+		outPath: filepath.Join(dir, "999.0.out"),
+		outSize: 1234,
+	}
+	p.mu.Lock()
+	p.removeStreamLocked(stale.outPath, stale.outSize)
+	p.mu.Unlock()
+	if got := p.Total(); got != startTotal {
+		t.Fatalf("stale missing-file delete decremented total: %d -> %d", startTotal, got)
+	}
+}
+
 // TestPrune_ConcurrentSweep_TotalMatchesDisk pins the spec contract
 // that two finishers calling MaybeSweep concurrently never corrupt the
 // running total. The deletion phase is serialized under p.mu, so the

@@ -20,6 +20,11 @@ type pruner struct {
 	capBytes  int64
 	total     int64
 	daemonLog *log.Logger
+	// isActive returns true for (event_id, hook_index) pairs that still
+	// have a running worker writing to .out/.err. The dispatcher wires
+	// this to its in-flight registry; tests that don't care can leave
+	// it nil (treated as "no group is active").
+	isActive func(groupKey) bool
 }
 
 func newPruner(dir string, capBytes int64, daemonLog *log.Logger) *pruner {
@@ -27,6 +32,15 @@ func newPruner(dir string, capBytes int64, daemonLog *log.Logger) *pruner {
 		daemonLog = log.New(io.Discard, "", 0)
 	}
 	return &pruner{dir: dir, capBytes: capBytes, daemonLog: daemonLog}
+}
+
+// SetActiveCheck wires in the dispatcher's "is this group still being
+// written?" predicate. Must be called before workers start running so
+// MaybeSweep observes a consistent view. nil clears the predicate.
+func (p *pruner) SetActiveCheck(fn func(groupKey) bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.isActive = fn
 }
 
 // Seed walks the output dir once, totaling current bytes. Called at
@@ -89,8 +103,9 @@ type groupInfo struct {
 
 // MaybeSweep is a no-op if total <= cap. Otherwise it rescans the dir,
 // sorts groups by (event_id, hook_index) ascending (oldest first),
-// and deletes groups until total <= cap. Errors are logged but never
-// returned.
+// and deletes groups until total <= cap. Active (in-flight) groups
+// are skipped so a finishing run never deletes another worker's
+// still-open .out/.err files. Errors are logged but never returned.
 func (p *pruner) MaybeSweep() {
 	p.mu.Lock()
 	if p.total <= p.capBytes {
@@ -117,6 +132,9 @@ func (p *pruner) MaybeSweep() {
 		if p.total <= p.capBytes {
 			return
 		}
+		if p.isActive != nil && p.isActive(g.key) {
+			continue
+		}
 		p.deleteGroupLocked(g)
 	}
 }
@@ -130,20 +148,29 @@ func (p *pruner) deleteGroupLocked(g groupInfo) {
 }
 
 // removeStreamLocked removes one captured stream file and decrements
-// the running total. Caller holds p.mu. "Already gone" is treated as
-// success so a concurrent sweep that won the race against this caller
-// is not double-counted.
-func (p *pruner) removeStreamLocked(path string, size int64) {
+// the running total by its current on-disk size. Caller holds p.mu.
+// The size is re-stat'd inside the lock so a stale scan can't
+// double-subtract bytes already removed by a concurrent sweep:
+// ErrNotExist short-circuits with no decrement, and a successful
+// remove subtracts whatever the file weighed at the moment we owned it.
+func (p *pruner) removeStreamLocked(path string, _ int64) {
 	if path == "" {
 		return
 	}
-	err := os.Remove(path)
-	switch {
-	case err == nil, errors.Is(err, fs.ErrNotExist):
-		p.total -= size
-	default:
-		p.daemonLog.Printf("hooks: prune remove %s: %v", path, err)
+	st, err := os.Stat(path)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			p.daemonLog.Printf("hooks: prune stat %s: %v", path, err)
+		}
+		return
 	}
+	if err := os.Remove(path); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			p.daemonLog.Printf("hooks: prune remove %s: %v", path, err)
+		}
+		return
+	}
+	p.total -= st.Size()
 }
 
 // parseStem splits "<event_id>.<hook_index>" into its key. Returns

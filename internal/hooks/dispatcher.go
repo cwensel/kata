@@ -53,6 +53,11 @@ type Dispatcher struct {
 	pruner      *pruner
 	outputDir   string
 	inflight    atomic.Int32
+	// active maps groupKey -> struct{} for runs whose .out/.err are
+	// still being written. The pruner consults this via isActive so a
+	// finishing job's pruner.AddRun never unlinks a peer worker's
+	// in-progress capture.
+	active sync.Map
 }
 
 // noopSink is the unexported implementation of Sink returned by
@@ -97,6 +102,7 @@ func New(loaded LoadedConfig, deps DispatcherDeps) (*Dispatcher, error) {
 		pruner:    pr,
 		outputDir: outputDir,
 	}
+	pr.SetActiveCheck(d.isGroupActive)
 	snap := loaded.Snapshot
 	d.snapshot.Store(&snap)
 	for i := 0; i < loaded.Config.PoolSize; i++ {
@@ -104,6 +110,13 @@ func New(loaded LoadedConfig, deps DispatcherDeps) (*Dispatcher, error) {
 		go d.worker()
 	}
 	return d, nil
+}
+
+// isGroupActive is the predicate the pruner consults to skip
+// in-flight (event_id, hook_index) groups during a sweep.
+func (d *Dispatcher) isGroupActive(k groupKey) bool {
+	_, ok := d.active.Load(k)
+	return ok
 }
 
 func applyDispatcherDefaults(deps DispatcherDeps) DispatcherDeps {
@@ -228,18 +241,43 @@ func (d *Dispatcher) worker() {
 	}
 }
 
-// runOne executes one job under inflight accounting that survives a
-// runJob panic (the deferred recover keeps the worker alive and the
-// counter accurate so Shutdown's "in-flight" log doesn't drift).
+// runOne executes one job under inflight + active-group accounting
+// that survives a runJob panic. The deferred recover keeps the worker
+// alive and the counters accurate so Shutdown's "in-flight" log
+// doesn't drift, and so the pruner's isActive predicate never strands
+// a stale "still writing" entry.
 func (d *Dispatcher) runOne(rd runDeps, job HookJob) {
+	key := groupKey{eventID: job.Event.ID, hookIndex: job.Hook.Index}
+	d.active.Store(key, struct{}{})
 	d.inflight.Add(1)
-	defer d.inflight.Add(-1)
+	defer func() {
+		d.inflight.Add(-1)
+		d.active.Delete(key)
+	}()
 	defer func() {
 		if r := recover(); r != nil {
 			d.deps.DaemonLog.Printf("hooks: runJob panic: %v", r)
 		}
 	}()
-	runJob(context.Background(), d.done, job, rd)
+	ctx, cancel := contextFromShutdown(d.done)
+	defer cancel()
+	runJob(ctx, d.done, job, rd)
+}
+
+// contextFromShutdown returns a context that is canceled the moment
+// d.done is closed. Resolver calls inside runJob (project, issue,
+// comment, alias) honor this context, so a stuck DB query during
+// stdin payload assembly does not delay Shutdown beyond ctx.
+func contextFromShutdown(done <-chan struct{}) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // runDeps builds the per-job runDeps from the dispatcher's state.
