@@ -8,10 +8,7 @@ import (
 )
 
 func newTUICmd() *cobra.Command {
-	var (
-		allProjects    bool
-		includeDeleted bool
-	)
+	var allProjects bool
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "open the interactive issue browser",
@@ -24,16 +21,13 @@ or, with --all-projects, across every registered project. Press ? for help, q to
 				ctx = context.Background()
 			}
 			return tui.Run(ctx, tui.Options{
-				AllProjects:    allProjects,
-				IncludeDeleted: includeDeleted,
-				Stdout:         cmd.OutOrStdout(),
-				Stderr:         cmd.ErrOrStderr(),
+				AllProjects: allProjects,
+				Stdout:      cmd.OutOrStdout(),
+				Stderr:      cmd.ErrOrStderr(),
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&allProjects, "all-projects", false,
 		"browse across every registered project")
-	cmd.Flags().BoolVar(&includeDeleted, "include-deleted", false,
-		"show soft-deleted issues with [deleted] marker")
 	return cmd
 }

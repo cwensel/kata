@@ -265,7 +265,7 @@ func (lm listModel) applyFilterKey(
 		lm.status = ""
 		return lm, lm.refetchCmd(api, sc), true
 	case km.ClearFilters.matches(msg):
-		lm.filter = ListFilter{IncludeDeleted: lm.filter.IncludeDeleted}
+		lm.filter = ListFilter{}
 		lm.status = ""
 		return lm, lm.refetchCmd(api, sc), true
 	}

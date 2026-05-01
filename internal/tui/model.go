@@ -96,11 +96,12 @@ func (m Model) fetchInitial() tea.Cmd {
 }
 
 // initialFilter projects opts into the ListFilter the boot fetch uses.
-// IncludeDeleted is threaded through so client-side filtering in later
-// tasks can act on it; the wire request itself never sets
-// include_deleted because api.ListIssuesRequest does not accept it.
-func initialFilter(opts Options) ListFilter {
-	return ListFilter{IncludeDeleted: opts.IncludeDeleted}
+// Today there is nothing on Options that drives the boot filter, but
+// keeping this seam means future tasks can add it without re-shaping
+// fetchInitial. The wire request itself only carries Status because the
+// daemon's ListIssuesRequest accepts {status, limit} and nothing else.
+func initialFilter(_ Options) ListFilter {
+	return ListFilter{}
 }
 
 // Update routes messages to the active sub-view. Quit is handled at the

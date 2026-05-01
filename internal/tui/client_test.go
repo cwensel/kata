@@ -295,12 +295,11 @@ func TestClient_ListIssues_FilterShape(t *testing.T) {
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
 	if _, err := c.ListIssues(context.Background(), 7, ListFilter{
-		Status:         "open",
-		Owner:          "alice",
-		Author:         "bob",
-		Search:         "foo",
-		Labels:         []string{"x"},
-		IncludeDeleted: true,
+		Status: "open",
+		Owner:  "alice",
+		Author: "bob",
+		Search: "foo",
+		Labels: []string{"x"},
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -29,14 +29,16 @@ type Issue struct {
 // ListFilter is the union of filters used by list views. Only Status is
 // sent on the wire — api.ListIssuesRequest accepts {status, limit} and
 // nothing else. Owner/Author/Labels/Search are applied client-side after
-// the daemon returns results. IncludeDeleted is also client-side: the
-// list endpoint never returns soft-deleted rows, so the TUI fetches all
-// and the R toggle (Task 12) controls whether deleted issues remain
-// visible after an SSE invalidation.
+// the daemon returns results.
+//
+// IncludeDeleted is deliberately absent: the daemon's list endpoint
+// hard-codes deleted_at IS NULL (internal/db/queries.go::ListIssues) and
+// has no include_deleted query param, so a client-side flag would
+// promise something the wire cannot deliver. Re-introducing it requires
+// daemon work and is deferred to a future task.
 type ListFilter struct {
 	Status, Owner, Author, Search string
 	Labels                        []string
-	IncludeDeleted                bool
 }
 
 // values returns the query params the daemon honors. Status is the only

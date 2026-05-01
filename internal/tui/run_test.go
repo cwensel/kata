@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -161,17 +163,36 @@ func TestBoot_NonResolveErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestInitialFilter_ThreadsIncludeDeleted asserts the boot-time filter
-// reflects opts.IncludeDeleted so client-side filtering in later tasks
-// has the bit available. The wire request itself does not include it
-// (the daemon's ListIssuesRequest does not accept it).
-func TestInitialFilter_ThreadsIncludeDeleted(t *testing.T) {
-	got := initialFilter(Options{IncludeDeleted: true})
-	if !got.IncludeDeleted {
-		t.Fatalf("expected IncludeDeleted=true on the filter, got %+v", got)
+// TestInitialFilter_ZeroValueByDefault asserts the boot-time filter is
+// the zero value: today there's no Options field that drives initial
+// filter state. The shape is preserved so a future task can wire one up
+// without changing fetchInitial.
+func TestInitialFilter_ZeroValueByDefault(t *testing.T) {
+	got := initialFilter(Options{})
+	if got.Status != "" || got.Owner != "" || got.Author != "" ||
+		got.Search != "" || len(got.Labels) != 0 {
+		t.Fatalf("initialFilter = %+v, want zero value", got)
 	}
-	got = initialFilter(Options{})
-	if got.IncludeDeleted {
-		t.Fatalf("expected IncludeDeleted=false when unset, got %+v", got)
+}
+
+// TestOutputIsTerminal_RejectsNonFile confirms a non-*os.File writer
+// (e.g., bytes.Buffer in tests) is treated as a non-terminal so Run
+// surfaces errNotATTY instead of writing alt-screen control sequences
+// into a buffer that cannot honor them.
+func TestOutputIsTerminal_RejectsNonFile(t *testing.T) {
+	var buf bytes.Buffer
+	if outputIsTerminal(&buf) {
+		t.Fatal("outputIsTerminal(*bytes.Buffer) = true, want false")
+	}
+}
+
+// TestRun_NonFileStdout_ReturnsNotATTY: piping into a bytes.Buffer (the
+// natural test rig) must surface errNotATTY rather than panicking deep
+// inside Bubble Tea's renderer.
+func TestRun_NonFileStdout_ReturnsNotATTY(t *testing.T) {
+	var buf bytes.Buffer
+	err := Run(t.Context(), Options{Stdout: &buf})
+	if !errors.Is(err, errNotATTY) {
+		t.Fatalf("Run returned %v, want errNotATTY", err)
 	}
 }

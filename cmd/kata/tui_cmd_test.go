@@ -21,10 +21,16 @@ func TestTUI_CommandRegistered(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	for _, want := range []string{"--all-projects", "--include-deleted"} {
+	for _, want := range []string{"--all-projects"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected --help to mention %q, got: %s", want, out)
 		}
+	}
+	// --include-deleted is intentionally not registered; the daemon's list
+	// endpoint doesn't honor it, so re-introducing the flag would advertise
+	// a capability the wire cannot deliver.
+	if strings.Contains(out, "--include-deleted") {
+		t.Fatalf("--include-deleted leaked back into help (daemon support not yet wired): %s", out)
 	}
 }
 

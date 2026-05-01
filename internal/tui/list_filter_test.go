@@ -192,25 +192,22 @@ func TestList_Search_EscCancels(t *testing.T) {
 	}
 }
 
-// TestList_ClearFilters_PreservesIncludeDeleted: `c` zeroes the filter
-// fields except IncludeDeleted, which is set at boot from --include-deleted.
-func TestList_ClearFilters_PreservesIncludeDeleted(t *testing.T) {
+// TestList_ClearFilters_ZeroesEveryField: `c` zeroes every filter slot
+// and dispatches a refetch. There is no IncludeDeleted slot today (see
+// ListFilter doc) so the post-state is the zero value.
+func TestList_ClearFilters_ZeroesEveryField(t *testing.T) {
 	api := &fakeListAPI{}
 	km := newKeymap()
 	sc := scope{projectID: 7}
 
 	lm := listModel{filter: ListFilter{
 		Status: "open", Owner: "wes", Search: "bug",
-		Labels:         []string{"prio-1"},
-		IncludeDeleted: true,
+		Labels: []string{"prio-1"},
 	}}
 	lm, cmd := lm.Update(runeKey('c'), km, api, sc)
 	if lm.filter.Status != "" || lm.filter.Owner != "" || lm.filter.Search != "" ||
 		len(lm.filter.Labels) != 0 {
 		t.Fatalf("filters not cleared: %+v", lm.filter)
-	}
-	if !lm.filter.IncludeDeleted {
-		t.Fatal("IncludeDeleted should be preserved across clear")
 	}
 	if cmd == nil {
 		t.Fatal("expected refetch on clear")

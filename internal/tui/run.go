@@ -16,11 +16,16 @@ import (
 
 // Options controls TUI behavior. Stable across versions; new fields
 // must be optional.
+//
+// IncludeDeleted is intentionally absent: the daemon's ListIssuesRequest
+// (internal/api/types.go) does not accept include_deleted, and
+// db.ListIssues hard-codes deleted_at IS NULL, so there is no way for
+// the TUI to surface soft-deleted rows today. Re-introducing the flag
+// is deferred to a follow-up that adds wire + handler support.
 type Options struct {
-	AllProjects    bool
-	IncludeDeleted bool
-	Stdout         io.Writer // typically os.Stdout
-	Stderr         io.Writer // typically os.Stderr
+	AllProjects bool
+	Stdout      io.Writer // typically os.Stdout
+	Stderr      io.Writer // typically os.Stderr
 }
 
 // Run starts the TUI. Blocks until the user quits or ctx is cancelled.
@@ -137,8 +142,10 @@ func isTerminal(f *os.File) bool {
 }
 
 // outputIsTerminal validates the writer the TUI will actually render to.
-// A nil opts.Stdout means "use os.Stdout"; a non-*os.File writer (e.g.
-// bytes.Buffer in tests) is accepted because there is no fd to check.
+// A nil opts.Stdout means "use os.Stdout". Only *os.File values can be
+// terminals — bytes.Buffer and other in-memory writers always fail this
+// check so Run refuses to emit alt-screen control sequences into a sink
+// that cannot honor them.
 func outputIsTerminal(w io.Writer) bool {
 	if w == nil {
 		return isTerminal(os.Stdout)
@@ -146,5 +153,5 @@ func outputIsTerminal(w io.Writer) bool {
 	if f, ok := w.(*os.File); ok {
 		return isTerminal(f)
 	}
-	return true
+	return false
 }
