@@ -727,3 +727,62 @@ func TestEdge_DetailJumpBack(t *testing.T) {
 		t.Fatalf("links not restored: %+v", m.detail.links)
 	}
 }
+
+// TestOverlayModal_PadsShortBackground covers the case where the
+// rendered background is shorter than the terminal height (e.g. the
+// help view does not pad to height). overlayModal must extend the
+// background with blank rows before splicing or the modal lands
+// past the last bg line and disappears entirely. Regression for
+// roborev #119 finding 1.
+func TestOverlayModal_PadsShortBackground(t *testing.T) {
+	bg := "row1\nrow2\nrow3" // 3 lines, terminal height = 30
+	modal := "[Y]\n[N]"      // 2-line modal — would land near center (~14)
+	out := overlayModal(bg, modal, 80, 30)
+	lines := strings.Split(out, "\n")
+	if len(lines) != 30 {
+		t.Fatalf("output line count = %d, want 30 (padded to height)", len(lines))
+	}
+	containsY := false
+	for _, ln := range lines {
+		if strings.Contains(ln, "[Y]") {
+			containsY = true
+			break
+		}
+	}
+	if !containsY {
+		t.Fatalf("modal not visible in padded output:\n%s", out)
+	}
+}
+
+// TestDetail_ScrollIndicator_AccountsForMultiLineComments: when
+// comment entries wrap to multiple lines, the per-tab scroll
+// indicator must compute the visible window in entry units using
+// the renderer's actual chunk shape, not by comparing entry
+// count to a line budget. With 6 comments in an 8-line pane and
+// each comment contributing ~4 lines (header + body + blank), only
+// 2 entries fit, so the indicator must fire and report a window
+// shorter than 6. Regression for roborev #119 finding 2.
+func TestDetail_ScrollIndicator_AccountsForMultiLineComments(t *testing.T) {
+	cs := make([]CommentEntry, 6)
+	body := "wrapped body content that takes a few lines"
+	for i := range cs {
+		cs[i] = CommentEntry{Author: "actor", Body: body}
+	}
+	dm := detailModel{
+		issue:     &Issue{Number: 1, Title: "x", Status: "open"},
+		comments:  cs,
+		activeTab: tabComments,
+		tabCursor: 0,
+	}
+	// 8-line tab budget. With multi-line chunks at ~3-4 lines each,
+	// only 2-3 entries fit; the indicator must report fewer than 6.
+	info := dm.renderInfoLine(120, viewChrome{sseStatus: sseConnected}, 8)
+	if !strings.Contains(info, "of 6 comments") {
+		t.Fatalf("indicator missing or wrong total; info = %q", info)
+	}
+	// The visible range must be smaller than [1-6] (the bug was that
+	// n=6 <= budget=8 suppressed the indicator entirely).
+	if strings.Contains(info, "[1-6 ") {
+		t.Fatalf("indicator claims all 6 comments fit; info = %q", info)
+	}
+}

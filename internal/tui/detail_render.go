@@ -110,13 +110,21 @@ func (dm detailModel) renderInfoLine(width int, chrome viewChrome, tabBudget int
 	case chrome.toast != nil:
 		body = chrome.toast.text
 	default:
+		// Compute the visible-entry window from the same chunk-
+		// windowing logic the per-tab renderer uses, so multi-line
+		// chunks (comments) report the right [start-end] range and
+		// don't suppress the indicator when entry count <= line
+		// budget but total wrapped lines exceed it (#119 finding 2).
 		n := dm.activeRowCount()
-		if n > 0 && tabBudget > 0 && n > tabBudget {
-			start, end := windowBounds(n, dm.tabCursor, tabBudget)
-			body = rightAlignInside(
-				fmt.Sprintf("[%d-%d of %d %s]",
-					start+1, end, n, dm.activeTabLabel()),
-				titleBarInnerWidth(width))
+		if n > 0 && tabBudget > 0 {
+			chunks := dm.activeChunks(width)
+			start, end := windowChunkBounds(chunks, dm.tabCursor, tabBudget)
+			if end-start < n {
+				body = rightAlignInside(
+					fmt.Sprintf("[%d-%d of %d %s]",
+						start+1, end, n, dm.activeTabLabel()),
+					titleBarInnerWidth(width))
+			}
 		}
 	}
 	return statsLineStyle.Render(padToWidth(body, titleBarInnerWidth(width)))

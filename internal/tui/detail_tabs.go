@@ -152,30 +152,44 @@ func assembleTab(
 
 // windowChunks returns the contiguous slice of chunks that includes
 // the cursor entry and fits within budget lines. When everything fits,
-// the input is returned unchanged. When it doesn't, the window slides
+// the input is returned unchanged. See windowChunkBounds for the
+// indices-only variant the scroll indicator uses.
+func windowChunks(chunks []entryChunk, cursor, budget int) []entryChunk {
+	start, end := windowChunkBounds(chunks, cursor, budget)
+	return chunks[start:end]
+}
+
+// windowChunkBounds returns the [start, end) entry indices of the
+// chunk window that fits within budget lines around the cursor. When
+// everything fits, returns [0, n). When it doesn't, the window slides
 // so the cursor's chunk is fully visible — preferring to anchor at
 // the top until the cursor crosses the budget, then scrolling so the
-// cursor sits near the bottom of the viewport.
+// cursor sits near the bottom of the viewport. The cursor's own
+// chunk is always included even if it alone exceeds the budget —
+// preferable to hiding the cursor entirely.
 //
 // chunks with zero lines (defensive — empty placeholders) are still
 // kept so windowing arithmetic doesn't drift.
-func windowChunks(chunks []entryChunk, cursor, budget int) []entryChunk {
+//
+// Extracted from windowChunks so the detail scroll indicator can ask
+// "how many entries actually fit?" in entry units (matching the
+// renderer's view) instead of comparing entry count to line budget
+// directly — see roborev #119 finding 2.
+func windowChunkBounds(chunks []entryChunk, cursor, budget int) (int, int) {
 	n := len(chunks)
-	if n == 0 || budget <= 0 {
-		return chunks
+	if n == 0 {
+		return 0, 0
+	}
+	if budget <= 0 {
+		return 0, n
 	}
 	if totalLines(chunks) <= budget {
-		return chunks
+		return 0, n
 	}
 	c := cursor
 	if c < 0 || c >= n {
 		c = 0
 	}
-	// Walk backwards from the cursor, including chunks until the next
-	// addition would overflow. The cursor's own chunk is always included
-	// even if it alone exceeds the budget — preferable to hiding the
-	// cursor entirely.
-	//
 	// gosec G602 cannot see that c was clamped to [0, n) above.
 	used := len(chunks[c].lines) //nolint:gosec // c was clamped to [0,n)
 	start, end := c, c+1
@@ -195,7 +209,7 @@ func windowChunks(chunks []entryChunk, cursor, budget int) []entryChunk {
 		used += add
 		end++
 	}
-	return chunks[start:end]
+	return start, end
 }
 
 // totalLines sums the line counts across every chunk.

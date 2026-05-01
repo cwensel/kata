@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -315,6 +316,48 @@ func (dm detailModel) activeRowCount() int {
 		return len(dm.links)
 	}
 	return 0
+}
+
+// activeChunks builds the entryChunk slice for the active tab using
+// the same per-entry layout the per-tab renderer produces (header +
+// wrapped body + separator for comments; one line for events / links).
+// Used by the detail scroll indicator so the visible-entry window is
+// computed against the renderer's actual chunk shape rather than
+// comparing entry count to a line budget — fixes the multi-line
+// comment indicator gap from roborev #119 finding 2.
+//
+// width is the rendered width of the tab pane (the same width passed
+// to the tab renderers from renderActiveTab).
+func (dm detailModel) activeChunks(width int) []entryChunk {
+	switch dm.activeTab {
+	case tabComments:
+		out := make([]entryChunk, 0, len(dm.comments))
+		for _, c := range dm.comments {
+			lines := []string{
+				fmt.Sprintf("[%s] %s",
+					sanitizeForDisplay(c.Author), fmtTime(c.CreatedAt)),
+			}
+			for _, ln := range wrapBody(sanitizeForDisplay(c.Body), max(1, width-2)) {
+				lines = append(lines, "  "+ln)
+			}
+			lines = append(lines, "")
+			out = append(out, entryChunk{lines: lines})
+		}
+		return out
+	case tabEvents:
+		out := make([]entryChunk, 0, len(dm.events))
+		for range dm.events {
+			out = append(out, entryChunk{lines: []string{""}})
+		}
+		return out
+	case tabLinks:
+		out := make([]entryChunk, 0, len(dm.links))
+		for range dm.links {
+			out = append(out, entryChunk{lines: []string{""}})
+		}
+		return out
+	}
+	return nil
 }
 
 // popDetailCmd emits popDetailMsg so the top-level Model reverts to

@@ -46,11 +46,20 @@ func renderQuitConfirmModal() string {
 //
 // width / height come from Model.width / Model.height. background
 // is the already-rendered sub-view (list, detail, help, empty).
+//
+// Non-fullscreen backgrounds (help, empty) don't pad to height, so
+// bgLines is extended with blank rows up to `height` before splicing.
+// Without this the modal could land past the last bg line and
+// disappear or render only partially on taller terminals — roborev
+// #119 finding 1.
 func overlayModal(background, modal string, width, height int) string {
 	if modal == "" {
 		return background
 	}
 	bgLines := strings.Split(background, "\n")
+	for len(bgLines) < height {
+		bgLines = append(bgLines, "")
+	}
 	modalLines := strings.Split(modal, "\n")
 	modalH := len(modalLines)
 	startLine := (height - modalH) / 2
