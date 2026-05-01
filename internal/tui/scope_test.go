@@ -113,17 +113,23 @@ func TestEmptyState_RendersHint(t *testing.T) {
 	}
 }
 
-// TestEmptyState_QuitsOnQ: q is the only binding viewEmpty honors.
-// Pressing it returns tea.Quit so the user is never trapped.
+// TestEmptyState_QuitsOnQ: q from viewEmpty opens the M3.5b
+// quit-confirm modal. Y from there commits to quit. ctrl+c remains
+// the immediate-quit escape hatch so the user is never trapped.
 func TestEmptyState_QuitsOnQ(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewEmpty
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if out.(Model).modal != modalQuitConfirm {
+		t.Fatalf("q from viewEmpty did not open quit-confirm: %v", out.(Model).modal)
+	}
+	out, cmd := out.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	_ = out
 	if cmd == nil {
-		t.Fatal("q from viewEmpty returned nil cmd, want tea.Quit")
+		t.Fatal("y in modal produced nil cmd, want tea.Quit")
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatal("q from viewEmpty did not produce tea.QuitMsg")
+		t.Fatalf("y in modal cmd = %T, want tea.QuitMsg", cmd())
 	}
 }
 

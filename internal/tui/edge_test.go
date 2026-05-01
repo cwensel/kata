@@ -357,6 +357,109 @@ func TestEdge_StaleRefetch_DroppedAcrossScopeToggle(t *testing.T) {
 	}
 }
 
+// TestQuit_QPressed_OpensConfirm: pressing q opens the M3.5b
+// quit-confirm modal instead of immediately quitting. The modal
+// owns key dispatch from this point until y/n/esc closes it.
+func TestQuit_QPressed_OpensConfirm(t *testing.T) {
+	m := initialModel(Options{})
+	m.list.loading = false
+	out, cmd := m.Update(runeKey('q'))
+	nm := out.(Model)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if _, isQuit := msg.(tea.QuitMsg); isQuit {
+				t.Fatal("q produced tea.Quit; should have opened the confirm modal")
+			}
+		}
+	}
+	if nm.modal != modalQuitConfirm {
+		t.Fatalf("modal = %v, want modalQuitConfirm", nm.modal)
+	}
+}
+
+// TestQuit_CtrlCFastQuits: ctrl+c bypasses the confirm modal and
+// triggers tea.Quit immediately. Power-user escape hatch.
+func TestQuit_CtrlCFastQuits(t *testing.T) {
+	m := initialModel(Options{})
+	m.list.loading = false
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	nm := out.(Model)
+	if nm.modal != modalNone {
+		t.Fatalf("ctrl+c opened a modal: %v", nm.modal)
+	}
+	if cmd == nil {
+		t.Fatal("ctrl+c produced no cmd; expected tea.Quit")
+	}
+	if _, isQuit := cmd().(tea.QuitMsg); !isQuit {
+		t.Fatalf("ctrl+c cmd = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// TestQuit_YConfirms: with the quit modal open, pressing y commits
+// — returns tea.Quit.
+func TestQuit_YConfirms(t *testing.T) {
+	m := initialModel(Options{})
+	m.list.loading = false
+	m.modal = modalQuitConfirm
+	_, cmd := m.Update(runeKey('y'))
+	if cmd == nil {
+		t.Fatal("y in modal produced no cmd; expected tea.Quit")
+	}
+	if _, isQuit := cmd().(tea.QuitMsg); !isQuit {
+		t.Fatalf("y cmd = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// TestQuit_NCancels: with the quit modal open, n closes it without
+// quitting. Esc behaves the same.
+func TestQuit_NCancels(t *testing.T) {
+	for _, k := range []rune{'n', 'N'} {
+		m := initialModel(Options{})
+		m.list.loading = false
+		m.modal = modalQuitConfirm
+		out, cmd := m.Update(runeKey(k))
+		nm := out.(Model)
+		if cmd != nil {
+			if msg := cmd(); msg != nil {
+				if _, isQuit := msg.(tea.QuitMsg); isQuit {
+					t.Fatalf("%q in modal triggered quit; expected cancel", k)
+				}
+			}
+		}
+		if nm.modal != modalNone {
+			t.Fatalf("%q did not close the modal: %v", k, nm.modal)
+		}
+	}
+	// Esc also cancels.
+	m := initialModel(Options{})
+	m.list.loading = false
+	m.modal = modalQuitConfirm
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if out.(Model).modal != modalNone {
+		t.Fatal("Esc did not close the quit modal")
+	}
+}
+
+// TestQuit_ModalAbsorbsOtherKeys: while the quit modal is open,
+// unrelated keys (j, /, x) don't reach the underlying view. The
+// modal's exclusive routing is what makes "q to confirm" safe.
+func TestQuit_ModalAbsorbsOtherKeys(t *testing.T) {
+	m := initialModel(Options{})
+	m.list.loading = false
+	m.modal = modalQuitConfirm
+	out, cmd := m.Update(runeKey('j'))
+	nm := out.(Model)
+	if cmd != nil {
+		t.Fatalf("j during modal returned cmd %T; should be absorbed", cmd)
+	}
+	if nm.modal != modalQuitConfirm {
+		t.Fatal("j during modal closed the modal; expected absorption")
+	}
+	if nm.list.cursor != 0 {
+		t.Fatalf("j during modal moved cursor to %d; expected absorbed", nm.list.cursor)
+	}
+}
+
 // TestEdge_DetailMutation_StaleGen_MarksCacheStale: a detail-side
 // close is in flight; the user jumps to a different issue (gen
 // advances). When the original close completes, dm.applyMutation

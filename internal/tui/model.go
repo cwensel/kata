@@ -64,6 +64,12 @@ type Model struct {
 	// route normally. While an input is open, all non-Quit keys go to
 	// the input's bubbles model; canQuit() gates global keys.
 	input inputState
+	// modal is the active centered confirm/info overlay (M3.5b: the
+	// quit-confirm modal; future plans add delete-confirm etc.).
+	// modalNone is the quiescent state. While a modal is open it
+	// owns key dispatch — `y`/`n`/`esc` route through it instead of
+	// reaching list/detail handlers.
+	modal modalKind
 }
 
 // initialModel constructs the root Bubble Tea model. Style vars are
@@ -278,6 +284,12 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil, true
 	case tea.KeyMsg:
+		// Modal owns input when active. Enter the modal-specific
+		// handler before falling through to input/global routing.
+		if m.modal != modalNone {
+			next, cmd := m.routeModalKey(msg)
+			return next, cmd, true
+		}
 		if m.input.kind != inputNone {
 			next, cmd := m.routeInputKey(msg)
 			return next, cmd, true
@@ -396,16 +408,24 @@ func (m Model) cancelInput() Model {
 	return m
 }
 
-// routeGlobalKey handles the global key family (quit, help, scope toggle)
-// gated by the prompt/modal input check so a buffer doesn't see them.
-// viewEmpty honors only quit; ?, R, and any other binding fall through
-// silently because the only meaningful action is `q` to exit.
+// routeGlobalKey handles the global key family (quit, help, scope
+// toggle), gated by canQuit so an open input/modal absorbs the key.
+// viewEmpty honors only quit/ctrl+c; ?, R, and any other binding
+// fall through silently because the only meaningful action is exit.
+//
+// `q` opens the quit-confirm modal (msgvault pattern); `ctrl+c`
+// remains the immediate-quit escape hatch for power users.
 func (m Model) routeGlobalKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	if !m.canQuit() {
 		return m, nil, false
 	}
-	if m.keymap.Quit.matches(msg) {
+	// ctrl+c bypasses the confirm modal — fast quit for power users.
+	if msg.Type == tea.KeyCtrlC {
 		return m, tea.Quit, true
+	}
+	if m.keymap.Quit.matches(msg) {
+		m.modal = modalQuitConfirm
+		return m, nil, true
 	}
 	if m.view == viewEmpty {
 		return m, nil, true
@@ -709,13 +729,18 @@ func toastExpireCmd(d time.Duration) tea.Cmd {
 
 // canQuit reports whether a global keystroke (q, ?, R) should be
 // honored. False while an input shell is open (search/owner bar from
-// M3a; panel-local prompts from M3b; centered forms from M4). The
-// input gate is the single source of truth for "user is typing into
-// a field" — global keys must reach the field instead of firing.
+// M3a; panel-local prompts from M3b; centered forms from M4) or
+// while a confirm modal is open (M3.5b quit confirm). The input gate
+// is the single source of truth for "user is typing into a field"
+// — global keys must reach the field instead of firing.
 //
 // lm.search.inputting is still checked for the new-issue flow which
-// retains the inline-prompt path until M4 replaces it with the form.
+// retains the inline-prompt path until M3.5c (inline new-issue row)
+// supersedes it.
 func (m Model) canQuit() bool {
+	if m.modal != modalNone {
+		return false
+	}
 	if m.input.kind != inputNone {
 		return false
 	}
@@ -723,6 +748,24 @@ func (m Model) canQuit() bool {
 		return false
 	}
 	return true
+}
+
+// routeModalKey delivers a key to the active centered modal. M3.5b
+// only handles modalQuitConfirm: y/Y commits → tea.Quit; n/N/esc
+// cancels → close the modal. Other keys are absorbed (the modal owns
+// dispatch; nothing reaches the underlying view).
+func (m Model) routeModalKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch m.modal {
+	case modalQuitConfirm:
+		switch msg.String() {
+		case "y", "Y":
+			return m, tea.Quit
+		case "n", "N", "esc":
+			m.modal = modalNone
+			return m, nil
+		}
+	}
+	return m, nil
 }
 
 // handleOpenDetail seeds m.detail with the chosen issue and dispatches
@@ -843,21 +886,23 @@ func (m Model) dispatchToView(msg tea.Msg) (tea.Model, tea.Cmd) {
 // lines.
 func (m Model) View() string {
 	body := m.viewBody()
-	if m.view == viewList || m.view == viewDetail {
-		// viewChrome already accounted for SSE + toast inline.
-		return body
+	if m.view != viewList && m.view != viewDetail {
+		extras := []string{}
+		if s := renderSSEStatus(m.sseStatus); s != "" {
+			extras = append(extras, s)
+		}
+		if s := renderToast(m.toast); s != "" {
+			extras = append(extras, s)
+		}
+		if len(extras) > 0 {
+			body = joinNonEmpty(append([]string{body}, extras...))
+		}
 	}
-	extras := []string{}
-	if s := renderSSEStatus(m.sseStatus); s != "" {
-		extras = append(extras, s)
+	// M3.5b: a centered modal overlays the rendered view when active.
+	if m.modal == modalQuitConfirm {
+		return overlayModal(body, renderQuitConfirmModal(), m.width, m.height)
 	}
-	if s := renderToast(m.toast); s != "" {
-		extras = append(extras, s)
-	}
-	if len(extras) == 0 {
-		return body
-	}
-	return joinNonEmpty(append([]string{body}, extras...))
+	return body
 }
 
 // viewBody returns the active sub-view rendering. Splitting it off

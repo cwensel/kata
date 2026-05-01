@@ -185,6 +185,25 @@ func TestSnapshot_List_EmptyAfterFilter(t *testing.T) {
 // with two active filters: status:open and owner:alice. The label chip
 // is intentionally skipped (Issue projection lacks labels) so the
 // scenario uses owner instead of label per Roborev-fix #2's guidance.
+// TestSnapshot_QuitConfirmModal covers the M3.5b quit-confirm
+// modal overlaid on a list view. The modal sits centered over the
+// rendered background; underlying content stays painted around it.
+func TestSnapshot_QuitConfirmModal(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = snapListFixture()
+	lm.cursor = 1
+	chrome := viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	bg := lm.View(120, 30, chrome)
+	got := overlayModal(bg, renderQuitConfirmModal(), 120, 30)
+	assertGolden(t, "quit-confirm-modal", got)
+}
+
 // TestSnapshot_List_SearchBarActive covers the inline command bar
 // in place of the chip strip when chrome.input.kind == inputSearchBar.
 // The footer help row swaps to the bar's enter/esc/ctrl+u keys.

@@ -119,20 +119,17 @@ func TestHelpToggle_FromDetail(t *testing.T) {
 	}
 }
 
-// TestHelpToggle_QuitFromHelp: q from viewHelp still quits. The plan
-// keeps q wired to global Quit even inside the overlay so the user can
-// always escape regardless of which view is active.
+// TestHelpToggle_QuitFromHelp: q from viewHelp opens the M3.5b
+// quit-confirm modal instead of immediately quitting. The plan keeps
+// q wired to a quit path even inside the overlay so the user can
+// always escape regardless of which view is active — but post-M3.5b
+// the user has to confirm via the modal first.
 func TestHelpToggle_QuitFromHelp(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewHelp
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	if cmd == nil {
-		t.Fatal("q from help returned nil cmd, want tea.Quit")
-	}
-	if msg := cmd(); msg == nil {
-		t.Fatal("q from help cmd produced nil msg, want tea.QuitMsg")
-	} else if _, ok := msg.(tea.QuitMsg); !ok {
-		t.Fatalf("q from help produced %T, want tea.QuitMsg", msg)
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if out.(Model).modal != modalQuitConfirm {
+		t.Fatalf("q from help did not open quit-confirm modal: %v", out.(Model).modal)
 	}
 }
 

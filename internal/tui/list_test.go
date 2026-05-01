@@ -55,7 +55,10 @@ func TestList_Render_Fixture(t *testing.T) {
 		return strings.Contains(s, "fix login bug on Safari") &&
 			strings.Contains(s, "[deleted]")
 	}, teatest.WithDuration(2*time.Second))
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	// q opens the quit-confirm modal in M3.5b; ctrl+c is the fast-quit
+	// path that bypasses the confirm. Use ctrl+c here so the test can
+	// terminate without an extra `y` keystroke + race on the modal.
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
 	tm.WaitFinished(t)
 }
 
@@ -84,6 +87,9 @@ func TestList_Cursor_DownAndUp(t *testing.T) {
 		}
 		return false
 	}, teatest.WithDuration(2*time.Second))
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	// q opens the quit-confirm modal in M3.5b; ctrl+c is the fast-quit
+	// path that bypasses the confirm. Use ctrl+c here so the test can
+	// terminate without an extra `y` keystroke + race on the modal.
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
 	tm.WaitFinished(t)
 }
