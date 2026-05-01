@@ -473,6 +473,16 @@ func (lm listModel) applyMutation(
 		return lm, nil
 	}
 	lm.status = listMutationSuccessText(m)
+	// On a successful create, seed selection with the new issue's
+	// number so applyFetched lands the cursor on the new row after
+	// refetch instead of snapping back to whatever was selected
+	// before. Recency-sorted lists put the new issue at index 0;
+	// without this seed the cursor returns to the prior row and the
+	// just-created issue can fall off-screen — roborev #113 finding 2.
+	if m.kind == "create" && m.resp != nil && m.resp.Issue != nil {
+		lm.selectedNumber = m.resp.Issue.Number
+		lm.cursor = 0
+	}
 	return lm, lm.refetchCmd(api, sc)
 }
 

@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -435,6 +437,59 @@ func TestList_NewIssue_AllProjectsModeIsNoOp(t *testing.T) {
 	}
 	if api.createCalls != 0 {
 		t.Fatalf("createCalls = %d, want 0", api.createCalls)
+	}
+}
+
+// TestList_NewIssueRow_RendersFromTopOfList: opening the new-issue
+// row when the cursor is mid-list must still show the create row
+// above the freshest issues at index 0, not above an arbitrary middle
+// slice. Recency-sorted lists put the soon-to-be-created peer at the
+// top; the user expects to see what their new issue will sit next to.
+// Regression for roborev #113 finding 1.
+func TestList_NewIssueRow_RendersFromTopOfList(t *testing.T) {
+	issues := make([]Issue, 30)
+	for i := range issues {
+		issues[i] = Issue{
+			Number: int64(i + 1),
+			Title:  "issue " + strconv.Itoa(i+1),
+			Status: "open",
+		}
+	}
+	lm := listModel{issues: issues, cursor: 20}
+	in := newNewIssueRow()
+	out := lm.renderBodyWithNewIssueRow(120, 12, in)
+	// Top-of-list anchoring means issue #1 must appear in the rendered
+	// output even though cursor=20. If windowing still followed cursor,
+	// the slice would be issues 11..20-ish and #1 would be off-screen.
+	if !strings.Contains(out, "issue 1 ") {
+		t.Fatalf("expected 'issue 1' in rendered window when new-issue row is open; got:\n%s", out)
+	}
+}
+
+// TestList_NewIssueRow_CommitSeedsSelectionToNewIssue: after a
+// successful create, the next refetch must land the cursor on the
+// newly-created issue (which lands at index 0 in a recency-sorted
+// list) instead of snapping back to whatever was selected before.
+// Regression for roborev #113 finding 2.
+func TestList_NewIssueRow_CommitSeedsSelectionToNewIssue(t *testing.T) {
+	api := &fakeListAPI{}
+	lm := listModel{
+		issues:         []Issue{{Number: 5}, {Number: 4}, {Number: 3}},
+		cursor:         2,
+		selectedNumber: 3,
+	}
+	mut := mutationDoneMsg{
+		origin: "list", kind: "create",
+		resp: &MutationResp{Issue: &Issue{Number: 99}},
+	}
+	out, _ := lm.applyMutation(mut, api, scope{projectID: 7})
+	if out.selectedNumber != 99 {
+		t.Fatalf("selectedNumber = %d, want 99 (seeded to new issue)",
+			out.selectedNumber)
+	}
+	if out.cursor != 0 {
+		t.Fatalf("cursor = %d, want 0 (new issue at top of recency list)",
+			out.cursor)
 	}
 }
 

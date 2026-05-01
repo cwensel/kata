@@ -131,6 +131,13 @@ func (lm listModel) renderBodyWithChrome(width, height int, chrome viewChrome) s
 // Cursor highlighting always lands on the new-issue row (it owns
 // focus while the row is open); the underlying lm.cursor is not
 // changed.
+//
+// The data window is forced to start at index 0 of the filtered list
+// while the new-issue row is open, so users who pressed `n` while
+// scrolled mid-list see the create row above the freshest issues
+// (recency-sorted lists put the soon-to-be-created peer at the top)
+// rather than above an arbitrary middle slice — roborev #113
+// finding 1.
 func (lm listModel) renderBodyWithNewIssueRow(width, height int, in inputState) string {
 	cols := listColumnWidths(width)
 	issues := filteredIssues(lm.issues, lm.filter)
@@ -150,14 +157,7 @@ func (lm listModel) renderBodyWithNewIssueRow(width, height int, in inputState) 
 	if dataBudget < 1 {
 		dataBudget = 1
 	}
-	displayCursor := lm.cursor
-	if displayCursor >= len(issues) {
-		displayCursor = len(issues) - 1
-	}
-	if displayCursor < 0 {
-		displayCursor = 0
-	}
-	visible, _ := windowIssues(issues, displayCursor, dataBudget)
+	visible, _ := windowIssues(issues, 0, dataBudget)
 	// vCursor for issues is meaningless because the new row owns
 	// the cursor highlight; pass -1 so no issue row gets cursorRowStyle.
 	dataRows := buildRows(visible, -1, cols.title)
