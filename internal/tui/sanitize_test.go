@@ -118,7 +118,7 @@ func TestListView_SanitizesMaliciousTitle(t *testing.T) {
 	lm.issues = []Issue{
 		{Number: 1, Title: "\x1b]0;HIJACK\x07normal title", Status: "open"},
 	}
-	out := lm.View(120, 30, listChrome{})
+	out := lm.View(120, 30, viewChrome{})
 	if strings.Contains(out, "\x1b") {
 		t.Fatalf("ESC reached rendered list: %q", out)
 	}
@@ -139,7 +139,7 @@ func TestDetailView_SanitizesMaliciousBody(t *testing.T) {
 			Body: "first line\n\x1b[2Joverwrite-attack\nthird",
 		},
 	}
-	out := dm.View(120, 30)
+	out := dm.View(120, 30, viewChrome{})
 	if strings.Contains(out, "\x1b") {
 		t.Fatalf("ESC reached rendered detail body: %q", out)
 	}

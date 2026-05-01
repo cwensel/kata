@@ -41,7 +41,7 @@ func detailFixture() detailModel {
 // TestDetail_Render_Header_Title confirms the title appears in the view.
 func TestDetail_Render_Header_Title(t *testing.T) {
 	dm := detailFixture()
-	out := dm.View(80, 24)
+	out := dm.View(80, 24, viewChrome{})
 	if !strings.Contains(out, "fix login bug on Safari") {
 		t.Fatalf("title missing from view:\n%s", out)
 	}
@@ -82,17 +82,17 @@ func TestDetail_TabCycle_NextPrev(t *testing.T) {
 func TestDetail_TabRender_ActiveContent(t *testing.T) {
 	dm := detailFixture()
 	km := newKeymap()
-	out := dm.View(80, 24)
+	out := dm.View(80, 24, viewChrome{})
 	if !strings.Contains(out, "Comments (2)") {
 		t.Fatalf("comments header missing:\n%s", out)
 	}
 	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
-	out = dm.View(80, 24)
+	out = dm.View(80, 24, viewChrome{})
 	if !strings.Contains(out, "Events (2)") {
 		t.Fatalf("events header missing after tab:\n%s", out)
 	}
 	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
-	out = dm.View(80, 24)
+	out = dm.View(80, 24, viewChrome{})
 	if !strings.Contains(out, "Links (1)") {
 		t.Fatalf("links header missing after second tab:\n%s", out)
 	}
@@ -208,7 +208,7 @@ func TestDetail_PopReturnsToListPreservingState(t *testing.T) {
 // TestDetail_Loading_Renders shows the loading hint while issue is nil.
 func TestDetail_Loading_Renders(t *testing.T) {
 	dm := detailModel{loading: true}
-	out := dm.View(80, 24)
+	out := dm.View(80, 24, viewChrome{})
 	if !strings.Contains(out, "loading") {
 		t.Fatalf("expected loading hint, got:\n%s", out)
 	}
@@ -258,7 +258,7 @@ func TestDetail_FetchedMsgs_ErrorRecorded(t *testing.T) {
 func TestDetail_TabPlaceholder_LoadingRendered(t *testing.T) {
 	dm := detailFixture()
 	dm.commentsLoading = true
-	out := dm.View(80, 30)
+	out := dm.View(80, 30, viewChrome{})
 	if !strings.Contains(out, "loading") {
 		t.Fatalf("expected loading placeholder on comments tab, got:\n%s", out)
 	}
@@ -271,7 +271,7 @@ func TestDetail_TabPlaceholder_ErrorRendered(t *testing.T) {
 	dm := detailFixture()
 	dm.commentsLoading = false
 	dm.commentsErr = errors.New("server down")
-	out := dm.View(80, 30)
+	out := dm.View(80, 30, viewChrome{})
 	if !strings.Contains(out, "comments: server down") {
 		t.Fatalf("expected per-tab error hint, got:\n%s", out)
 	}
@@ -593,12 +593,17 @@ func TestDetail_OpenWithNilAPI_NoCrash(t *testing.T) {
 	}
 }
 
-// TestDetail_BodyHeight_TinyTerminal: very small terminals get a 5-row
-// floor so scrolling still produces visible output.
-func TestDetail_BodyHeight_TinyTerminal(t *testing.T) {
+// TestDetail_SplitContentHeight_TinyTerminal: very small terminals
+// fall through to the floor split so neither pane collapses to zero
+// even when the chrome doesn't fit.
+func TestDetail_SplitContentHeight_TinyTerminal(t *testing.T) {
 	dm := detailFixture()
-	if got := dm.bodyHeight(4); got != 5 {
-		t.Fatalf("bodyHeight(4) = %d, want 5 (floor)", got)
+	body, tab := dm.splitContentHeight(4)
+	if body < detailMinBodyRows {
+		t.Fatalf("body height = %d, want >= %d (floor)", body, detailMinBodyRows)
+	}
+	if tab < detailMinTabRows {
+		t.Fatalf("tab height = %d, want >= %d (floor)", tab, detailMinTabRows)
 	}
 }
 
@@ -626,14 +631,14 @@ func TestDetail_RenderCommentsTab_FormatsAuthorAndIndentsBody(t *testing.T) {
 }
 
 // TestDetail_RenderCommentsTab_EmptyShowsHint shows the placeholder when
-// there are no comments.
+// there are no comments. The "Comments (N)" header is now rendered by
+// the tab strip at the detail-view level (see renderTabStrip), so the
+// placeholder body is the only thing this renderer produces for the
+// zero-comments case.
 func TestDetail_RenderCommentsTab_EmptyShowsHint(t *testing.T) {
 	out := renderCommentsTab(nil, 80, 5, -1, tabState{})
 	if !strings.Contains(out, "no comments yet") {
 		t.Fatalf("expected placeholder, got:\n%s", out)
-	}
-	if !strings.Contains(out, "Comments (0)") {
-		t.Fatalf("expected zero-count header, got:\n%s", out)
 	}
 }
 

@@ -702,8 +702,8 @@ func (m Model) dispatchToView(msg tea.Msg) (tea.Model, tea.Cmd) {
 // lines.
 func (m Model) View() string {
 	body := m.viewBody()
-	if m.view == viewList {
-		// listChrome already accounted for SSE + toast inline.
+	if m.view == viewList || m.view == viewDetail {
+		// viewChrome already accounted for SSE + toast inline.
 		return body
 	}
 	extras := []string{}
@@ -728,19 +728,20 @@ func (m Model) viewBody() string {
 	case viewEmpty:
 		return renderEmpty(m.width, m.height)
 	case viewList:
-		return m.list.View(m.width, m.height, m.listChrome())
+		return m.list.View(m.width, m.height, m.chrome())
 	case viewDetail:
-		return m.detail.View(m.width, m.height)
+		return m.detail.View(m.width, m.height, m.chrome())
 	}
 	return ""
 }
 
-// listChrome assembles the cross-cutting render inputs the list view
-// needs from Model state: scope, SSE status, pending invalidation
-// flag, the active toast (if any), and the build-time version string.
-// Centralising this keeps lm.View free of Model coupling.
-func (m Model) listChrome() listChrome {
-	return listChrome{
+// chrome assembles the cross-cutting render inputs both the list view
+// and the detail view need from Model state: scope, SSE status,
+// pending invalidation flag, the active toast (if any), and the
+// build-time version string. Centralising this keeps the sub-views
+// free of Model coupling.
+func (m Model) chrome() viewChrome {
+	return viewChrome{
 		scope:     m.scope,
 		sseStatus: m.sseStatus,
 		pending:   m.pendingRefetch,

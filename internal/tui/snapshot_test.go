@@ -145,7 +145,7 @@ func TestSnapshot_List_DefaultMixedStatus(t *testing.T) {
 	lm.loading = false
 	lm.issues = snapListFixture()
 	lm.cursor = 1
-	chrome := listChrome{
+	chrome := viewChrome{
 		scope:     scope{projectID: 7, projectName: "kata"},
 		sseStatus: sseConnected,
 		version:   "v0.1.0",
@@ -172,7 +172,7 @@ func TestSnapshot_List_EmptyAfterFilter(t *testing.T) {
 	lm.loading = false
 	lm.issues = snapListFixture()
 	lm.filter = ListFilter{Search: "no-match-anywhere"}
-	chrome := listChrome{
+	chrome := viewChrome{
 		scope:     scope{projectID: 7, projectName: "kata"},
 		sseStatus: sseConnected,
 		version:   "v0.1.0",
@@ -206,7 +206,7 @@ func TestSnapshot_List_ScrollIndicator(t *testing.T) {
 	}
 	lm.issues = issues
 	lm.cursor = 25 // mid-list so the scroll window has both start and end visible
-	chrome := listChrome{
+	chrome := viewChrome{
 		scope:     scope{projectID: 7, projectName: "kata"},
 		sseStatus: sseConnected,
 		version:   "v0.1.0",
@@ -231,13 +231,37 @@ func TestSnapshot_List_WithFilterChips(t *testing.T) {
 		UpdatedAt: snapshotFixedNow.Add(-30 * time.Minute),
 	}}
 	lm.filter = ListFilter{Status: "open", Owner: "alice"}
-	chrome := listChrome{
+	chrome := viewChrome{
 		scope:     scope{projectID: 7, projectName: "kata"},
 		sseStatus: sseConnected,
 		version:   "v0.1.0",
 	}
 	got := lm.View(120, 30, chrome)
 	assertGolden(t, "list-with-filter-chips", got)
+}
+
+// TestSnapshot_Detail_LongCommentsList locks the per-tab scroll
+// indicator: 30 comments on a 30-row terminal forces the visible
+// window to slice into the entries, and the footer shows
+// `[start-end of N comments]`.
+func TestSnapshot_Detail_LongCommentsList(t *testing.T) {
+	defer snapshotInit(t)()
+	dm := snapDetailFixture()
+	when := time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC)
+	cs := make([]CommentEntry, 30)
+	for i := range cs {
+		cs[i] = CommentEntry{
+			ID:        int64(i + 1),
+			Author:    "actor-" + ptrFormat(int64(i+1)),
+			Body:      "comment body " + ptrFormat(int64(i+1)),
+			CreatedAt: when.Add(time.Duration(i) * time.Minute),
+		}
+	}
+	dm.comments = cs
+	dm.activeTab = tabComments
+	dm.tabCursor = 14 // mid-list
+	got := dm.View(120, 30, viewChrome{})
+	assertGolden(t, "detail-long-comments-list", got)
 }
 
 // TestSnapshot_Detail_CommentsTab locks the comments tab render. Tab
@@ -247,7 +271,7 @@ func TestSnapshot_Detail_CommentsTab(t *testing.T) {
 	defer snapshotInit(t)()
 	dm := snapDetailFixture()
 	dm.activeTab = tabComments
-	got := dm.View(120, 30)
+	got := dm.View(120, 30, viewChrome{})
 	assertGolden(t, "detail-comments-tab", got)
 }
 
@@ -256,7 +280,7 @@ func TestSnapshot_Detail_EventsTab(t *testing.T) {
 	defer snapshotInit(t)()
 	dm := snapDetailFixture()
 	dm.activeTab = tabEvents
-	got := dm.View(120, 30)
+	got := dm.View(120, 30, viewChrome{})
 	assertGolden(t, "detail-events-tab", got)
 }
 
@@ -265,7 +289,7 @@ func TestSnapshot_Detail_LinksTab(t *testing.T) {
 	defer snapshotInit(t)()
 	dm := snapDetailFixture()
 	dm.activeTab = tabLinks
-	got := dm.View(120, 30)
+	got := dm.View(120, 30, viewChrome{})
 	assertGolden(t, "detail-links-tab", got)
 }
 

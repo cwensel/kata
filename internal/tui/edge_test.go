@@ -279,7 +279,7 @@ func TestEdge_ListViewport_KeepsCursorVisible(t *testing.T) {
 	lm.issues = issues
 	lm.cursor = 50
 
-	out := lm.View(120, 30, listChrome{}) // height=30 leaves enough room for chrome + ~14 data rows
+	out := lm.View(120, 30, viewChrome{}) // height=30 leaves enough room for chrome + ~14 data rows
 	if !strings.Contains(out, rowTitleFor(51)) {
 		t.Fatalf("cursor row missing from viewport:\n%s", out)
 	}

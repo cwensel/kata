@@ -13,17 +13,20 @@ type tabState struct {
 	err     error
 }
 
-// renderCommentsTab formats the comments tab as: header line plus per-
-// comment "[author] timestamp" header (selected row inverse-styled),
-// body line-wrapped to width with a 2-space indent, blank separator.
-// The cursor highlights the row under dm.tabCursor and the rendered
-// lines are windowed so the cursor entry is always visible even when
-// the entries don't all fit in height.
+// renderCommentsTab formats the comments tab as a per-comment chunk:
+// header `[author] timestamp` (selected row inverse-styled) + the
+// body line-wrapped to width with a 2-space indent + blank separator.
+// The cursor highlights the row under dm.tabCursor; rendered lines
+// are windowed so the cursor entry is always visible even when the
+// entries don't all fit in height.
+//
+// The "Comments (N)" label is shown by renderTabStrip above; this
+// renderer no longer repeats it. Empty / loading / error placeholders
+// still render in place of the entries via tabPlaceholder.
 func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState) string {
-	headers := []string{titleStyle.Render(fmt.Sprintf("Comments (%d)", len(cs)))}
 	placeholder := tabPlaceholder(ts, "comments", "(no comments yet)", len(cs))
 	if placeholder != nil {
-		return assembleTab(headers, []entryChunk{*placeholder}, width, height, -1)
+		return assembleTab(nil, []entryChunk{*placeholder}, width, height, -1)
 	}
 	chunks := make([]entryChunk, 0, len(cs))
 	for i, c := range cs {
@@ -38,7 +41,7 @@ func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState
 		lines = append(lines, "")
 		chunks = append(chunks, entryChunk{lines: lines})
 	}
-	return assembleTab(headers, chunks, width, height, cursor)
+	return assembleTab(nil, chunks, width, height, cursor)
 }
 
 // renderEventsTab formats one line per event:
@@ -48,9 +51,8 @@ func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState
 // cursor so a tabCursor past the visible height still has its row on
 // screen.
 func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState) string {
-	headers := []string{titleStyle.Render(fmt.Sprintf("Events (%d)", len(es)))}
 	if placeholder := tabPlaceholder(ts, "events", "(no events yet)", len(es)); placeholder != nil {
-		return assembleTab(headers, []entryChunk{*placeholder}, width, height, -1)
+		return assembleTab(nil, []entryChunk{*placeholder}, width, height, -1)
 	}
 	chunks := make([]entryChunk, 0, len(es))
 	for i, e := range es {
@@ -65,7 +67,7 @@ func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState)
 			applyRowCursor(line, i == cursor),
 		}})
 	}
-	return assembleTab(headers, chunks, width, height, cursor)
+	return assembleTab(nil, chunks, width, height, cursor)
 }
 
 // renderLinksTab formats one line per link:
@@ -77,9 +79,8 @@ func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState)
 // Type is daemon-defined but Author is agent-supplied; sanitize the
 // latter so a malicious link author can't push the terminal around.
 func renderLinksTab(ls []LinkEntry, width, height, cursor int, ts tabState) string {
-	headers := []string{titleStyle.Render(fmt.Sprintf("Links (%d)", len(ls)))}
 	if placeholder := tabPlaceholder(ts, "links", "(no links)", len(ls)); placeholder != nil {
-		return assembleTab(headers, []entryChunk{*placeholder}, width, height, -1)
+		return assembleTab(nil, []entryChunk{*placeholder}, width, height, -1)
 	}
 	chunks := make([]entryChunk, 0, len(ls))
 	for i, l := range ls {
@@ -90,7 +91,7 @@ func renderLinksTab(ls []LinkEntry, width, height, cursor int, ts tabState) stri
 			applyRowCursor(line, i == cursor),
 		}})
 	}
-	return assembleTab(headers, chunks, width, height, cursor)
+	return assembleTab(nil, chunks, width, height, cursor)
 }
 
 // tabPlaceholder returns the chunk to render in lieu of the entry list

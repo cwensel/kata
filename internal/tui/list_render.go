@@ -10,13 +10,13 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// listChrome carries the cross-cutting render inputs that lm.View
+// viewChrome carries the cross-cutting render inputs that lm.View
 // needs to draw the title bar, status line, and footer help row.
 // Plumbed from Model so the list view doesn't have to reach back into
 // parent state. Zero-value renders a "minimal chrome" view (used by
 // snapshot tests that exercise just the table) — no version, no SSE
 // indicator text, no toast.
-type listChrome struct {
+type viewChrome struct {
 	scope     scope        // project / counts / version go in the title bar
 	sseStatus sseConnState // "connected" / "reconnecting" / "disconnected"
 	pending   bool         // pendingRefetch — surfaced as "0 / 1+ pending events"
@@ -37,7 +37,7 @@ type listChrome struct {
 // chrome carries the cross-cutting bits (scope, SSE state, version,
 // toast). When chrome.scope is the zero scope, the title bar
 // degrades to just "kata" + version — useful for snapshot tests.
-func (lm listModel) View(width, height int, chrome listChrome) string {
+func (lm listModel) View(width, height int, chrome viewChrome) string {
 	if lm.loading {
 		return statusStyle.Render("loading…")
 	}
