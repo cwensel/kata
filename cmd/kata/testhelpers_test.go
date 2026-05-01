@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/daemon"
+	"github.com/wesm/kata/internal/daemonclient"
 	"github.com/wesm/kata/internal/testenv"
 )
 
@@ -58,7 +59,7 @@ func writeRuntimeFor(home, addr string) error {
 // contextWithBaseURL injects a daemon base URL into the context so CLI
 // commands bypass real daemon discovery during tests.
 func contextWithBaseURL(ctx context.Context, url string) context.Context {
-	return context.WithValue(ctx, baseURLKey{}, url)
+	return context.WithValue(ctx, daemonclient.BaseURLKey{}, url)
 }
 
 // initBoundWorkspace creates a temporary git workspace, adds a git remote, and
