@@ -20,13 +20,13 @@ func (dm detailModel) handleEditorKey(
 			return dm, nil, true
 		}
 		dm.status = ""
-		return dm, editorCmd("edit", editorTemplate("edit", dm.issue.Body)), true
+		return dm, editorCmd("edit", editorTemplate("edit", dm.issue.Body), 0), true
 	case km.NewComment.matches(msg):
 		if dm.issue == nil {
 			return dm, nil, true
 		}
 		dm.status = ""
-		return dm, editorCmd("comment", editorTemplate("comment", "")), true
+		return dm, editorCmd("comment", editorTemplate("comment", ""), 0), true
 	}
 	return dm, nil, false
 }

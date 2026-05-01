@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -50,8 +52,104 @@ func renderPanelPrompt(s inputState, width int) string {
 	return title + "\n" + rendered
 }
 
-// renderCenteredForm is the M4 shell — multi-field form centered on
-// screen via lipgloss.Place. Stub for now; M4 fills it in.
+// renderCenteredForm is the M4 centered modal panel: bordered title
+// strip, textarea body, footer hint inside the box. Sized to ~70%
+// of the terminal (capped to 100x24 lines so wide windows don't get
+// a stretched form). Composed inline by Model.View via overlayModal
+// so the form sits on top of the underlying view's background.
 //
-//nolint:unused // reserved for M4 centered forms
-func renderCenteredForm(_ inputState, _, _ int) string { return "" }
+// Render-time sanitization is applied to the title and footer text
+// (trusted package strings, but cheap and consistent) and the
+// textarea's view delegates to bubbles' own input-side Sanitize so
+// any pasted ANSI sequence is dropped before it reaches the buffer.
+// Mutation payloads read the field value untouched — only the
+// display layer applies sanitization.
+func renderCenteredForm(s inputState, width, height int) string {
+	if width < formMinWidth || height < formMinHeight {
+		return renderTinyFormFallback(s)
+	}
+	innerW := formInnerWidth(width)
+	innerH := formInnerHeight(height)
+	f := s.activeField()
+	if f == nil {
+		return ""
+	}
+	// Resize the textarea to the form's interior.
+	f.area.SetWidth(innerW)
+	f.area.SetHeight(innerH - 2 /* title + footer */)
+	body := f.area.View()
+	footer := renderFormFooter(s, innerW)
+	statusLine := renderFormStatus(s, innerW)
+	parts := []string{
+		titleStyle.Render(s.title),
+		body,
+	}
+	if statusLine != "" {
+		parts = append(parts, statusLine)
+	}
+	parts = append(parts, footer)
+	box := modalBoxStyle.Width(innerW).Padding(0, 1).Render(strings.Join(parts, "\n"))
+	return box
+}
+
+// renderFormFooter is the footer-hint row inside the panel. While
+// saving=true the hint flips to a single "saving…" cell so the user
+// sees they should wait.
+func renderFormFooter(s inputState, innerW int) string {
+	if s.saving {
+		return statusStyle.Render("saving…")
+	}
+	hint := "ctrl+s save · esc cancel · ctrl+e $EDITOR"
+	if len(hint) > innerW {
+		hint = "ctrl+s save · esc cancel"
+	}
+	return subtleStyle.Render(hint)
+}
+
+// renderFormStatus surfaces in-form errors (editor cancel / error,
+// empty-comment block on commit). Empty when no status to show.
+func renderFormStatus(s inputState, _ int) string {
+	if s.err == "" {
+		return ""
+	}
+	return errorStyle.Render(s.err)
+}
+
+// renderTinyFormFallback is the degraded render for terminals smaller
+// than the form's minimum size. Just dumps the textarea so the user
+// can still type; no border / no centering. Useful in narrow CI
+// terminals or test fixtures.
+func renderTinyFormFallback(s inputState) string {
+	f := s.activeField()
+	if f == nil {
+		return ""
+	}
+	return s.title + "\n" + f.area.View()
+}
+
+// formInnerWidth picks the centered form's interior width. ~70% of
+// terminal width, capped at 100 cells so a 200-cell window doesn't
+// produce a stretched-out modal that's hard to read.
+func formInnerWidth(width int) int {
+	w := width * 7 / 10
+	if w > 100 {
+		w = 100
+	}
+	if w < formMinWidth {
+		w = formMinWidth
+	}
+	return w
+}
+
+// formInnerHeight picks the centered form's interior height. Caps
+// at 24 rows so the modal is roughly screen-sized, not full-screen.
+func formInnerHeight(height int) int {
+	h := height * 7 / 10
+	if h > 24 {
+		h = 24
+	}
+	if h < formMinHeight {
+		h = formMinHeight
+	}
+	return h
+}

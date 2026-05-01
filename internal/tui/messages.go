@@ -114,13 +114,22 @@ type mutationDoneMsg struct {
 
 // editorReturnedMsg carries the result of a $EDITOR suspend/resume
 // cycle. kind discriminates which mutation should run on the trimmed
-// content: "create" (new-issue body, handled by listModel), "edit"
-// (issue body, handled by detailModel), or "comment" (new comment,
-// handled by detailModel). err is non-nil when the editor exited with
-// a non-zero status or the tmpfile read-back failed.
+// content: "edit" (issue body) or "comment" (new comment). err is
+// non-nil when the editor exited with a non-zero status or the
+// tmpfile read-back failed.
+//
+// formGen is the M4 stale-handoff guard. The Model.openBodyEditForm /
+// openCommentForm path stamps a monotonic ID into the form state and
+// rides it through editorCmd. Routing checks the return's formGen
+// against the currently-open form's formGen; a mismatch (form was
+// closed, or re-opened on a different issue while the editor ran)
+// drops the content rather than writing it into a different form's
+// textarea. formGen=0 means "legacy editor return" and follows the
+// pre-M4 detail-side dispatch path.
 type editorReturnedMsg struct {
 	kind, content string
 	err           error
+	formGen       int64
 }
 
 // eventReceivedMsg is the per-frame SSE message forwarded to the TEA

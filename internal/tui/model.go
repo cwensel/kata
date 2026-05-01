@@ -70,6 +70,14 @@ type Model struct {
 	// owns key dispatch — `y`/`n`/`esc` route through it instead of
 	// reaching list/detail handlers.
 	modal modalKind
+	// nextFormGen is the monotonic centered-form ID counter. Every
+	// open of an M4 centered form (body editor / comment) allocates
+	// a fresh value via ++. The form's formGen rides with the
+	// $EDITOR handoff so a stale editorReturnedMsg arriving after
+	// the form was closed (or re-opened against a different issue)
+	// is rejected before its content can land in a different form's
+	// textarea.
+	nextFormGen int64
 }
 
 // initialModel constructs the root Bubble Tea model. Style vars are
@@ -220,6 +228,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.routeMutation(mut)
 		return next, cmd
 	}
+	// Editor returns from a centered form's ctrl+e handoff land here
+	// before dispatchToView so the writeback can hit m.input. formGen=0
+	// (legacy detail-side shell-out) falls through to detail.Update.
+	if er, ok := msg.(editorReturnedMsg); ok && er.formGen != 0 {
+		next, cmd := m.routeEditorReturn(er)
+		return next, cmd
+	}
 	return m.dispatchToView(msg)
 }
 
@@ -257,6 +272,9 @@ func (m Model) isStaleListFetch(msg tea.Msg) bool {
 // (it's gone) nor any cache, and the list rows would stay stale
 // until an unrelated SSE event happened to refresh them.
 func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
+	if mut.origin == "form" {
+		return m.routeFormMutation(mut)
+	}
 	if mut.origin == "list" && m.view != viewList {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.applyMutation(mut, m.api, m.scope)
@@ -332,7 +350,11 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 // so the user can refine an active filter without retyping. For
 // panel-local prompts, the issue number lands in the prompt title.
 // For the inline new-issue row (M3.5c), the row state has no issue
-// context — Enter dispatches CreateIssue with the typed title.
+// context — Enter dispatches CreateIssue with the typed title. For
+// centered forms, openInput delegates to openBodyEditForm /
+// openCommentForm — they need extra context (current body, issue
+// target) so they're called directly from the detail key handler
+// instead of via openInputMsg.
 func (m Model) openInput(kind inputKind) Model {
 	switch {
 	case kind == inputSearchBar:
@@ -351,6 +373,62 @@ func (m Model) openInput(kind inputKind) Model {
 	return m
 }
 
+// openBodyEditForm opens the centered body editor for the currently-
+// open detail issue. Allocates a fresh formGen so a stale editor
+// return from a previous form is rejected. Returns the model
+// untouched if there's no open detail issue.
+func (m Model) openBodyEditForm() Model {
+	if m.detail.issue == nil {
+		return m
+	}
+	target := formTarget{
+		projectID:   m.scope.projectID,
+		issueNumber: m.detail.issue.Number,
+		detailGen:   m.detail.gen,
+	}
+	m.nextFormGen++
+	form := newBodyEditForm(target, m.detail.issue.Body)
+	form.formGen = m.nextFormGen
+	m.input = form
+	return m
+}
+
+// openBodyEditPostCreate opens the post-create body editor for a
+// freshly-created issue. Called from the create-mutation success
+// branch so the user can immediately add body content; esc keeps the
+// body empty (the issue exists either way) and lands the user on the
+// new issue's detail view.
+func (m Model) openBodyEditPostCreate(issueNumber int64) Model {
+	target := formTarget{
+		projectID:   m.scope.projectID,
+		issueNumber: issueNumber,
+		detailGen:   m.detail.gen,
+	}
+	m.nextFormGen++
+	form := newBodyEditPostCreate(target)
+	form.formGen = m.nextFormGen
+	m.input = form
+	return m
+}
+
+// openCommentForm opens the centered comment editor for the
+// currently-open detail issue.
+func (m Model) openCommentForm() Model {
+	if m.detail.issue == nil {
+		return m
+	}
+	target := formTarget{
+		projectID:   m.scope.projectID,
+		issueNumber: m.detail.issue.Number,
+		detailGen:   m.detail.gen,
+	}
+	m.nextFormGen++
+	form := newCommentForm(target)
+	form.formGen = m.nextFormGen
+	m.input = form
+	return m
+}
+
 // routeInputKey delivers a key into the active input shell and
 // applies the resulting action. Bars apply their buffer to lm.filter
 // live on every keystroke (no debounce — filters are client-side).
@@ -364,11 +442,101 @@ func (m Model) routeInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case actionCommit:
 		return m.commitInput()
 	case actionCancel:
-		return m.cancelInput(), nil
+		return m.cancelInput()
+	case actionEditorHandoff:
+		return m.handoffToEditor()
 	}
 	if m.input.kind.isCommandBar() {
 		m = m.applyLiveBarFilter()
 	}
+	return m, nil
+}
+
+// handoffToEditor launches editorCmd on the current form's buffer,
+// tagging the request with the form's formGen so the eventual
+// editorReturnedMsg can reject itself if the form was closed or
+// re-opened in the meantime. The form state stays in m.input — the
+// editor return writes back into the textarea instead of submitting.
+func (m Model) handoffToEditor() (Model, tea.Cmd) {
+	if !m.input.kind.isCenteredForm() {
+		return m, nil
+	}
+	f := m.input.activeField()
+	if f == nil {
+		return m, nil
+	}
+	editorKind := editorKindFor(m.input.kind)
+	return m, editorCmd(editorKind, f.value(), m.input.formGen)
+}
+
+// editorKindFor maps a form kind onto the editorReturnedMsg kind tag.
+// The tag is informational only at the Model layer (the formGen is
+// what gates routing) but kept consistent with editor.go for future
+// reuse.
+func editorKindFor(k inputKind) string {
+	switch k {
+	case inputCommentForm:
+		return "comment"
+	case inputBodyEditForm, inputBodyEditPostCreate:
+		return "edit"
+	}
+	return ""
+}
+
+// routeFormMutation dispatches a form-originated mutationDoneMsg.
+// Success: close the form and let the rest of the app re-fetch what
+// it needs (the daemon's SSE push will invalidate caches, and an
+// open detail view's mutationDoneMsg path will reflect the change).
+// Failure: surface the error on the form's status line and clear
+// saving so the user can retry. A response that arrives after the
+// user already cancelled the form (or it was somehow cleared) is
+// dropped.
+func (m Model) routeFormMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
+	if !m.input.kind.isCenteredForm() {
+		return m, nil
+	}
+	if mut.err != nil {
+		m.input.saving = false
+		m.input.err = mut.kind + " failed: " + mut.err.Error()
+		return m, nil
+	}
+	m.input = inputState{}
+	// Hand off to the existing per-view mutation routing so the
+	// detail's body / comments list updates. Re-classify as if it
+	// came from detail (gen=current detail gen) so existing
+	// applyMutation logic kicks in.
+	mut.origin = "detail"
+	mut.gen = m.detail.gen
+	return m.routeMutation(mut)
+}
+
+// routeEditorReturn handles editorReturnedMsg at the Model level.
+// formGen > 0 means the request came from a centered form's ctrl+e
+// handoff; the return is matched against the currently-open form's
+// formGen and either writes the content back into the textarea or
+// is dropped as stale. formGen == 0 is the legacy detail-side
+// shell-out path and falls through to dm.applyEditorReturned.
+//
+// On editor cancel/error (non-nil err), the form stays open with
+// its previous buffer intact and the err surfaces on the form's
+// status line. The textarea is NOT repopulated — preserves what the
+// user typed before the editor opened.
+func (m Model) routeEditorReturn(msg editorReturnedMsg) (Model, tea.Cmd) {
+	if msg.formGen == 0 {
+		return m, nil
+	}
+	if !m.input.kind.isCenteredForm() || m.input.formGen != msg.formGen {
+		return m, nil
+	}
+	if msg.err != nil {
+		m.input.err = "editor: " + msg.err.Error()
+		return m, nil
+	}
+	if f := m.input.activeField(); f != nil {
+		f.setValue(msg.content)
+		m.input.fields[m.input.active] = *f
+	}
+	m.input.err = ""
 	return m, nil
 }
 
@@ -399,11 +567,21 @@ func (m Model) applyLiveBarFilter() Model {
 // via dispatchPanelPromptCommit before the input clears. For the
 // inline new-issue row, the title (untrimmed — preserves intentional
 // whitespace) dispatches CreateIssue via lm.dispatchCreateIssue.
+//
+// For centered forms, commitInput keeps the form open with
+// saving=true while the mutation is in flight (so a duplicate
+// ctrl+s is absorbed by the form's updateForm gate). The form is
+// closed by routeMutation when the response arrives. Empty comment
+// content surfaces an in-form error and leaves the form open;
+// empty body content is allowed (clearing a body is legitimate).
 func (m Model) commitInput() (Model, tea.Cmd) {
 	kind := m.input.kind
 	rawBuf := ""
 	if f := m.input.activeField(); f != nil {
 		rawBuf = f.value()
+	}
+	if kind.isCenteredForm() {
+		return m.commitFormInput(kind, rawBuf)
 	}
 	trimmed := strings.TrimSpace(rawBuf)
 	m.input = inputState{}
@@ -420,16 +598,81 @@ func (m Model) commitInput() (Model, tea.Cmd) {
 	return m, nil
 }
 
+// commitFormInput handles ctrl+s on a centered form. The form stays
+// open with saving=true while the daemon round-trip runs; the
+// arriving mutationDoneMsg closes it (success: clear and update
+// detail; error: surface on the form's status line and leave open).
+//
+// Comments require non-empty content (an empty comment carries no
+// information); body edits accept empty content (clearing a body is
+// legitimate). Render-side sanitization elsewhere handles display
+// safety; mutation payloads go to the wire untouched so the user's
+// content is preserved exactly.
+func (m Model) commitFormInput(kind inputKind, rawBuf string) (Model, tea.Cmd) {
+	if kind == inputCommentForm && strings.TrimSpace(rawBuf) == "" {
+		m.input.err = "comment cannot be empty"
+		return m, nil
+	}
+	m.input.saving = true
+	m.input.err = ""
+	target := m.input.target
+	switch kind {
+	case inputCommentForm:
+		return m, dispatchFormAddComment(m.api, target, rawBuf, m.list.actor)
+	case inputBodyEditForm, inputBodyEditPostCreate:
+		return m, dispatchFormEditBody(m.api, target, rawBuf, m.list.actor)
+	}
+	return m, nil
+}
+
+// dispatchFormAddComment is the form-side AddComment dispatch. Tagged
+// with origin="form" + the form's formGen so routeMutation can match
+// the response to the still-open form.
+func dispatchFormAddComment(
+	api *Client, target formTarget, body, actor string,
+) tea.Cmd {
+	pid, num := target.projectID, target.issueNumber
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := api.AddComment(ctx, pid, num, body, actor)
+		return mutationDoneMsg{
+			origin: "form", kind: "form.comment.add", resp: resp, err: err,
+		}
+	}
+}
+
+// dispatchFormEditBody is the form-side EditBody dispatch. Same
+// shape as dispatchFormAddComment.
+func dispatchFormEditBody(
+	api *Client, target formTarget, body, actor string,
+) tea.Cmd {
+	pid, num := target.projectID, target.issueNumber
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := api.EditBody(ctx, pid, num, body, actor)
+		return mutationDoneMsg{
+			origin: "form", kind: "form.body.edit", resp: resp, err: err,
+		}
+	}
+}
+
 // cancelInput restores any pre-open filter snapshot (bars only) and
 // closes the input — undoing every live keystroke the user typed.
 // Panel-local prompts have no live mirror, so cancel is just close.
-func (m Model) cancelInput() Model {
+//
+// Returns a tea.Cmd because future cancel paths need to dispatch
+// downstream actions (e.g. the post-create body editor's esc lands
+// the user on the new issue's detail). Today no kind needs a cmd
+// on cancel; the return slot is reserved for commit 2's wiring.
+func (m Model) cancelInput() (Model, tea.Cmd) {
 	if m.input.kind.isCommandBar() {
 		m.list.filter = m.input.preFilter
 		m.list = m.list.clampCursorToFilter()
 	}
 	m.input = inputState{}
-	return m
+	return m, nil
 }
 
 // routeGlobalKey handles the global key family (quit, help, scope
@@ -923,6 +1166,11 @@ func (m Model) View() string {
 	// M3.5b: a centered modal overlays the rendered view when active.
 	if m.modal == modalQuitConfirm {
 		return overlayModal(body, renderQuitConfirmModal(), m.width, m.height)
+	}
+	// M4: centered form overlays the rendered view when active.
+	if m.input.kind.isCenteredForm() {
+		form := renderCenteredForm(m.input, m.width, m.height)
+		return overlayModal(body, form, m.width, m.height)
 	}
 	return body
 }
