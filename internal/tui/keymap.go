@@ -6,15 +6,15 @@ import tea "github.com/charmbracelet/bubbletea"
 // reads from this same value so rendered help stays in lockstep with
 // what Update actually handles.
 type keymap struct {
-	Help, Quit, ToggleScope                              key
-	Up, Down, PageUp, PageDown, Home, End                key
-	Open, NewIssue, Search                               key
-	FilterStatus, FilterOwner, FilterLabel, ClearFilters key
-	Close, Reopen                                        key
-	NextTab, PrevTab, JumpRef, Back                      key
-	EditBody, NewComment                                 key
-	SetParent, AddBlocker, AddLink                       key
-	AddLabel, RemoveLabel, AssignOwner, ClearOwner       key
+	Help, Quit, ToggleScope                        key
+	Up, Down, PageUp, PageDown, Home, End          key
+	Open, NewIssue, Search                         key
+	FilterStatus, FilterOwner, ClearFilters        key
+	Close, Reopen                                  key
+	NextTab, PrevTab, JumpRef, Back                key
+	EditBody, NewComment                           key
+	SetParent, AddBlocker, AddLink                 key
+	AddLabel, RemoveLabel, AssignOwner, ClearOwner key
 }
 
 // key is a binding plus its human label. matches() compares against the
@@ -41,7 +41,11 @@ func newKeymap() keymap {
 		Search:       key{Keys: []string{"/"}, Help: "search"},
 		FilterStatus: key{Keys: []string{"s"}, Help: "cycle status filter"},
 		FilterOwner:  key{Keys: []string{"o"}, Help: "filter by owner"},
-		FilterLabel:  key{Keys: []string{"l"}, Help: "filter by label"},
+		// Label filter is intentionally absent: the Issue projection
+		// drops Labels (Task 3 wire-vs-spec adaptation #1), so a TUI
+		// label filter could not actually narrow the displayed list.
+		// Re-add the binding once the wire carries Labels and
+		// matchesFilter knows how to use them.
 		ClearFilters: key{Keys: []string{"c"}, Help: "clear filters"},
 		Close:        key{Keys: []string{"x"}, Help: "close"},
 		Reopen:       key{Keys: []string{"r"}, Help: "reopen"},

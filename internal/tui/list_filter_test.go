@@ -264,31 +264,6 @@ func TestList_NewIssue_WhitespaceTitleDoesNotCallAPI(t *testing.T) {
 	}
 }
 
-// TestList_LabelFilter_StatusHintWhenSet: committing a non-empty label
-// filter surfaces a "not yet supported" hint rather than silently
-// applying a filter that the Issue projection cannot honor. Regression
-// for finding 29.
-func TestList_LabelFilter_StatusHintWhenSet(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm, _ := lmFromUpdate(listModel{}, runeKey('l'), km, api, sc)
-	for _, r := range "bug" {
-		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
-	}
-	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
-	if cmd != nil {
-		t.Fatalf("label commit must not refetch (not yet supported), got %T", cmd)
-	}
-	if lm.status == "" {
-		t.Fatal("expected a status hint on label commit")
-	}
-	if !strings.Contains(lm.status, "not yet supported") {
-		t.Fatalf("status = %q, expected to contain 'not yet supported'", lm.status)
-	}
-}
-
 // TestList_Cursor_MovesInFilteredSpace: with a filter active, j/k
 // moves the cursor through filtered rows. Regression for finding 29:
 // previously j moved through all issues and the marker landed on the
@@ -539,22 +514,19 @@ func TestList_OwnerPrompt_AccumulatesAndCommits(t *testing.T) {
 	}
 }
 
-// TestList_LabelPrompt_SplitsCSV: user enters "bug, ui" → two labels.
-func TestList_LabelPrompt_SplitsCSV(t *testing.T) {
+// TestList_LabelKey_NoLongerOpensPrompt: pressing 'l' from the list
+// must NOT open a label prompt. The label-filter UI was retired
+// because the wire doesn't carry Labels yet (matchesFilter could not
+// honor it). Regression catch for accidentally rebinding 'l' before
+// the wire surface lands.
+func TestList_LabelKey_NoLongerOpensPrompt(t *testing.T) {
 	api := &fakeListAPI{}
 	km := newKeymap()
 	sc := scope{projectID: 7}
 
 	lm, _ := lmFromUpdate(listModel{}, runeKey('l'), km, api, sc)
-	for _, r := range "bug, ui" {
-		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
-	}
-	// Space arrives as KeyRunes too; the loop above already covers the
-	// space-after-comma case.
-	lm, _ = lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
-	if len(lm.filter.Labels) != 2 ||
-		lm.filter.Labels[0] != "bug" || lm.filter.Labels[1] != "ui" {
-		t.Fatalf("labels = %v, want [bug ui]", lm.filter.Labels)
+	if lm.search.inputting {
+		t.Fatalf("'l' should not open a prompt; got field=%v", lm.search.field)
 	}
 }
 

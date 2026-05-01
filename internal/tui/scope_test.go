@@ -30,97 +30,46 @@ func scopeFixtureSingle() Model {
 	return m
 }
 
-// scopeFixtureAllWithHome: all-projects scope but the home project is
-// remembered so R can switch back. Models the case where the user
-// pressed R earlier or used --all-projects.
-func scopeFixtureAllWithHome() Model {
+// TestScopeToggle_GatedNoOp: pressing R is a toast-only no-op while
+// the cross-project surface is gated. Scope must be unchanged, the
+// list cache untouched, and the toast text must explain the gate so
+// the user isn't confused by the silent no-op.
+func TestScopeToggle_GatedNoOp(t *testing.T) {
 	m := scopeFixtureSingle()
-	m.scope.allProjects = true
-	m.scope.projectID = 0
-	m.scope.projectName = ""
-	return m
-}
-
-// scopeFixtureAllNoHome: all-projects scope with no home project (the
-// boot fallback case). R should toast instead of switching.
-func scopeFixtureAllNoHome() Model {
-	m := scopeFixtureAllWithHome()
-	m.scope.homeProjectID = 0
-	m.scope.homeProjectName = ""
-	return m
-}
-
-// TestScopeToggle_SingleToAll: pressing R in single-project mode flips
-// allProjects=true, drops the cache, resets the list, and dispatches a
-// fetch (cmd is non-nil). homeProjectID is preserved so the back-toggle
-// works.
-func TestScopeToggle_SingleToAll(t *testing.T) {
-	m := scopeFixtureSingle()
-	next, _ := m.handleScopeToggle()
-	if !next.scope.allProjects {
-		t.Fatal("expected allProjects=true after toggle")
-	}
-	if next.scope.projectID != 0 {
-		t.Fatalf("projectID should clear, got %d", next.scope.projectID)
-	}
-	if next.scope.homeProjectID != 7 {
-		t.Fatalf("homeProjectID lost: got %d, want 7", next.scope.homeProjectID)
-	}
-	if next.cache.set {
-		t.Fatal("cache should be dropped after toggle")
-	}
-	if !next.list.loading {
-		t.Fatal("list should be reset to loading=true")
-	}
-	if next.list.actor != "wesm" {
-		t.Fatalf("actor lost across reset: got %q", next.list.actor)
-	}
-}
-
-// TestScopeToggle_AllToSingle_WhenDefaultExists: pressing R in
-// all-projects mode with a home project switches back to single-project.
-// The cache is dropped and a fresh fetch is dispatched.
-func TestScopeToggle_AllToSingle_WhenDefaultExists(t *testing.T) {
-	m := scopeFixtureAllWithHome()
-	next, _ := m.handleScopeToggle()
+	next, cmd := m.handleScopeToggle()
 	if next.scope.allProjects {
-		t.Fatal("expected allProjects=false after toggle back")
+		t.Fatal("scope must not flip while all-projects is gated")
 	}
 	if next.scope.projectID != 7 {
-		t.Fatalf("projectID = %d, want 7 (from home)", next.scope.projectID)
+		t.Fatalf("projectID changed: got %d, want 7", next.scope.projectID)
 	}
-	if next.scope.projectName != "kata" {
-		t.Fatalf("projectName = %q, want kata", next.scope.projectName)
-	}
-}
-
-// TestScopeToggle_AllToSingle_NoDefault: pressing R in all-projects mode
-// with no home project surfaces the "no project bound" toast and leaves
-// scope unchanged. cmd is the toast-expiry tick, not a fetch.
-func TestScopeToggle_AllToSingle_NoDefault(t *testing.T) {
-	m := scopeFixtureAllNoHome()
-	next, cmd := m.handleScopeToggle()
-	if !next.scope.allProjects {
-		t.Fatal("scope should remain all-projects when no default")
+	if !next.cache.set {
+		t.Fatal("cache must NOT be dropped when toggle is a no-op")
 	}
 	if next.toast == nil {
-		t.Fatal("expected toast set when no project bound")
+		t.Fatal("expected gate-explanation toast")
 	}
-	if !strings.Contains(next.toast.text, "no project bound") {
-		t.Fatalf("toast text = %q, want hint about no project", next.toast.text)
+	if !strings.Contains(next.toast.text, "all-projects not available") {
+		t.Fatalf("toast text = %q, want hint about gated all-projects",
+			next.toast.text)
 	}
 	if cmd == nil {
 		t.Fatal("expected toast-expiry cmd")
 	}
 }
 
-// TestScopeToggle_RKeyDispatch: a top-level R keystroke routes through
-// handleScopeToggle. Smoke test that the binding is wired.
-func TestScopeToggle_RKeyDispatch(t *testing.T) {
+// TestScopeToggle_RKeyDispatch_Gated: R at the top level still routes
+// through handleScopeToggle. The binding is wired; the toggle just
+// produces a toast instead of changing scope.
+func TestScopeToggle_RKeyDispatch_Gated(t *testing.T) {
 	m := scopeFixtureSingle()
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
-	if !out.(Model).scope.allProjects {
-		t.Fatal("R from single-project mode should toggle to all-projects")
+	nm := out.(Model)
+	if nm.scope.allProjects {
+		t.Fatal("R must not flip scope while all-projects is gated")
+	}
+	if nm.toast == nil {
+		t.Fatal("R must surface the gate-explanation toast")
 	}
 }
 

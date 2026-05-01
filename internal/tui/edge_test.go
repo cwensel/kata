@@ -135,6 +135,183 @@ func TestEdge_SSEDuringSearchPrompt(t *testing.T) {
 	}
 }
 
+// TestEdge_IdentitySelection_FollowsIssueAcrossReorder: a refetch
+// reorders rows (issues come back sorted by updated_at DESC, so any
+// background mutation can shuffle them). The cursor must stay on the
+// same issue rather than the same index.
+func TestEdge_IdentitySelection_FollowsIssueAcrossReorder(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	m.list.loading = false
+	m.list.issues = []Issue{
+		{Number: 1, Title: "alpha"},
+		{Number: 2, Title: "beta"},
+		{Number: 3, Title: "gamma"},
+	}
+	m.list.cursor = 1
+	m.list.selectedNumber = 2 // cursor is on #2 ("beta")
+
+	// Simulate an SSE-driven refetch that reorders: #2 moved to row 0
+	// because it was just updated. With positional selection the cursor
+	// would still point at index 1 (now "alpha"), silently changing
+	// what the user sees as selected.
+	out, _ := m.Update(refetchedMsg{
+		dispatchKey: m.currentCacheKey(),
+		issues: []Issue{
+			{Number: 2, Title: "beta"},
+			{Number: 1, Title: "alpha"},
+			{Number: 3, Title: "gamma"},
+		},
+	})
+	nm := out.(Model)
+	if nm.list.cursor != 0 {
+		t.Fatalf("cursor = %d, want 0 (#2 moved to row 0)", nm.list.cursor)
+	}
+	if nm.list.selectedNumber != 2 {
+		t.Fatalf("selectedNumber = %d, want 2 (identity preserved)",
+			nm.list.selectedNumber)
+	}
+}
+
+// TestEdge_IdentitySelection_FallsBackWhenIssueDisappears: when the
+// previously-selected issue is no longer in the refetched list (e.g.
+// soft-deleted, or filter narrowed it out), the cursor falls back to
+// the same index clamped to the new visible range and re-records the
+// issue under it.
+func TestEdge_IdentitySelection_FallsBackWhenIssueDisappears(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	m.list.loading = false
+	m.list.issues = []Issue{
+		{Number: 1, Title: "alpha"},
+		{Number: 2, Title: "beta"},
+		{Number: 3, Title: "gamma"},
+	}
+	m.list.cursor = 1
+	m.list.selectedNumber = 2
+
+	out, _ := m.Update(refetchedMsg{
+		dispatchKey: m.currentCacheKey(),
+		issues: []Issue{
+			{Number: 1, Title: "alpha"},
+			// #2 disappeared.
+			{Number: 3, Title: "gamma"},
+		},
+	})
+	nm := out.(Model)
+	if nm.list.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1 (clamped to new index 1)", nm.list.cursor)
+	}
+	if nm.list.selectedNumber != 3 {
+		t.Fatalf("selectedNumber = %d, want 3 (re-pinned to issue at fallback row)",
+			nm.list.selectedNumber)
+	}
+}
+
+// TestEdge_PageUpPageDown_MovesCursorInChunks: pgup/pgdown shift the
+// cursor by pageStep rows so navigating long lists doesn't require
+// hundreds of j/k presses.
+func TestEdge_PageUpPageDown_MovesCursorInChunks(t *testing.T) {
+	m := initialModel(Options{})
+	issues := make([]Issue, 50)
+	for i := range issues {
+		issues[i] = Issue{Number: int64(i + 1), Title: "row"}
+	}
+	m.list.loading = false
+	m.list.issues = issues
+	m.list.cursor = 5
+
+	// pgdown advances by pageStep (10).
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	nm := out.(Model)
+	if nm.list.cursor != 15 {
+		t.Fatalf("after pgdown, cursor = %d, want 15", nm.list.cursor)
+	}
+	if nm.list.selectedNumber != 16 {
+		t.Fatalf("selectedNumber = %d, want 16 (issue at cursor 15)",
+			nm.list.selectedNumber)
+	}
+
+	// pgup walks back by pageStep.
+	out, _ = nm.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	nm = out.(Model)
+	if nm.list.cursor != 5 {
+		t.Fatalf("after pgup, cursor = %d, want 5", nm.list.cursor)
+	}
+}
+
+// TestEdge_PageDown_ClampsAtEnd: pgdown near the end clamps to the
+// last row rather than walking past the slice.
+func TestEdge_PageDown_ClampsAtEnd(t *testing.T) {
+	m := initialModel(Options{})
+	issues := make([]Issue, 12)
+	for i := range issues {
+		issues[i] = Issue{Number: int64(i + 1), Title: "row"}
+	}
+	m.list.loading = false
+	m.list.issues = issues
+	m.list.cursor = 8
+
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	nm := out.(Model)
+	if nm.list.cursor != 11 {
+		t.Fatalf("cursor = %d, want 11 (clamped to last row)", nm.list.cursor)
+	}
+}
+
+// TestEdge_ListViewport_KeepsCursorVisible: a list of 100 rows with a
+// height budget of 10 must render only the cursor's neighborhood, not
+// every row. We verify the rendered output contains the cursor row's
+// title and excludes rows far from the cursor.
+func TestEdge_ListViewport_KeepsCursorVisible(t *testing.T) {
+	lm := newListModel()
+	lm.loading = false
+	issues := make([]Issue, 100)
+	for i := range issues {
+		issues[i] = Issue{
+			Number: int64(i + 1),
+			Title:  rowTitleFor(i + 1),
+			Status: "open",
+		}
+	}
+	lm.issues = issues
+	lm.cursor = 50
+
+	out := lm.View(120, 14) // 14 lines total → ~11 row body
+	if !strings.Contains(out, rowTitleFor(51)) {
+		t.Fatalf("cursor row missing from viewport:\n%s", out)
+	}
+	// A row 30+ away from the cursor must NOT be in the rendered output.
+	if strings.Contains(out, rowTitleFor(1)) {
+		t.Fatalf("first row leaked into a windowed render of 100 issues:\n%s", out)
+	}
+	if strings.Contains(out, rowTitleFor(100)) {
+		t.Fatalf("last row leaked into windowed render with cursor in middle:\n%s", out)
+	}
+}
+
+// rowTitleFor produces a unique, identifiable title for row n so the
+// viewport test can grep for specific rows in the rendered output.
+func rowTitleFor(n int) string {
+	return "row-id-" + numToTag(n)
+}
+
+// numToTag formats n for use inside a test title without depending on
+// fmt.Sprintf (keeps the helper's intent obvious in the test harness).
+func numToTag(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}
+
 // TestEdge_StaleRefetch_DroppedAfterFilterChange: a refetch dispatched
 // under filter X arrives after the user has already moved to filter Y
 // (e.g. typed a search term). The stale response must NOT clobber the

@@ -3,7 +3,7 @@
 GOFLAGS_TEST := -shuffle=on
 
 build:
-	go build ./...
+	go build -o kata ./cmd/kata
 
 install:
 	GOBIN=$${HOME}/.local/bin go install ./cmd/kata

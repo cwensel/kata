@@ -23,10 +23,14 @@ import (
 // db.ListIssues hard-codes deleted_at IS NULL, so there is no way for
 // the TUI to surface soft-deleted rows today. Re-introducing the flag
 // is deferred to a follow-up that adds wire + handler support.
+//
+// AllProjects is also absent: the daemon registers no cross-project
+// list route (handlers_issues.go only registers the project-scoped
+// endpoint), so a TUI all-projects mode would 404 on every fetch. The
+// CLI flag, the R toggle, and the boot fallback are all gated on this.
 type Options struct {
-	AllProjects bool
-	Stdout      io.Writer // typically os.Stdout
-	Stderr      io.Writer // typically os.Stderr
+	Stdout io.Writer // typically os.Stdout
+	Stderr io.Writer // typically os.Stderr
 }
 
 // Run starts the TUI. Blocks until the user quits or ctx is cancelled.
@@ -105,7 +109,7 @@ func sseProjectScope(sc scope) *int64 {
 // response-header ceiling) so a long-lived stream isn't reaped after 5s.
 // We re-use NewHTTPClient with ResponseHeaderTimeout instead of building
 // a bespoke transport so unix-socket dialing stays in one place.
-func bootClient(ctx context.Context, opts Options) (*Client, *http.Client, scope, string, error) {
+func bootClient(ctx context.Context, _ Options) (*Client, *http.Client, scope, string, error) {
 	endpoint, err := daemonclient.EnsureRunning(ctx)
 	if err != nil {
 		return nil, nil, scope{}, "", err
@@ -122,7 +126,7 @@ func bootClient(ctx context.Context, opts Options) (*Client, *http.Client, scope
 	}
 	c := NewClient(endpoint, hc)
 	cwd, _ := os.Getwd()
-	sc, err := bootResolveScope(ctx, c, opts.AllProjects, cwd)
+	sc, err := bootResolveScope(ctx, c, cwd)
 	if err != nil {
 		return nil, nil, scope{}, "", err
 	}
@@ -132,10 +136,14 @@ func bootClient(ctx context.Context, opts Options) (*Client, *http.Client, scope
 // scope describes the issue-set the TUI is browsing. Exactly one of
 // projectID, allProjects, empty is set.
 //
-// homeProjectID/homeProjectName are immutable: they capture the project
-// bootResolveScope picked from the cwd so the R toggle (Task 12) can
-// switch back from all-projects mode without re-running scope resolution.
-// They are zero when boot landed in all-projects fallback or empty state.
+// allProjects is currently always false: cross-project mode is gated
+// off until the daemon ships a list endpoint (handlers_issues.go has
+// no cross-project route). The field stays on the struct so the R
+// toggle can be re-enabled in one place when daemon support lands.
+//
+// homeProjectID/homeProjectName capture the project bootResolveScope
+// picked from the cwd. They're zero when boot landed in the empty
+// state.
 type scope struct {
 	projectID       int64
 	allProjects     bool
@@ -146,23 +154,20 @@ type scope struct {
 	homeProjectName string
 }
 
-// bootResolveScope implements §7.2 of the master spec. Order:
-//  1. --all-projects → cross-project mode.
-//  2. POST /projects/resolve(cwd) success → single-project mode.
-//  3. project_not_initialized + ≥1 registered project → fall back to
-//     all-projects so the user has something to look at.
-//  4. project_not_initialized + zero registered projects → empty state.
-//  5. Any other resolve error → propagate so Run fails loudly.
+// bootResolveScope picks the initial scope from the cwd. With cross-
+// project mode gated off, the path is:
 //
-// The home* fields are populated only on case 2 — the explicit
-// --all-projects flag and the unbound-cwd fallback both leave them zero
-// so the R toggle's "no default" branch fires.
+//  1. POST /projects/resolve(cwd) success → single-project mode.
+//  2. project_not_initialized → empty state regardless of how many
+//     projects are registered. The pre-gate code dropped into
+//     all-projects when ≥1 project existed; that path now hits a 404
+//     because the daemon has no cross-project list route. Empty state
+//     is honest: the user gets the "run kata init" hint instead of an
+//     error screen.
+//  3. Any other resolve error → propagate so Run fails loudly.
 func bootResolveScope(
-	ctx context.Context, c *Client, allProjects bool, cwd string,
+	ctx context.Context, c *Client, cwd string,
 ) (scope, error) {
-	if allProjects {
-		return scope{allProjects: true}, nil
-	}
 	rr, err := c.ResolveProject(ctx, cwd)
 	if err == nil {
 		return scope{
@@ -177,14 +182,7 @@ func bootResolveScope(
 	if !errors.As(err, &apiErr) || apiErr.Code != "project_not_initialized" {
 		return scope{}, err
 	}
-	projects, listErr := c.ListProjects(ctx)
-	if listErr != nil {
-		return scope{}, listErr
-	}
-	if len(projects) == 0 {
-		return scope{empty: true}, nil
-	}
-	return scope{allProjects: true}, nil
+	return scope{empty: true}, nil
 }
 
 // errNotATTY indicates the TUI was launched outside a terminal.

@@ -9,6 +9,12 @@ import (
 
 // kata tui needs a TTY, so we exercise the registration via --help;
 // cobra prints help text and returns before RunE is invoked.
+//
+// --all-projects and --include-deleted are intentionally NOT
+// registered: the daemon has no cross-project list endpoint and no
+// include_deleted query param, so either flag would advertise a
+// capability the wire cannot deliver. Both gates land at the daemon
+// boundary; re-add when handlers_issues.go grows the routes.
 func TestTUI_CommandRegistered(t *testing.T) {
 	resetFlags(t)
 	cmd := newRootCmd()
@@ -21,16 +27,11 @@ func TestTUI_CommandRegistered(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	for _, want := range []string{"--all-projects"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected --help to mention %q, got: %s", want, out)
+	for _, banned := range []string{"--all-projects", "--include-deleted"} {
+		if strings.Contains(out, banned) {
+			t.Fatalf("%s leaked back into help (daemon support not yet wired): %s",
+				banned, out)
 		}
-	}
-	// --include-deleted is intentionally not registered; the daemon's list
-	// endpoint doesn't honor it, so re-introducing the flag would advertise
-	// a capability the wire cannot deliver.
-	if strings.Contains(out, "--include-deleted") {
-		t.Fatalf("--include-deleted leaked back into help (daemon support not yet wired): %s", out)
 	}
 }
 

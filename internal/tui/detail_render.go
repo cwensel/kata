@@ -61,21 +61,25 @@ func (dm detailModel) tabContentHeight(total int) int {
 }
 
 // renderHeader builds the top line: #N status[chip] [deleted?] title.
+// Title is agent-authored so it runs through sanitizeForDisplay before
+// truncate to keep ANSI / control sequences out of the rendered cell.
 func (dm detailModel) renderHeader(width int) string {
 	iss := *dm.issue
 	parts := []string{
 		fmt.Sprintf("#%d", iss.Number),
 		statusChip(iss),
-		titleStyle.Render(truncate(iss.Title, max(20, width-30))),
+		titleStyle.Render(truncate(sanitizeForDisplay(iss.Title), max(20, width-30))),
 	}
 	return strings.Join(parts, " ")
 }
 
 // renderBody splits the issue body on newlines, hard-wraps each line,
 // and returns the dm.scroll-windowed slice. Hard-wrap (truncate) keeps
-// v1 simple; soft word-wrap is deferred.
+// v1 simple; soft word-wrap is deferred. Body is sanitized before
+// wrapping so agent-authored ANSI / control sequences cannot reach
+// the terminal.
 func (dm detailModel) renderBody(width, lines int) string {
-	wrapped := wrapBody(dm.issue.Body, width)
+	wrapped := wrapBody(sanitizeForDisplay(dm.issue.Body), width)
 	if len(wrapped) == 0 {
 		return statusStyle.Render("(no body)")
 	}

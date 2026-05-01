@@ -7,57 +7,25 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// handleScopeToggle implements the R binding. Three cases:
-//   - currently single-project → switch to all-projects.
-//   - currently all-projects + boot resolved a home project → switch back.
-//   - currently all-projects + no home project → emit a "no project bound"
-//     toast and stay put.
+// handleScopeToggle implements the R binding. Today the cross-project
+// surface is gated off (the daemon has no GET /issues route), so R is
+// a toast-only no-op explaining the gate. Re-enable the actual toggle
+// once handlers_issues.go ships the cross-project endpoint and the
+// list model has a wire path that won't 404.
 //
-// On a successful switch the cache is dropped, the list model is reset
-// (loading=true, no rows, cursor=0, no filter), and a fresh fetchInitial
-// is dispatched so the new scope's data lands. Filters are intentionally
-// cleared because most filters (owner, search) make no sense across the
-// scope boundary; a future iteration could carry status across.
+// The pre-gate behavior is intentionally not preserved as a fallback:
+// silently switching into a 404-backed mode would land the user on an
+// error screen with no clue why. Better to surface the gate.
 func (m Model) handleScopeToggle() (Model, tea.Cmd) {
-	if m.scope.allProjects {
-		if m.scope.homeProjectID == 0 {
-			return m.toastNoBinding()
-		}
-		m.scope.allProjects = false
-		m.scope.projectID = m.scope.homeProjectID
-		m.scope.projectName = m.scope.homeProjectName
-		return m.applyScopeChange()
-	}
-	m.scope.allProjects = true
-	m.scope.projectID = 0
-	m.scope.projectName = ""
-	return m.applyScopeChange()
+	return m.toastScopeGated()
 }
 
-// applyScopeChange resets list-view state and dispatches a fresh
-// fetchInitial so the new scope's data populates. Cache is dropped so
-// SSE-driven refetches start clean. m.list is replaced by a fresh
-// listModel — the pre-toggle actor is preserved because resolveTUIActor
-// is deterministic and the value re-derives at construction.
-func (m Model) applyScopeChange() (Model, tea.Cmd) {
-	if m.cache != nil {
-		m.cache.drop()
-	}
-	priorActor := m.list.actor
-	m.list = newListModel()
-	m.list.actor = priorActor
-	m.pendingRefetch = false
-	if m.api == nil {
-		return m, nil
-	}
-	return m, m.fetchInitial()
-}
-
-// toastNoBinding surfaces the "no project bound" hint. The TTL gives the
-// user time to read and matches the resynced toast's cadence.
-func (m Model) toastNoBinding() (Model, tea.Cmd) {
+// toastScopeGated surfaces a hint that the all-projects surface is
+// gated until the daemon ships cross-project list support. The TTL
+// matches the no-binding toast's cadence — long enough to read.
+func (m Model) toastScopeGated() (Model, tea.Cmd) {
 	m.toast = &toast{
-		text:      "no project bound; run `kata init`",
+		text:      "all-projects not available yet (daemon route pending)",
 		level:     toastError,
 		expiresAt: m.toastNow().Add(toastNoBindingTTL),
 	}

@@ -13,13 +13,15 @@ import (
 // View renders the list as a hidden-bordered lipgloss table. The cursor
 // row is highlighted via the table's StyleFunc; see selMarker for the
 // in-row glyph. Width is the full terminal width; the title column
-// flex-fills whatever the fixed columns leave behind.
+// flex-fills whatever the fixed columns leave behind. Height bounds
+// how many rows the table renders so the cursor stays in view as the
+// list grows past the terminal.
 //
 // A single header row above the table holds either the active inline
-// prompt (search/owner/label/new title) or the chip strip summarizing
+// prompt (search/owner/new title) or the chip strip summarizing
 // active filters. A status line below renders one-shot mutation
 // feedback ("created #4") until the next keypress clears it.
-func (lm listModel) View(width, _ int) string {
+func (lm listModel) View(width, height int) string {
 	if lm.loading {
 		return statusStyle.Render("loading…")
 	}
@@ -27,9 +29,46 @@ func (lm listModel) View(width, _ int) string {
 		return errorStyle.Render(lm.err.Error())
 	}
 	header := lm.renderHeader()
-	body := lm.renderBody(width)
+	body := lm.renderBody(width, listBodyHeight(height, header))
 	footer := lm.renderFooter()
 	return joinNonEmpty([]string{header, body, footer})
+}
+
+// listBodyHeight is the row budget for the table body given the total
+// terminal height and the rendered chip/prompt header. We reserve a
+// few lines for the footer (status line + SSE reconnect indicator +
+// optional toast, each on its own line) so the table doesn't push
+// them off-screen. Very small heights fall back to a small floor so
+// the list still shows something rather than collapsing to zero.
+func listBodyHeight(total int, header string) int {
+	if total <= 0 {
+		return listBodyFloor
+	}
+	headerLines := 0
+	if header != "" {
+		headerLines = countLines(header)
+	}
+	// Reserve 3 lines for footer extras (status, SSE state, toast).
+	avail := total - headerLines - 3
+	if avail < listBodyFloor {
+		return listBodyFloor
+	}
+	return avail
+}
+
+// listBodyFloor is the minimum row count the table will ever render.
+// Small enough to fit on a 10-line terminal alongside the header and
+// footer; large enough to preserve a sense of context.
+const listBodyFloor = 5
+
+// countLines returns the line count of a rendered block (the rune count
+// of '\n' plus one). Empty input is zero so renderHeader's quiet path
+// reserves no extra space.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
 }
 
 // renderHeader returns the prompt (when inputting) or chip strip.
@@ -48,7 +87,13 @@ func (lm listModel) renderHeader() string {
 // reflected in lm.issues). The cursor still indexes lm.issues, so we
 // clamp the visual marker to the filtered length for placement only —
 // no state mutation in the render path.
-func (lm listModel) renderBody(width int) string {
+//
+// Long lists are windowed around the cursor: the visible slice always
+// contains the cursor row, with as much context as the body height
+// allows. Without windowing the table would render every row and push
+// the cursor off the bottom of the terminal once the count exceeded
+// the screen.
+func (lm listModel) renderBody(width, height int) string {
 	issues := filteredIssues(lm.issues, lm.filter)
 	if len(issues) == 0 {
 		return statusStyle.Render(
@@ -59,7 +104,11 @@ func (lm listModel) renderBody(width int) string {
 	if displayCursor >= len(issues) {
 		displayCursor = len(issues) - 1
 	}
-	rows := buildRows(issues, displayCursor, width)
+	if displayCursor < 0 {
+		displayCursor = 0
+	}
+	visible, vCursor := windowIssues(issues, displayCursor, height)
+	rows := buildRows(visible, vCursor, width)
 	t := table.New().
 		Border(lipgloss.HiddenBorder()).
 		Width(width).
@@ -67,12 +116,49 @@ func (lm listModel) renderBody(width int) string {
 		Rows(rows...).
 		StyleFunc(func(row, _ int) lipgloss.Style {
 			s := lipgloss.NewStyle()
-			if row >= 0 && row < len(rows) && row == displayCursor {
+			if row >= 0 && row < len(rows) && row == vCursor {
 				s = s.Inherit(selectedStyle)
 			}
 			return s
 		})
 	return t.Render()
+}
+
+// windowIssues returns the contiguous slice of issues that includes
+// the cursor row and fits within budget. The cursor index in the
+// returned slice (vCursor) is the local position so the table renderer
+// can highlight the right row.
+//
+// The window slides so the cursor sits anywhere from the top to the
+// bottom of the viewport, preferring to anchor at the top until the
+// cursor moves past the budget, then scrolling to keep the cursor
+// near the bottom. Budget < 1 falls back to a single-row window so we
+// always render the cursor.
+func windowIssues(issues []Issue, cursor, budget int) ([]Issue, int) {
+	n := len(issues)
+	if n == 0 {
+		return issues, 0
+	}
+	if budget < 1 {
+		budget = 1
+	}
+	if n <= budget {
+		return issues, cursor
+	}
+	// Anchor the window so the cursor is visible. We use a "two-thirds
+	// from the top" anchor so the user sees more upcoming rows than
+	// scrolled-past rows — matches the conventional vim/less feel.
+	headroom := budget / 3
+	start := cursor - headroom
+	if start < 0 {
+		start = 0
+	}
+	end := start + budget
+	if end > n {
+		end = n
+		start = n - budget
+	}
+	return issues[start:end], cursor - start
 }
 
 // renderFooter is the one-shot status line. It renders the active
@@ -111,10 +197,12 @@ func renderToast(t *toast) string {
 
 // renderPrompt formats the inline input. The cursor is a literal block
 // glyph appended to the buffer so tests can assert on a deterministic
-// shape; a richer caret blink lands later.
+// shape; a richer caret blink lands later. The buffer is sanitized
+// because filterPrintable already drops Unicode controls but a
+// pasted-in ANSI escape could still slip through; this is a safety net.
 func renderPrompt(s searchState) string {
 	label := promptLabel(s.field)
-	body := fmt.Sprintf("%s%s_  (esc to cancel)", label, s.buffer)
+	body := fmt.Sprintf("%s%s_  (esc to cancel)", label, sanitizeForDisplay(s.buffer))
 	return chipActive.Render(body)
 }
 
@@ -125,8 +213,6 @@ func promptLabel(f searchField) string {
 		return "search:"
 	case searchFieldOwner:
 		return "owner:"
-	case searchFieldLabel:
-		return "label:"
 	case searchFieldNewTitle:
 		return "new title:"
 	default:
@@ -138,27 +224,28 @@ func promptLabel(f searchField) string {
 // (status="", owner="", search="") are skipped so the strip stays empty
 // when the user has not constrained the list.
 //
-// The label chip is intentionally omitted: the Issue projection does not
-// carry Labels (Task 3 wire-vs-spec adaptation #1), so a label:foo chip
-// would claim a filter is active while the displayed list could not
-// honor it. Hiding the chip until labels arrive on the Issue wire
-// (likely Task 7+ via a separate fetch) keeps the strip honest. The
-// `l` keystroke still opens the prompt and stores the value in
-// lm.filter.Labels so the eventual server-side or client-side filter
-// has a place to read from.
+// The label chip is omitted because the label-filter UI was retired:
+// the Issue projection drops Labels and the wire has no label query
+// param yet, so neither the chip nor the prompt would behave honestly.
+// ListFilter.Labels stays on the type (used internally by tests and
+// reserved for future wire support) but no UI exposes it today.
 func renderChips(f ListFilter) string {
 	chips := []string{}
 	if f.Status != "" {
+		// Status is a daemon-defined keyword; no sanitization needed.
 		chips = append(chips, chipActive.Render("status:"+f.Status))
 	}
 	if f.Owner != "" {
-		chips = append(chips, chipStyle.Render("owner:"+f.Owner))
+		chips = append(chips, chipStyle.Render(
+			"owner:"+sanitizeForDisplay(f.Owner)))
 	}
 	if f.Author != "" {
-		chips = append(chips, chipStyle.Render("author:"+f.Author))
+		chips = append(chips, chipStyle.Render(
+			"author:"+sanitizeForDisplay(f.Author)))
 	}
 	if f.Search != "" {
-		chips = append(chips, chipStyle.Render(fmt.Sprintf("q:%q", f.Search)))
+		chips = append(chips, chipStyle.Render(
+			fmt.Sprintf("q:%q", sanitizeForDisplay(f.Search))))
 	}
 	if len(chips) == 0 {
 		return ""
@@ -181,7 +268,9 @@ func joinNonEmpty(parts []string) string {
 
 // buildRows projects issues to the six-column shape the table renders.
 // The title column flexes to width-50 (with a 20ch floor) to leave the
-// other columns whole.
+// other columns whole. Title and owner are agent-authored, so both run
+// through sanitizeForDisplay before truncation to keep ANSI / control
+// sequences out of the rendered cells.
 func buildRows(issues []Issue, cursor, width int) [][]string {
 	titleW := max(20, width-50)
 	rows := make([][]string, 0, len(issues))
@@ -190,8 +279,8 @@ func buildRows(issues []Issue, cursor, width int) [][]string {
 			selMarker(i == cursor),
 			fmt.Sprintf("#%d", iss.Number),
 			statusChip(iss),
-			truncate(iss.Title, titleW),
-			truncate(ownerText(iss.Owner), 12),
+			truncate(sanitizeForDisplay(iss.Title), titleW),
+			truncate(sanitizeForDisplay(ownerText(iss.Owner)), 12),
 			humanizeRelative(iss.UpdatedAt),
 		})
 	}

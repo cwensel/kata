@@ -17,7 +17,6 @@ n       new issue
 /       search
 s       cycle status filter
 o       filter by owner
-l       filter by label
 c       clear filters
 x       close
 r       reopen

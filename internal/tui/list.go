@@ -27,13 +27,15 @@ type listAPI interface {
 // searchField names which filter is being edited inline. The shared
 // searchState holds the buffer; field discriminates so Enter routes
 // the buffer to the right slot of ListFilter (or to CreateIssue).
+//
+// searchFieldLabel was removed when the label-filter UI was retired;
+// see keymap.go for the rationale (the wire doesn't carry Labels yet).
 type searchField int
 
 const (
 	searchFieldNone searchField = iota
 	searchFieldQuery
 	searchFieldOwner
-	searchFieldLabel
 	searchFieldNewTitle
 )
 
@@ -45,16 +47,23 @@ const (
 // posted with both fields once the user finishes editing. The keymap
 // lives on the parent Model and is passed into Update; one instance
 // keeps the help view in lockstep with what handlers actually do.
+//
+// selectedNumber tracks the issue.Number under the cursor for identity-
+// based selection: when a refetch reorders rows (issues are sorted by
+// updated_at DESC, so any background mutation can shuffle them), the
+// cursor is restored onto the same issue rather than the same index.
+// Zero means "no selection" (empty list, pre-fetch state).
 type listModel struct {
-	issues       []Issue
-	cursor       int
-	filter       ListFilter
-	search       searchState
-	actor        string
-	status       string
-	pendingTitle string
-	err          error
-	loading      bool
+	issues         []Issue
+	cursor         int
+	selectedNumber int64
+	filter         ListFilter
+	search         searchState
+	actor          string
+	status         string
+	pendingTitle   string
+	err            error
+	loading        bool
 }
 
 // searchState tracks the inline prompt. inputting=true while the user
@@ -238,13 +247,17 @@ func (lm listModel) applyOpenKey(
 	return lm, func() tea.Msg { return openDetailMsg{issue: iss} }, true
 }
 
-// applyCursorKey handles the j/k/g/G family. ok=true means the key was
-// consumed. The cursor moves in filtered-space (the slice the user
-// actually sees) so a hidden row preceding the cursor cannot desync
-// the marker from the highlighted row. lm.cursor is therefore an
-// index into filteredIssues(lm.issues, lm.filter), and every render
+// applyCursorKey handles the j/k/g/G/pgup/pgdown family. ok=true means
+// the key was consumed. The cursor moves in filtered-space (the slice
+// the user actually sees) so a hidden row preceding the cursor cannot
+// desync the marker from the highlighted row. lm.cursor is therefore
+// an index into filteredIssues(lm.issues, lm.filter), and every render
 // path that needs the unfiltered slice must re-look-up via that
 // helper.
+//
+// Each cursor change also updates lm.selectedNumber so an SSE-driven
+// refetch can put the cursor back on the same issue rather than the
+// same index — see syncSelection.
 func (lm listModel) applyCursorKey(msg tea.KeyMsg, km keymap) (listModel, bool) {
 	rows := filteredIssues(lm.issues, lm.filter)
 	n := len(rows)
@@ -257,6 +270,19 @@ func (lm listModel) applyCursorKey(msg tea.KeyMsg, km keymap) (listModel, bool) 
 		if lm.cursor < n-1 {
 			lm.cursor++
 		}
+	case km.PageUp.matches(msg):
+		lm.cursor -= pageStep(n)
+		if lm.cursor < 0 {
+			lm.cursor = 0
+		}
+	case km.PageDown.matches(msg):
+		lm.cursor += pageStep(n)
+		if lm.cursor > n-1 {
+			lm.cursor = n - 1
+		}
+		if lm.cursor < 0 {
+			lm.cursor = 0
+		}
 	case km.Home.matches(msg):
 		lm.cursor = 0
 	case km.End.matches(msg):
@@ -266,7 +292,43 @@ func (lm listModel) applyCursorKey(msg tea.KeyMsg, km keymap) (listModel, bool) 
 	default:
 		return lm, false
 	}
+	lm = lm.syncSelection(rows)
 	return lm, true
+}
+
+// pageStepRows is the row delta for pgup/pgdown. We don't have access
+// to the rendered viewport height here, so we use a constant matching
+// roughly half a screen on a typical terminal — large enough to feel
+// like a page, small enough to keep context. The cap prevents an
+// outright jump-to-end on small lists where pgdown is functionally
+// equivalent to End.
+const pageStepRows = 10
+
+func pageStep(n int) int {
+	if pageStepRows > n {
+		return n
+	}
+	return pageStepRows
+}
+
+// syncSelection records the issue.Number under the cursor so a later
+// refetch can restore the cursor onto the same issue rather than the
+// same index. Empty filtered list zeroes selectedNumber so we don't
+// pin to a row that no longer exists.
+func (lm listModel) syncSelection(rows []Issue) listModel {
+	if len(rows) == 0 {
+		lm.selectedNumber = 0
+		return lm
+	}
+	idx := lm.cursor
+	if idx >= len(rows) {
+		idx = len(rows) - 1
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	lm.selectedNumber = rows[idx].Number
+	return lm
 }
 
 // applyFilterKey handles s (cycle status) and c (clear). Both dispatch
@@ -292,7 +354,9 @@ func (lm listModel) applyFilterKey(
 	return lm, nil, false
 }
 
-// applyPromptKey opens an inline prompt: '/', 'o', 'l', or 'n'.
+// applyPromptKey opens an inline prompt: '/', 'o', or 'n'. The label
+// prompt was intentionally removed (see keymap.go) — the wire doesn't
+// carry Labels yet so a label prompt would silently no-op.
 func (lm listModel) applyPromptKey(
 	msg tea.KeyMsg, km keymap, sc scope,
 ) (listModel, bool) {
@@ -301,8 +365,6 @@ func (lm listModel) applyPromptKey(
 		return lm.startPrompt(searchFieldQuery), true
 	case km.FilterOwner.matches(msg):
 		return lm.startPrompt(searchFieldOwner), true
-	case km.FilterLabel.matches(msg):
-		return lm.startPrompt(searchFieldLabel), true
 	case km.NewIssue.matches(msg):
 		return lm.beginNewIssue(sc), true
 	}
@@ -343,12 +405,16 @@ func nextStatus(s string) string {
 	}
 }
 
-// applyFetched stores the latest issue list and clamps the cursor if
-// it would otherwise point past the new filtered-list end. The cursor
-// indexes into filteredIssues(lm.issues, lm.filter) so the clamp uses
-// that count rather than len(lm.issues) — a refetch that returns N
-// issues but only K satisfy the filter would otherwise leave the
-// cursor pointing into invisible rows.
+// applyFetched stores the latest issue list and restores the cursor
+// onto the same issue (by Number) when possible — identity-based
+// selection. Issue lists come back sorted by updated_at DESC, so any
+// background mutation can shuffle row order under agent churn; pinning
+// to the index would silently move the highlight to a different issue.
+//
+// When the previously-selected issue is no longer visible (filtered
+// out, deleted, or scope changed), the cursor falls back to the same
+// index clamped to the new visible-row count. Empty list zeroes both
+// cursor and selectedNumber.
 func (lm listModel) applyFetched(msg tea.Msg) listModel {
 	switch m := msg.(type) {
 	case initialFetchMsg:
@@ -363,10 +429,30 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 			lm.issues = m.issues
 		}
 	}
-	visible := len(filteredIssues(lm.issues, lm.filter))
-	if lm.cursor >= visible {
-		lm.cursor = max(0, visible-1)
+	rows := filteredIssues(lm.issues, lm.filter)
+	if len(rows) == 0 {
+		lm.cursor = 0
+		lm.selectedNumber = 0
+		return lm
 	}
+	if lm.selectedNumber != 0 {
+		for i, iss := range rows {
+			if iss.Number == lm.selectedNumber {
+				lm.cursor = i
+				return lm
+			}
+		}
+	}
+	// Selection lost — clamp the prior index into the new visible range
+	// and re-record the issue under it so the next refetch tries to
+	// follow that one instead.
+	if lm.cursor >= len(rows) {
+		lm.cursor = len(rows) - 1
+	}
+	if lm.cursor < 0 {
+		lm.cursor = 0
+	}
+	lm.selectedNumber = rows[lm.cursor].Number
 	return lm
 }
 
@@ -440,7 +526,7 @@ func (lm listModel) handleSearchKey(
 }
 
 // commitPrompt routes the buffer to the configured field. The empty
-// case for owner/label/search clears that filter; the empty case for a
+// case for owner/search clears that filter; the empty case for a
 // new-issue title cancels the create entirely. The cursor is reset to
 // 0 on filter commits because the filtered-row count changes (and
 // lm.cursor indexes into the filtered slice).
@@ -456,30 +542,10 @@ func (lm listModel) commitPrompt(api listAPI, sc scope) (listModel, tea.Cmd) {
 		lm.filter.Owner = buf
 		lm.cursor = 0
 		return lm, lm.refetchCmd(api, sc)
-	case searchFieldLabel:
-		return lm.commitLabelPrompt(buf), nil
 	case searchFieldNewTitle:
 		return lm.submitNewIssue(buf, api, sc)
 	}
 	return lm, nil
-}
-
-// commitLabelPrompt handles label-prompt commits. The Issue projection
-// today carries no Labels, so a label filter would silently no-op;
-// surfacing a status hint instead of accepting the input keeps the
-// user from believing the filter was applied. The buffer is preserved
-// in lm.filter.Labels so a future server-side or wire-side label
-// surface can read it.
-func (lm listModel) commitLabelPrompt(buf string) listModel {
-	lm.filter.Labels = nonEmptyLabels(buf)
-	if len(lm.filter.Labels) == 0 {
-		lm.status = ""
-		return lm
-	}
-	lm.status = statusStyle.Render(
-		"label filter not yet supported (Issue projection lacks labels)",
-	)
-	return lm
 }
 
 // submitNewIssue stages the title and dispatches the editor for an
@@ -611,25 +677,6 @@ func matchesFilter(iss Issue, f ListFilter) bool {
 		}
 	}
 	return true
-}
-
-// nonEmptyLabels splits on commas and drops empty results, so the user
-// can either commit one label or several at once. Empty input clears
-// the slice so 'l' followed by Enter unsets the filter.
-func nonEmptyLabels(s string) []string {
-	if s == "" {
-		return nil
-	}
-	out := []string{}
-	for _, p := range strings.Split(s, ",") {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 // trimLastRune removes the last rune of s. Iterating once over the

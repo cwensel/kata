@@ -27,9 +27,12 @@ func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState
 	}
 	chunks := make([]entryChunk, 0, len(cs))
 	for i, c := range cs {
-		header := fmt.Sprintf("[%s] %s", c.Author, fmtTime(c.CreatedAt))
+		// Author and Body are agent-authored — sanitize before the
+		// printf so control sequences can't reshape the terminal.
+		header := fmt.Sprintf("[%s] %s",
+			sanitizeForDisplay(c.Author), fmtTime(c.CreatedAt))
 		lines := []string{applyRowCursor(header, i == cursor)}
-		for _, ln := range wrapBody(c.Body, max(1, width-2)) {
+		for _, ln := range wrapBody(sanitizeForDisplay(c.Body), max(1, width-2)) {
 			lines = append(lines, "  "+ln)
 		}
 		lines = append(lines, "")
@@ -51,8 +54,13 @@ func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState)
 	}
 	chunks := make([]entryChunk, 0, len(es))
 	for i, e := range es {
+		// Type is daemon-authored, but Actor and the description (which
+		// can interpolate payload strings like labels and reasons) are
+		// agent-authored — sanitize both.
 		line := fmt.Sprintf("[%s] %s %s — %s",
-			e.Type, fmtTime(e.CreatedAt), e.Actor, eventDescription(e))
+			e.Type, fmtTime(e.CreatedAt),
+			sanitizeForDisplay(e.Actor),
+			sanitizeForDisplay(eventDescription(e)))
 		chunks = append(chunks, entryChunk{lines: []string{
 			applyRowCursor(line, i == cursor),
 		}})
@@ -65,6 +73,9 @@ func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState)
 // status is not on the LinkEntry projection; pressing Enter on a link
 // jumps to the target so the user can see the title and status there.
 // Lines are windowed around the cursor for the same reason.
+//
+// Type is daemon-defined but Author is agent-supplied; sanitize the
+// latter so a malicious link author can't push the terminal around.
 func renderLinksTab(ls []LinkEntry, width, height, cursor int, ts tabState) string {
 	headers := []string{titleStyle.Render(fmt.Sprintf("Links (%d)", len(ls)))}
 	if placeholder := tabPlaceholder(ts, "links", "(no links)", len(ls)); placeholder != nil {
@@ -73,7 +84,8 @@ func renderLinksTab(ls []LinkEntry, width, height, cursor int, ts tabState) stri
 	chunks := make([]entryChunk, 0, len(ls))
 	for i, l := range ls {
 		line := fmt.Sprintf("[%s] → #%d ← #%d  by %s @ %s",
-			l.Type, l.ToNumber, l.FromNumber, l.Author, fmtTime(l.CreatedAt))
+			l.Type, l.ToNumber, l.FromNumber,
+			sanitizeForDisplay(l.Author), fmtTime(l.CreatedAt))
 		chunks = append(chunks, entryChunk{lines: []string{
 			applyRowCursor(line, i == cursor),
 		}})

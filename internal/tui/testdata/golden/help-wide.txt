@@ -12,9 +12,8 @@ R         toggle project / all-projectspgup    page up            enter         
                                        /       search             L              add link                
                                        s       cycle status filter+              add label               
                                        o       filter by owner    -              remove label            
-                                       l       filter by label    a              assign owner            
-                                       c       clear filters      A              clear owner             
-                                       x       close                                                     
+                                       c       clear filters      a              assign owner            
+                                       x       close              A              clear owner             
                                        r       reopen                                                    
 
 press ? to return

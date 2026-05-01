@@ -507,8 +507,35 @@ func (m Model) handleResetRequired(_ resetRequiredMsg) (tea.Model, tea.Cmd) {
 	cmds := []tea.Cmd{m.waitForSSE(), toastExpireCmd(toastResyncedTTL)}
 	if m.api != nil {
 		cmds = append(cmds, m.list.refetchCmd(m.api, m.scope))
+		// If the user is in detail view, the open issue + tabs are also
+		// stale — the cursor invalidation behind reset_required means
+		// any cached detail data is suspect, not just the list. Batch
+		// the four detail fetches so the active detail tab is fresh by
+		// the next render.
+		if cmd := m.refetchOpenDetail(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// refetchOpenDetail batches the four detail fetches when the user is
+// looking at a detail pane. Used by reset_required and any other path
+// that needs to repopulate the open issue without an issue-targeted
+// SSE event to drive maybeRefetchOpenDetail.
+func (m Model) refetchOpenDetail() tea.Cmd {
+	if m.view != viewDetail || m.api == nil || m.detail.issue == nil {
+		return nil
+	}
+	pid := m.detail.scopePID
+	num := m.detail.issue.Number
+	gen := m.detail.gen
+	return tea.Batch(
+		fetchIssue(m.api, pid, num, gen),
+		fetchComments(m.api, pid, num, gen),
+		fetchEvents(m.api, pid, num, gen),
+		fetchLinks(m.api, pid, num, gen),
+	)
 }
 
 // handleToastExpired clears m.toast iff the active toast is past its

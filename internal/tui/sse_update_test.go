@@ -254,6 +254,64 @@ func TestMaybeRefetchOpenDetail_ListView_NoRefetch(t *testing.T) {
 	}
 }
 
+// TestRefetchOpenDetail_BatchShape: when the user is in detail view,
+// refetchOpenDetail returns a 4-fetch batch (issue + comments + events
+// + links). Tested directly so we don't have to invoke the children
+// (each calls into m.api with the real *Client and would hit the
+// network).
+func TestRefetchOpenDetail_BatchShape(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	m.detail.scopePID = 7
+	m.detail.gen = 5
+
+	cmd := m.refetchOpenDetail()
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd from refetchOpenDetail in detail view")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	if len(batch) != 4 {
+		t.Fatalf("expected 4 fetches in batch, got %d", len(batch))
+	}
+}
+
+// TestRefetchOpenDetail_NoOpInList: when the active view is the list,
+// refetchOpenDetail must return nil so reset_required doesn't dispatch
+// stale detail fetches over the wire. A leftover m.detail.issue from
+// a prior open must NOT trigger a refetch.
+func TestRefetchOpenDetail_NoOpInList(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewList
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	m.detail.scopePID = 7
+
+	if cmd := m.refetchOpenDetail(); cmd != nil {
+		t.Fatalf("expected nil cmd in viewList, got %T", cmd)
+	}
+}
+
+// TestRefetchOpenDetail_NoOpWithoutIssue: a fresh detailModel (no
+// issue seeded) returns nil so the gen-tagged fetches don't fire
+// against a zero-valued projectID/number.
+func TestRefetchOpenDetail_NoOpWithoutIssue(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	// m.detail.issue is nil — view is viewDetail but pre-fetch.
+	if cmd := m.refetchOpenDetail(); cmd != nil {
+		t.Fatalf("expected nil cmd when issue not seeded, got %T", cmd)
+	}
+}
+
 // TestHandleResetRequired_DropsCacheAndShowsToast: a reset frame drops
 // the cache, clears pendingRefetch, and seeds a "resynced" toast with
 // a 2s expiry from toastNow.

@@ -35,7 +35,7 @@ func TestBoot_ResolvesProject(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
-	sc, err := bootResolveScope(t.Context(), c, false, "/tmp/x")
+	sc, err := bootResolveScope(t.Context(), c, "/tmp/x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +62,13 @@ func TestBoot_ResolvesProject(t *testing.T) {
 	}
 }
 
-// TestBoot_FallsBackToAllProjects covers §7.2 case 3: cwd is unbound but
-// the daemon has at least one registered project. bootResolveScope falls
-// back to all-projects so the user has something to look at.
-func TestBoot_FallsBackToAllProjects(t *testing.T) {
+// TestBoot_UnboundCwd_LandsInEmptyState: cwd is unbound; even though
+// the daemon has registered projects, we don't fall into all-projects
+// (the daemon has no cross-project list endpoint, so a fallback would
+// 404). The honest outcome is the empty state with the "run kata
+// init" hint. Re-add a fallback-to-allProjects test once the daemon
+// ships GET /issues for cross-project reads.
+func TestBoot_UnboundCwd_LandsInEmptyState(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -78,25 +81,21 @@ func TestBoot_FallsBackToAllProjects(t *testing.T) {
 					"message": "no .kata.toml",
 				},
 			})
-		case "/api/v1/projects":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"projects": []map[string]any{
-					{"id": 7, "identity": "github.com/wesm/kata", "name": "kata"},
-				},
-			})
+		default:
+			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
-	sc, err := bootResolveScope(t.Context(), c, false, "/tmp/no-binding")
+	sc, err := bootResolveScope(t.Context(), c, "/tmp/no-binding")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sc.allProjects {
-		t.Fatal("expected all-projects fallback")
+	if !sc.empty {
+		t.Fatal("expected empty scope, got something else")
 	}
-	if sc.empty {
-		t.Fatal("did not expect empty scope")
+	if sc.allProjects {
+		t.Fatal("all-projects fallback is gated off; got allProjects=true")
 	}
 }
 
@@ -118,7 +117,7 @@ func TestBoot_EmptyState_NoProjectsRegistered(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
-	sc, err := bootResolveScope(t.Context(), c, false, "/tmp/empty")
+	sc, err := bootResolveScope(t.Context(), c, "/tmp/empty")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,27 +126,6 @@ func TestBoot_EmptyState_NoProjectsRegistered(t *testing.T) {
 	}
 	if sc.allProjects {
 		t.Fatal("did not expect allProjects")
-	}
-}
-
-// TestBoot_AllProjectsFlagShortCircuits covers §7.2 case 0: --all-projects
-// is set, so resolve isn't even called.
-func TestBoot_AllProjectsFlagShortCircuits(t *testing.T) {
-	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		hits++
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
-	sc, err := bootResolveScope(t.Context(), c, true, "/tmp/whatever")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !sc.allProjects {
-		t.Fatal("expected all-projects scope")
-	}
-	if hits != 0 {
-		t.Fatalf("expected zero requests, got %d", hits)
 	}
 }
 
@@ -161,7 +139,7 @@ func TestBoot_NonResolveErrorPropagates(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
-	if _, err := bootResolveScope(t.Context(), c, false, "/tmp/x"); err == nil {
+	if _, err := bootResolveScope(t.Context(), c, "/tmp/x"); err == nil {
 		t.Fatal("expected error to propagate, got nil")
 	}
 }
