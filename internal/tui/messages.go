@@ -67,6 +67,15 @@ type openDetailMsg struct {
 // listModel is held by value and never reset on the round trip.
 type popDetailMsg struct{}
 
+// openInputMsg asks the top-level Model to open an input shell of
+// the given kind. Sub-views emit this rather than constructing the
+// inputState directly so the centralised Model.Update routes the
+// open through the shared input pipeline (snapshot/restore, focus
+// gating, render integration).
+type openInputMsg struct {
+	kind inputKind
+}
+
 // jumpDetailMsg asks the top-level Model to jump the detail view to
 // the named issue. detail.handleEnter emits this message rather than
 // performing the jump itself so the new generation comes from

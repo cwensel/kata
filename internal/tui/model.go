@@ -58,6 +58,11 @@ type Model struct {
 	// the gen at dispatch time; applyFetched/applyMutation drop
 	// messages whose gen no longer matches dm.gen.
 	nextGen int64
+	// input is the active inline command bar / panel-local prompt /
+	// centered form. inputNone means no input is open and global keys
+	// route normally. While an input is open, all non-Quit keys go to
+	// the input's bubbles model; canQuit() gates global keys.
+	input inputState
 }
 
 // initialModel constructs the root Bubble Tea model. Style vars are
@@ -244,17 +249,24 @@ func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 }
 
 // routeTopLevel handles non-SSE messages that the parent Model owns:
-// resize, global quit, view-switch, detail-open/pop. ok=true means the
-// message was handled here.
+// resize, global quit, view-switch, detail-open/pop, input shell
+// open/key. ok=true means the message was handled here.
 func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil, true
 	case tea.KeyMsg:
+		if m.input.kind != inputNone {
+			next, cmd := m.routeInputKey(msg)
+			return next, cmd, true
+		}
 		if next, cmd, ok := m.routeGlobalKey(msg); ok {
 			return next, cmd, true
 		}
+	case openInputMsg:
+		next := m.openInput(msg.kind)
+		return next, nil, true
 	case openDetailMsg:
 		next, cmd := m.handleOpenDetail(msg)
 		return next, cmd, true
@@ -266,6 +278,84 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 	return m, nil, false
+}
+
+// openInput constructs the inputState for a kind and applies the
+// initial state mutations the bar needs (e.g. preFilter snapshot for
+// search/owner). For inline command bars, the search/owner buffer
+// pre-fills from the existing filter so the user can refine an
+// active filter without retyping.
+func (m Model) openInput(kind inputKind) Model {
+	switch kind {
+	case inputSearchBar:
+		m.input = newSearchBar(m.list.filter)
+	case inputOwnerBar:
+		m.input = newOwnerBar(m.list.filter)
+	}
+	return m
+}
+
+// routeInputKey delivers a key into the active input shell and
+// applies the resulting action. Bars apply their buffer to lm.filter
+// live on every keystroke (no debounce — filters are client-side);
+// commit closes the bar leaving the filter applied; cancel restores
+// the pre-open filter snapshot.
+func (m Model) routeInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	next, action := m.input.Update(msg)
+	m.input = next
+	switch action {
+	case actionCommit:
+		m = m.commitInput()
+		return m, nil
+	case actionCancel:
+		m = m.cancelInput()
+		return m, nil
+	}
+	// actionNone: mirror the bar's buffer into the live filter so the
+	// table re-renders on every keystroke. Only inline command bars
+	// have this live-apply behavior — prompts and forms (M3b/M4)
+	// commit on action only.
+	m = m.applyLiveBarFilter()
+	return m, nil
+}
+
+// applyLiveBarFilter mirrors the active bar's buffer into the
+// corresponding lm.filter slot. Each keystroke re-applies the
+// filter, which then narrows filteredIssues at render time without a
+// network call (Search/Owner are client-side).
+func (m Model) applyLiveBarFilter() Model {
+	if m.input.kind == inputNone {
+		return m
+	}
+	v := m.input.activeField().value()
+	switch m.input.kind {
+	case inputSearchBar:
+		m.list.filter.Search = v
+	case inputOwnerBar:
+		m.list.filter.Owner = v
+	}
+	// Filter changed — clamp the cursor to the new visible-row count
+	// so the highlighted row never falls past the end.
+	m.list = m.list.clampCursorToFilter()
+	return m
+}
+
+// commitInput closes the bar leaving the filter applied. Cursor is
+// already clamped via applyLiveBarFilter.
+func (m Model) commitInput() Model {
+	m.input = inputState{}
+	return m
+}
+
+// cancelInput restores the pre-open filter snapshot and closes the
+// bar — undoing every live keystroke the user typed into it.
+func (m Model) cancelInput() Model {
+	if m.input.kind == inputSearchBar || m.input.kind == inputOwnerBar {
+		m.list.filter = m.input.preFilter
+		m.list = m.list.clampCursorToFilter()
+	}
+	m.input = inputState{}
+	return m
 }
 
 // routeGlobalKey handles the global key family (quit, help, scope toggle)
@@ -580,10 +670,18 @@ func toastExpireCmd(d time.Duration) tea.Cmd {
 }
 
 // canQuit reports whether a global keystroke (q, ?, R) should be
-// honored. False while a list prompt is open (the buffer must absorb
-// the rune) or while a detail modal is open (same reason — the user is
-// typing a label/owner/link target, not asking to exit).
+// honored. False while an input shell is open (search/owner bar from
+// M3a; panel-local prompts from M3b; centered forms from M4) or
+// while the detail-view's pre-M3b dm.modal is still active. The
+// input gate is the single source of truth for "user is typing into
+// a field" — global keys must reach the field instead of firing.
+//
+// lm.search.inputting is still checked for the new-issue flow which
+// retains the inline-prompt path until M4 replaces it with the form.
 func (m Model) canQuit() bool {
+	if m.input.kind != inputNone {
+		return false
+	}
 	if m.list.search.inputting {
 		return false
 	}
@@ -737,9 +835,9 @@ func (m Model) viewBody() string {
 
 // chrome assembles the cross-cutting render inputs both the list view
 // and the detail view need from Model state: scope, SSE status,
-// pending invalidation flag, the active toast (if any), and the
-// build-time version string. Centralising this keeps the sub-views
-// free of Model coupling.
+// pending invalidation flag, the active toast (if any), the
+// build-time version string, and the active input shell. Centralising
+// this keeps the sub-views free of Model coupling.
 func (m Model) chrome() viewChrome {
 	return viewChrome{
 		scope:     m.scope,
@@ -747,6 +845,7 @@ func (m Model) chrome() viewChrome {
 		pending:   m.pendingRefetch,
 		toast:     m.toast,
 		version:   kataVersion,
+		input:     m.input,
 	}
 }
 

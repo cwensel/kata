@@ -185,6 +185,41 @@ func TestSnapshot_List_EmptyAfterFilter(t *testing.T) {
 // with two active filters: status:open and owner:alice. The label chip
 // is intentionally skipped (Issue projection lacks labels) so the
 // scenario uses owner instead of label per Roborev-fix #2's guidance.
+// TestSnapshot_List_SearchBarActive covers the inline command bar
+// in place of the chip strip when chrome.input.kind == inputSearchBar.
+// The footer help row swaps to the bar's enter/esc/ctrl+u keys.
+func TestSnapshot_List_SearchBarActive(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = snapListFixture()
+	chrome := viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+		input:     newSearchBar(ListFilter{Search: "login"}),
+	}
+	got := lm.View(120, 30, chrome)
+	assertGolden(t, "list-search-bar-active", got)
+}
+
+// TestSnapshot_List_OwnerBarActive mirrors the search-bar snapshot
+// for the `o` (owner) filter.
+func TestSnapshot_List_OwnerBarActive(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = snapListFixture()
+	chrome := viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+		input:     newOwnerBar(ListFilter{Owner: "wesm"}),
+	}
+	got := lm.View(120, 30, chrome)
+	assertGolden(t, "list-owner-bar-active", got)
+}
+
 // TestSnapshot_List_ScrollIndicator covers the scroll-indicator slot
 // in the footer status line. With 50 issues and a 30-row terminal, the
 // chrome reserves enough rows that not every issue fits — the

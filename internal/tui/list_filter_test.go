@@ -136,60 +136,99 @@ func TestList_StatusCycle(t *testing.T) {
 }
 
 // TestList_Search_AccumulatesAndCommits drives /, then "abc", then
-// Enter. The buffer must reach filter.Search and a refetch must fire.
+// Enter through Model.Update so the M3a inline command bar handles
+// the keys. The buffer mirrors live into filter.Search on every
+// keystroke; Enter closes the bar leaving the filter applied.
+//
+// The filter changes are *client-side* (filteredIssues), so no API
+// refetch fires for Search/Owner — only Status filter changes
+// dispatch a refetch.
 func TestList_Search_AccumulatesAndCommits(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm, _ := lmFromUpdate(listModel{}, runeKey('/'), km, api, sc)
-	if !lm.search.inputting || lm.search.field != searchFieldQuery {
-		t.Fatalf("expected query prompt active, got %+v", lm.search)
+	m := mFixtureForBar()
+	m, _ = stepModel(m, runeKey('/'))
+	// Drive openInputMsg through the model so the bar opens.
+	m = openBarFromCmd(t, m, '/')
+	if m.input.kind != inputSearchBar {
+		t.Fatalf("expected inputSearchBar active, got kind=%v", m.input.kind)
 	}
 	for _, r := range "abc" {
-		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
+		m, _ = stepModel(m, runeKey(r))
 	}
-	if lm.search.buffer != "abc" {
-		t.Fatalf("buffer = %q, want %q", lm.search.buffer, "abc")
+	if m.list.filter.Search != "abc" {
+		t.Fatalf("filter.Search = %q, want abc (live mirror)", m.list.filter.Search)
 	}
-	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
-	if lm.filter.Search != "abc" {
-		t.Fatalf("filter.Search = %q, want abc", lm.filter.Search)
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.input.kind != inputNone {
+		t.Fatalf("input.kind = %v, want inputNone after Enter", m.input.kind)
 	}
-	if lm.search.inputting {
-		t.Fatal("inputting should be cleared after Enter")
-	}
-	_ = cmd()
-	if api.listIssuesCalls != 1 {
-		t.Fatalf("listIssuesCalls = %d, want 1", api.listIssuesCalls)
+	if m.list.filter.Search != "abc" {
+		t.Fatalf("filter.Search = %q, want abc (preserved on commit)", m.list.filter.Search)
 	}
 }
 
-// TestList_Search_EscCancels confirms Esc clears the buffer without
-// touching filter.Search and without dispatching a refetch.
+// TestList_Search_EscCancels confirms Esc reverts filter.Search to
+// the pre-open snapshot and closes the bar.
+//
+// The bar pre-fills with the existing filter value so the user can
+// refine an active search without retyping; appending "xyz" to a
+// pre-filled "previous" produces "previousxyz" live, then Esc
+// restores "previous".
 func TestList_Search_EscCancels(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm := listModel{filter: ListFilter{Search: "previous"}}
-	lm, _ = lmFromUpdate(lm, runeKey('/'), km, api, sc)
+	m := mFixtureForBar()
+	m.list.filter.Search = "previous"
+	m = openBarFromCmd(t, m, '/')
 	for _, r := range "xyz" {
-		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
+		m, _ = stepModel(m, runeKey(r))
 	}
-	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEsc}, km, api, sc)
-	if cmd != nil {
-		t.Fatalf("Esc must not dispatch a refetch")
+	if m.list.filter.Search != "previousxyz" {
+		t.Fatalf("filter.Search = %q, want previousxyz (live during edit)",
+			m.list.filter.Search)
 	}
-	if lm.search.inputting {
-		t.Fatal("inputting must be false after Esc")
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.input.kind != inputNone {
+		t.Fatal("input.kind must be inputNone after Esc")
 	}
-	if lm.search.buffer != "" {
-		t.Fatalf("buffer = %q, want empty", lm.search.buffer)
+	if m.list.filter.Search != "previous" {
+		t.Fatalf("filter.Search not restored: got %q, want %q",
+			m.list.filter.Search, "previous")
 	}
-	if lm.filter.Search != "previous" {
-		t.Fatalf("filter.Search clobbered: %q", lm.filter.Search)
+}
+
+// mFixtureForBar builds a minimal Model with the bare-minimum state
+// the M3a bar tests need: a list, a keymap, no api/sse goroutine, no
+// scope. Used by every M3a-style test that drives Model.Update for
+// search/owner bar behavior.
+func mFixtureForBar() Model {
+	return Model{
+		view:   viewList,
+		keymap: newKeymap(),
+		list:   listModel{actor: "tester"},
+		cache:  newIssueCache(),
 	}
+}
+
+// stepModel is the test-side equivalent of dispatching one tea.Msg
+// through Model.Update. Returns the new Model + any tea.Cmd the
+// dispatch produced.
+func stepModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
+	out, cmd := m.Update(msg)
+	return out.(Model), cmd
+}
+
+// openBarFromCmd presses key, expects an openInputCmd to come back,
+// invokes that cmd to obtain openInputMsg, and feeds the message
+// back into Model.Update so the bar actually opens. Returns the
+// resulting Model with the bar active.
+func openBarFromCmd(t *testing.T, m Model, key rune) Model {
+	t.Helper()
+	out, cmd := m.Update(runeKey(key))
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatalf("press %q produced no cmd; expected openInputCmd", string(key))
+	}
+	msg := cmd()
+	out, _ = m.Update(msg)
+	return out.(Model)
 }
 
 // TestList_ClearFilters_ZeroesEveryField: `c` zeroes every filter slot
@@ -491,83 +530,90 @@ func TestList_NewIssue_AllProjectsModeIsNoOp(t *testing.T) {
 	}
 }
 
-// TestList_OwnerPrompt_AccumulatesAndCommits drives `o`, "claude", Enter
-// and checks filter.Owner + refetch.
+// TestList_OwnerPrompt_AccumulatesAndCommits drives `o`, "claude",
+// Enter through the M3a inline command bar. Owner filter is
+// client-side so no API refetch fires; the bar mirrors live into
+// filter.Owner each keystroke.
 func TestList_OwnerPrompt_AccumulatesAndCommits(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm, _ := lmFromUpdate(listModel{}, runeKey('o'), km, api, sc)
-	if lm.search.field != searchFieldOwner {
-		t.Fatalf("expected owner field, got %v", lm.search.field)
+	m := mFixtureForBar()
+	m = openBarFromCmd(t, m, 'o')
+	if m.input.kind != inputOwnerBar {
+		t.Fatalf("expected inputOwnerBar active, got kind=%v", m.input.kind)
 	}
 	for _, r := range "claude" {
-		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
+		m, _ = stepModel(m, runeKey(r))
 	}
-	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
-	if lm.filter.Owner != "claude" {
-		t.Fatalf("filter.Owner = %q, want %q", lm.filter.Owner, "claude")
+	if m.list.filter.Owner != "claude" {
+		t.Fatalf("filter.Owner = %q, want claude (live mirror)", m.list.filter.Owner)
 	}
-	if cmd == nil {
-		t.Fatal("expected refetch")
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.input.kind != inputNone {
+		t.Fatal("input.kind must be inputNone after Enter commit")
+	}
+	if m.list.filter.Owner != "claude" {
+		t.Fatalf("filter.Owner = %q, want claude (preserved on commit)", m.list.filter.Owner)
 	}
 }
 
 // TestList_LabelKey_NoLongerOpensPrompt: pressing 'l' from the list
-// must NOT open a label prompt. The label-filter UI was retired
+// must NOT open any input shell. The label-filter UI was retired
 // because the wire doesn't carry Labels yet (matchesFilter could not
 // honor it). Regression catch for accidentally rebinding 'l' before
 // the wire surface lands.
 func TestList_LabelKey_NoLongerOpensPrompt(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm, _ := lmFromUpdate(listModel{}, runeKey('l'), km, api, sc)
-	if lm.search.inputting {
-		t.Fatalf("'l' should not open a prompt; got field=%v", lm.search.field)
+	m := mFixtureForBar()
+	m, _ = stepModel(m, runeKey('l'))
+	if m.input.kind != inputNone {
+		t.Fatalf("'l' opened input shell: kind=%v", m.input.kind)
+	}
+	if m.list.search.inputting {
+		t.Fatalf("'l' opened legacy prompt: field=%v", m.list.search.field)
 	}
 }
 
-// TestList_BackspaceTrimsBuffer: backspace removes the last rune.
+// TestList_BackspaceTrimsBuffer: backspace inside the active inline
+// command bar deletes the last rune. The bubbles textinput handles
+// the actual edit; Model.routeInputKey forwards the key through
+// inputState.Update.
 func TestList_BackspaceTrimsBuffer(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
-	lm, _ := lmFromUpdate(listModel{}, runeKey('/'), km, api, sc)
+	m := mFixtureForBar()
+	m = openBarFromCmd(t, m, '/')
 	for _, r := range "abc" {
-		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
+		m, _ = stepModel(m, runeKey(r))
 	}
-	lm, _ = lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyBackspace}, km, api, sc)
-	if lm.search.buffer != "ab" {
-		t.Fatalf("buffer = %q, want ab", lm.search.buffer)
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := m.input.activeField().value(); got != "ab" {
+		t.Fatalf("bar value = %q, want ab", got)
+	}
+	if m.list.filter.Search != "ab" {
+		t.Fatalf("filter.Search = %q, want ab (mirrored after backspace)", m.list.filter.Search)
 	}
 }
 
 // TestList_QuitGate_RoutesQuitToBuffer covers the model-level gate: a
-// 'q' keystroke while a list prompt is open must reach lm.search.buffer
-// instead of triggering tea.Quit. We drive Model.Update directly here.
-// m.api is nil because the buffer-append path never touches it; if it
-// did, the test would panic with a nil-deref instead of silently
-// passing.
+// 'q' keystroke while the inline command bar is open must reach the
+// bar's buffer instead of triggering tea.Quit. After M3a, the bar
+// lives on m.input — canQuit() returns false when m.input.kind !=
+// inputNone so routeGlobalKey doesn't match.
 func TestList_QuitGate_RoutesQuitToBuffer(t *testing.T) {
 	m := initialModel(Options{})
 	m.scope = scope{projectID: 7}
 	m.list.loading = false
-	out, _ := m.Update(runeKey('/'))
-	m = out.(Model)
-	if !m.list.search.inputting {
-		t.Fatal("prompt did not open")
+	m = openBarFromCmd(t, m, '/')
+	if m.input.kind != inputSearchBar {
+		t.Fatalf("bar did not open, got kind=%v", m.input.kind)
 	}
 	out, cmd := m.Update(runeKey('q'))
 	m = out.(Model)
 	if cmd != nil {
-		t.Fatalf("expected no command (q must reach buffer), got %T", cmd)
+		if msg := cmd(); msg != nil {
+			if _, isQuit := msg.(tea.QuitMsg); isQuit {
+				t.Fatalf("q produced tea.Quit; should have reached the bar buffer")
+			}
+		}
 	}
-	if m.list.search.buffer != "q" {
-		t.Fatalf("buffer = %q, want q", m.list.search.buffer)
+	if got := m.input.activeField().value(); got != "q" {
+		t.Fatalf("bar buffer = %q, want q (q routed to input)", got)
 	}
 }
 

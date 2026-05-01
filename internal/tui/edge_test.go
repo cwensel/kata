@@ -56,15 +56,16 @@ func TestEdge_WindowResize_NoPanic(t *testing.T) {
 	}
 }
 
-// TestEdge_SSEDuringSearchPrompt: a list-view inline prompt is open;
-// an SSE eventReceivedMsg arrives mid-typing. The keystroke that comes
-// next must reach the buffer (canQuit gates the global keys), and the
-// SSE-driven pendingRefetch may have been set in the background but
-// must NOT have churned the prompt. After Enter commits the buffer,
-// the post-commit refetch is dispatched as expected.
+// TestEdge_SSEDuringSearchPrompt: the M3a inline command bar is open;
+// an SSE eventReceivedMsg arrives mid-typing. The next keystroke must
+// reach the bar (canQuit gates the global keys via m.input.kind), and
+// the SSE-driven pendingRefetch can flip in the background without
+// churning the bar. After Enter commits, the bar closes and the
+// (already live-applied) filter remains.
 //
-// The test drives Model.Update directly rather than through teatest so
-// we can assert on cmd shape and lm.search.buffer without timing.
+// Search is client-side so the bar's commit does NOT dispatch a
+// refetch — the cursor clamp + filter mirror handle the visual update.
+// Status filter changes still dispatch a refetch (covered separately).
 func TestEdge_SSEDuringSearchPrompt(t *testing.T) {
 	m := initialModel(Options{})
 	m.api = &Client{}
@@ -72,66 +73,58 @@ func TestEdge_SSEDuringSearchPrompt(t *testing.T) {
 	m.list.loading = false
 	m.list.issues = []Issue{{ProjectID: 7, Number: 1, Title: "x"}}
 
-	// Open the search prompt with '/'.
-	out, _ := m.Update(runeKey('/'))
-	m = out.(Model)
-	if !m.list.search.inputting {
-		t.Fatal("prompt did not open on '/'")
+	// Open the search bar with '/'.
+	m = openBarFromCmd(t, m, '/')
+	if m.input.kind != inputSearchBar {
+		t.Fatalf("bar did not open on '/', got kind=%v", m.input.kind)
 	}
 
-	// Type 'a' before the SSE event arrives.
+	// Type 'a' before the SSE event arrives. Live mirrors into filter.
 	out, cmd := m.Update(runeKey('a'))
 	m = out.(Model)
 	if cmd != nil {
 		t.Fatalf("typing 'a' must not return a cmd, got %T", cmd)
 	}
-	if m.list.search.buffer != "a" {
-		t.Fatalf("buffer = %q, want %q", m.list.search.buffer, "a")
+	if v := m.input.activeField().value(); v != "a" {
+		t.Fatalf("bar value = %q, want %q", v, "a")
 	}
 
-	// SSE event lands while the prompt is still open. The handler runs;
-	// pendingRefetch flips and a debounce tick is queued. The prompt
-	// state is untouched.
+	// SSE event lands while the bar is still open. pendingRefetch
+	// flips and a debounce tick is queued; the bar state is untouched.
 	out, sseCmd := m.Update(eventReceivedMsg{projectID: 7, issueNumber: 0})
 	m = out.(Model)
-	if !m.list.search.inputting {
-		t.Fatal("SSE event closed the prompt; should be transparent to it")
+	if m.input.kind != inputSearchBar {
+		t.Fatal("SSE event closed the bar; should be transparent to it")
 	}
-	if m.list.search.buffer != "a" {
-		t.Fatalf("SSE event mutated buffer: %q, want %q",
-			m.list.search.buffer, "a")
+	if v := m.input.activeField().value(); v != "a" {
+		t.Fatalf("SSE event mutated bar value: %q, want %q", v, "a")
 	}
 	if !m.pendingRefetch {
-		t.Fatal("pendingRefetch must be set by SSE event regardless of prompt")
+		t.Fatal("pendingRefetch must be set by SSE event regardless of input")
 	}
 	if sseCmd == nil {
 		t.Fatal("SSE event must return a cmd (debounce tick)")
 	}
 
-	// Continue typing 'b': keystroke wins and lands in the buffer. No
-	// command should fire from this keystroke because the prompt swallows
-	// printable runes.
+	// Continue typing 'b' — bar accepts the rune.
 	out, cmd = m.Update(runeKey('b'))
 	m = out.(Model)
 	if cmd != nil {
 		t.Fatalf("typing 'b' after SSE must not return a cmd, got %T", cmd)
 	}
-	if m.list.search.buffer != "ab" {
-		t.Fatalf("buffer = %q, want %q after second keystroke",
-			m.list.search.buffer, "ab")
+	if v := m.input.activeField().value(); v != "ab" {
+		t.Fatalf("bar value = %q after second keystroke, want %q", v, "ab")
 	}
 
-	// Enter commits — refetch fires; prompt closes.
-	out, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Enter commits — bar closes, filter stays. No refetch (Search is
+	// client-side; the bar already mirrored the value live).
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = out.(Model)
-	if m.list.search.inputting {
-		t.Fatal("Enter did not close the prompt")
+	if m.input.kind != inputNone {
+		t.Fatal("Enter did not close the bar")
 	}
 	if m.list.filter.Search != "ab" {
 		t.Fatalf("filter.Search = %q, want %q", m.list.filter.Search, "ab")
-	}
-	if cmd == nil {
-		t.Fatal("Enter must dispatch a refetch cmd")
 	}
 }
 

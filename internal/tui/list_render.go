@@ -11,17 +11,24 @@ import (
 )
 
 // viewChrome carries the cross-cutting render inputs that lm.View
-// needs to draw the title bar, status line, and footer help row.
-// Plumbed from Model so the list view doesn't have to reach back into
-// parent state. Zero-value renders a "minimal chrome" view (used by
-// snapshot tests that exercise just the table) — no version, no SSE
-// indicator text, no toast.
+// and dm.View need to draw the title bar, status line, footer help
+// row, and any active input shell. Plumbed from Model so the
+// sub-views don't have to reach back into parent state. Zero-value
+// renders a "minimal chrome" view (used by snapshot tests that
+// exercise just the body) — no version, no SSE indicator text, no
+// toast, no input.
+//
+// input is the active inline command bar / panel-local prompt /
+// centered form. When input.kind != inputNone the chrome swaps in
+// the bar render in place of the chip strip and swaps the help row
+// to the input's contextual keys.
 type viewChrome struct {
 	scope     scope        // project / counts / version go in the title bar
 	sseStatus sseConnState // "connected" / "reconnecting" / "disconnected"
 	pending   bool         // pendingRefetch — surfaced as "0 / 1+ pending events"
 	toast     *toast       // optional flash message (e.g. "resynced")
 	version   string       // build-time version string for the title bar; "" hides
+	input     inputState   // active input shell (M3a bar; M3b prompt; M4 form)
 }
 
 // View renders the list under the M1 chrome layer: title bar, status
@@ -46,8 +53,8 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	}
 	title := renderTitleBar(width, chrome.scope, lm.issueCounts(), chrome.version)
 	statusBar := renderStatusLine(width, chrome.sseStatus, chrome.pending, lm.actor)
-	header := lm.renderHeader()
-	helpRow := renderHelpBar(listHelpItems(), width)
+	header := chromeHeaderForList(chrome, lm)
+	helpRow := renderHelpBar(listHelpItemsFor(chrome.input), width)
 	bodyH := listBodyHeight(height, title, statusBar, header, helpRow)
 	body := lm.renderBody(width, bodyH)
 	footer := lm.renderFooterStatusLine(width, bodyH)
@@ -61,6 +68,34 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	}
 	parts = append(parts, helpRow)
 	return joinNonEmpty(parts)
+}
+
+// chromeHeaderForList returns the chip-strip / inline-command-bar
+// row that sits between the status line and the table. When an input
+// bar is active (chrome.input.kind == inputSearchBar/inputOwnerBar)
+// the bar replaces the chip strip; otherwise the chip strip renders
+// from lm.filter as before. Empty string when neither is active.
+func chromeHeaderForList(chrome viewChrome, lm listModel) string {
+	switch chrome.input.kind {
+	case inputSearchBar, inputOwnerBar:
+		return renderInputBar(chrome.input, 80)
+	}
+	return lm.renderHeader()
+}
+
+// listHelpItemsFor swaps the persistent footer help row to match the
+// active input shell. Bars get their own short help (enter/esc/ctrl+u);
+// otherwise the default list keys render.
+func listHelpItemsFor(input inputState) []helpRow {
+	switch input.kind {
+	case inputSearchBar, inputOwnerBar:
+		return []helpRow{
+			{key: "enter", desc: "commit"},
+			{key: "esc", desc: "cancel"},
+			{key: "ctrl+u", desc: "clear"},
+		}
+	}
+	return listHelpItems()
 }
 
 // listBodyHeight returns the row budget for the table body given the

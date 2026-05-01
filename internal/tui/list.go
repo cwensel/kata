@@ -123,8 +123,8 @@ func (lm listModel) applyNavKey(
 	if next, cmd, ok := lm.applyFilterKey(msg, km, api, sc); ok {
 		return next, cmd
 	}
-	if next, ok := lm.applyPromptKey(msg, km, sc); ok {
-		return next, nil
+	if next, cmd, ok := lm.applyPromptKey(msg, km, sc); ok {
+		return next, cmd
 	}
 	if next, cmd, ok := lm.applyMutationKey(msg, km, api, sc); ok {
 		return next, cmd
@@ -354,21 +354,53 @@ func (lm listModel) applyFilterKey(
 	return lm, nil, false
 }
 
-// applyPromptKey opens an inline prompt: '/', 'o', or 'n'. The label
-// prompt was intentionally removed (see keymap.go) — the wire doesn't
-// carry Labels yet so a label prompt would silently no-op.
+// applyPromptKey opens an input shell or the (still-inline) new-issue
+// prompt. `/` and `o` now hand off to the M3a inline command bar via
+// openInputMsg — Model.openInput constructs the inputState. `n`
+// stays on the inline-title prompt path until M4 lands the centered
+// new-issue form.
+//
+// Returns (lm, openCmd, true) for `/`/`o` because the cmd is what the
+// parent dispatches; (lm, nil, true) for `n` (no cmd needed; the
+// state mutation happens locally via beginNewIssue).
 func (lm listModel) applyPromptKey(
 	msg tea.KeyMsg, km keymap, sc scope,
-) (listModel, bool) {
+) (listModel, tea.Cmd, bool) {
 	switch {
 	case km.Search.matches(msg):
-		return lm.startPrompt(searchFieldQuery), true
+		return lm, openInputCmd(inputSearchBar), true
 	case km.FilterOwner.matches(msg):
-		return lm.startPrompt(searchFieldOwner), true
+		return lm, openInputCmd(inputOwnerBar), true
 	case km.NewIssue.matches(msg):
-		return lm.beginNewIssue(sc), true
+		next, ok := lm.beginNewIssue(sc), true
+		return next, nil, ok
 	}
-	return lm, false
+	return lm, nil, false
+}
+
+// openInputCmd emits openInputMsg{kind} so Model.routeTopLevel can
+// hoist the state into m.input via the centralised openInput
+// constructor. Sub-views never construct inputState directly — the
+// centralisation keeps focus, snapshot/restore, and render
+// integration in one place.
+func openInputCmd(k inputKind) tea.Cmd {
+	return func() tea.Msg { return openInputMsg{kind: k} }
+}
+
+// clampCursorToFilter recomputes lm.cursor against the visible
+// filtered slice so a live filter change can't leave the cursor past
+// the end. Used by Model.applyLiveBarFilter / commitInput / cancelInput
+// when the bar mutates lm.filter on the user's behalf.
+func (lm listModel) clampCursorToFilter() listModel {
+	visible := len(filteredIssues(lm.issues, lm.filter))
+	if visible == 0 {
+		lm.cursor = 0
+		return lm
+	}
+	if lm.cursor >= visible {
+		lm.cursor = visible - 1
+	}
+	return lm
 }
 
 // beginNewIssue opens the title prompt unless the scope is all-projects
