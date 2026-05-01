@@ -75,14 +75,21 @@ func newRunContext(job HookJob, deps runDeps) *runContext {
 }
 
 // openOutputFiles creates the .out and .err capture files. On any
-// failure both files are closed and the error includes context for
-// both opens so the spawn_failed record carries diagnostics.
+// failure both files are closed AND any successfully created file is
+// removed from disk, so a half-created output never lingers as an
+// untracked artifact while the runRecord reports empty paths.
 func (rc *runContext) openOutputFiles() error {
 	outFile, oErr := os.OpenFile(rc.outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // G304: path is OutputDir + int64.int filename, daemon-controlled
 	errFile, eErr := os.OpenFile(rc.errPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // G304: path is OutputDir + int64.int filename, daemon-controlled
 	if oErr != nil || eErr != nil {
-		_ = closeFile(outFile)
-		_ = closeFile(errFile)
+		if outFile != nil {
+			_ = outFile.Close()
+			_ = os.Remove(rc.outPath)
+		}
+		if errFile != nil {
+			_ = errFile.Close()
+			_ = os.Remove(rc.errPath)
+		}
 		return fmt.Errorf("open output files: out=%v err=%v", oErr, eErr)
 	}
 	rc.outFile = outFile
