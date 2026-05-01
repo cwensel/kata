@@ -30,7 +30,9 @@ or, with --all-projects, across every registered project. Press ? for help, q to
 			})
 		},
 	}
-	cmd.Flags().BoolVar(&allProjects, "all-projects", false, "browse across every registered project")
-	cmd.Flags().BoolVar(&includeDeleted, "include-deleted", false, "show soft-deleted issues with [deleted] marker")
+	cmd.Flags().BoolVar(&allProjects, "all-projects", false,
+		"browse across every registered project")
+	cmd.Flags().BoolVar(&includeDeleted, "include-deleted", false,
+		"show soft-deleted issues with [deleted] marker")
 	return cmd
 }

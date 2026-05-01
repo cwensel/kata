@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// TUI requires a real PTY, so the test mode short-circuits before
-// starting the program. We just verify the command exists and accepts
-// the expected flags.
+// kata tui needs a TTY, so we exercise the registration via --help;
+// cobra prints help text and returns before RunE is invoked.
 func TestTUI_CommandRegistered(t *testing.T) {
 	resetFlags(t)
 	cmd := newRootCmd()

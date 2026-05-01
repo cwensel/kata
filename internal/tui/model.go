@@ -26,14 +26,15 @@ func initialModel(opts Options) Model {
 	return Model{opts: opts, view: viewList}
 }
 
-// Init satisfies tea.Model. The scaffold has no startup commands.
+// Init returns startup commands for the TEA loop. Unused at the
+// scaffold stage.
 func (m Model) Init() tea.Cmd {
 	return nil
 }
 
-// Update routes Bubble Tea messages. The scaffold only handles window
-// resizes and the q/ctrl+c quit keys; subsequent tasks dispatch to
-// sub-views.
+// Update routes messages to sub-views; later tasks add the dispatch
+// table. For now it only handles window resizes and the global quit
+// keys (q, ctrl+c).
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -47,8 +48,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the placeholder string until later tasks supply real
-// list/detail/help renderers.
+// View is a placeholder until later tasks supply real list/detail/help
+// renderers.
 func (m Model) View() string {
 	return "kata tui — Plan 6 scaffolding (press q to quit)"
 }

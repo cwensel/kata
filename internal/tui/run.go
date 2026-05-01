@@ -27,11 +27,15 @@ func Run(ctx context.Context, opts Options) error {
 		return errNotATTY
 	}
 	m := initialModel(opts)
-	p := tea.NewProgram(m,
+	progOpts := []tea.ProgramOption{
 		tea.WithContext(ctx),
 		tea.WithAltScreen(),
 		tea.WithMouseAllMotion(), // future-proof; ignored by current handlers
-	)
+	}
+	if opts.Stdout != nil {
+		progOpts = append(progOpts, tea.WithOutput(opts.Stdout))
+	}
+	p := tea.NewProgram(m, progOpts...)
 	if _, err := p.Run(); err != nil {
 		return err
 	}
