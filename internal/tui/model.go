@@ -120,10 +120,16 @@ func resolveTUIActor() string {
 // first frame is ready. The reader is replenished on every SSE message
 // in Update so the channel is continuously drained.
 func (m Model) Init() tea.Cmd {
+	// EnableBracketedPaste makes multi-rune pastes arrive as a single
+	// KeyMsg the textinput can ingest atomically (via its own
+	// Sanitize). Without it, every rune comes through as a separate
+	// keystroke — slow visible characters and any newline in the
+	// clipboard prematurely fires Enter on the inline new-issue row /
+	// command bars.
 	if m.view == viewEmpty || m.api == nil {
-		return m.waitForSSE()
+		return tea.Batch(tea.EnableBracketedPaste, m.waitForSSE())
 	}
-	return tea.Batch(m.fetchInitial(), m.waitForSSE())
+	return tea.Batch(tea.EnableBracketedPaste, m.fetchInitial(), m.waitForSSE())
 }
 
 // waitForSSE is the bridge from the SSE goroutine into the TEA loop. It

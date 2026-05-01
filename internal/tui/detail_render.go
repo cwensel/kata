@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -133,9 +134,13 @@ func (dm detailModel) renderInfoLine(width int, chrome viewChrome, tabBudget int
 // renderInfoPrompt renders an active panel-local prompt as a single
 // info-line row. Bordered/labeled at panel-prompt scope makes the
 // info line too tall; instead the prompt's title prefixes the buffer.
+//
+// The textinput's View() carries bubbles' own cursor-paint ANSI;
+// keep it intact (don't sanitize — strips the cursor) and width-clip
+// with ansi.Truncate so escape sequences survive.
 func renderInfoPrompt(s inputState, innerWidth int) string {
-	body := s.title + ": " + sanitizeForDisplay(s.activeField().input.View())
-	return runewidth.Truncate(body, innerWidth, "…")
+	body := s.title + ": " + s.activeField().input.View()
+	return ansi.Truncate(body, innerWidth, "…")
 }
 
 // detailMinSplit is the smallest tab-content + body budget that gets

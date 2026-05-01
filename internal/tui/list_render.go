@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -141,13 +142,17 @@ func (lm listModel) renderBodyWithChrome(width, height int, chrome viewChrome) s
 func (lm listModel) renderBodyWithNewIssueRow(width, height int, in inputState) string {
 	cols := listColumnWidths(width)
 	issues := filteredIssues(lm.issues, lm.filter)
-	// Build the new-issue row from the textinput's view.
-	titleView := sanitizeForDisplay(in.activeField().input.View())
+	// Build the new-issue row from the textinput's view. The view
+	// carries bubbles' own ANSI escape sequences for the cursor —
+	// don't re-sanitize (would strip the cursor and leave the user
+	// with no typing indication) and use ansi.Truncate so the cursor
+	// escapes survive width-clipping intact.
+	titleView := in.activeField().input.View()
 	newRow := []string{
 		"▶",
 		"new",
 		statusChipText("draft", "open"),
-		truncate(titleView, cols.title),
+		ansi.Truncate(titleView, cols.title, "…"),
 		"—",
 		"—",
 	}
@@ -363,14 +368,17 @@ func renderListInfoLine(width int, chrome viewChrome, lm listModel, dataBudget i
 // renderInfoBar formats the inline command bar for the info line.
 // Single line, no border (the surrounding statsLineStyle already
 // gives the row a chrome look), prefixed by a slash for search.
+//
+// The textinput's View() includes bubbles' own cursor-paint ANSI;
+// we keep it intact (don't sanitize — that would erase the cursor)
+// and width-clip with ansi.Truncate so escape sequences survive.
 func renderInfoBar(s inputState, innerWidth int) string {
 	prefix := "/"
 	if s.kind == inputOwnerBar {
 		prefix = "owner:"
 	}
-	body := sanitizeForDisplay(s.activeField().input.View())
-	full := prefix + body
-	return runewidth.Truncate(full, innerWidth, "…")
+	full := prefix + s.activeField().input.View()
+	return ansi.Truncate(full, innerWidth, "…")
 }
 
 // sseDegradedFlash returns a brief inline notice when SSE is in a
