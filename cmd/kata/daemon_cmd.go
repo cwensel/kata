@@ -19,7 +19,7 @@ import (
 
 func newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "daemon", Short: "manage the kata daemon"}
-	cmd.AddCommand(daemonStartCmd(), daemonStatusCmd(), daemonStopCmd())
+	cmd.AddCommand(daemonStartCmd(), daemonStatusCmd(), daemonStopCmd(), daemonReloadCmd())
 	return cmd
 }
 
@@ -85,6 +85,45 @@ func daemonStopCmd() *cobra.Command {
 				}
 			}
 			return nil
+		},
+	}
+}
+
+func daemonReloadCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reload",
+		Short: "send SIGHUP to a running daemon to reload hook config",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ns, err := daemon.NewNamespace()
+			if err != nil {
+				return err
+			}
+			recs, err := daemon.ListRuntimeFiles(ns.DataDir)
+			if err != nil {
+				return err
+			}
+			for _, r := range recs {
+				if !daemon.ProcessAlive(r.PID) {
+					continue
+				}
+				p, err := os.FindProcess(r.PID)
+				if err != nil {
+					return &cliError{
+						ExitCode: ExitInternal,
+						Message:  fmt.Sprintf("find pid %d: %v", r.PID, err),
+					}
+				}
+				if err := p.Signal(syscall.SIGHUP); err != nil {
+					return &cliError{
+						ExitCode: ExitInternal,
+						Message:  fmt.Sprintf("signal pid %d: %v", r.PID, err),
+					}
+				}
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+					"reload signal sent to pid=%d (check daemon log for result)\n", r.PID)
+				return nil
+			}
+			return &cliError{ExitCode: ExitUsage, Message: "no daemon running"}
 		},
 	}
 }
