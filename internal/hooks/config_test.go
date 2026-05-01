@@ -38,7 +38,6 @@ func TestLoadedConfig_FieldsExist(t *testing.T) {
 	if _, ok := rt.FieldByName("UnchangedTunables"); !ok {
 		t.Fatal("UnchangedTunables field missing")
 	}
-	_ = time.Second
 }
 
 func writeTOML(t *testing.T, body string) string {
@@ -71,6 +70,18 @@ func TestLoadStartup_Malformed_ReturnsError(t *testing.T) {
 	p := writeTOML(t, "[[hook]]\nevent = ")
 	if _, err := LoadStartup(p); err == nil {
 		t.Fatal("malformed TOML should error")
+	}
+}
+
+// TestLoadReload_Malformed_ReturnsError pins spec §4.6: SIGHUP / malformed →
+// error, dispatcher keeps current Snapshot. The reload caller is responsible
+// for not applying the result on error; this test just confirms the error
+// surfaces.
+func TestLoadReload_Malformed_ReturnsError(t *testing.T) {
+	p := writeTOML(t, "[[hook]]\nevent = ")
+	cur := Config{PoolSize: 4, QueueCap: 1000}
+	if _, err := LoadReload(p, cur); err == nil {
+		t.Fatal("malformed TOML on reload should error")
 	}
 }
 
@@ -156,6 +167,11 @@ func TestLoad_CommandPaths(t *testing.T) {
 		{"./foo", false, "dot-relative"},
 		{"bin/foo", false, "embedded slash"},
 		{"", false, "empty"},
+		{".", false, "current-dir reference"},
+		{"..", false, "parent-dir reference"},
+		{" notify", false, "leading whitespace"},
+		{"notify ", false, "trailing whitespace"},
+		{"my command", false, "internal whitespace"},
 	}
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {

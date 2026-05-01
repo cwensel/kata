@@ -40,10 +40,20 @@ func compileEventMatcher(raw string) (string, func(string) bool, error) {
 }
 
 // validateCommand: absolute path OR bare name (no '/'). Rejects ./foo,
-// bin/foo, "" — anything that introduces a relative path component.
+// bin/foo, "", ".", "..", and whitespace-contaminated strings — anything
+// that introduces a relative path component or is not a bare executable.
 func validateCommand(cmd string) error {
 	if cmd == "" {
 		return fmt.Errorf("command must be non-empty")
+	}
+	if strings.TrimSpace(cmd) != cmd {
+		return fmt.Errorf("command %q must not contain leading/trailing whitespace", cmd)
+	}
+	if strings.ContainsAny(cmd, " \t\n\r\x00") {
+		return fmt.Errorf("command %q must not contain whitespace or NUL", cmd)
+	}
+	if cmd == "." || cmd == ".." {
+		return fmt.Errorf("command %q is a directory reference, not an executable", cmd)
 	}
 	if filepath.IsAbs(cmd) {
 		return nil
