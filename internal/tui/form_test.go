@@ -7,6 +7,187 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// errStub is a minimal error type for tests that need a non-nil error
+// of a known string. Re-introduced here after the editor-test cleanup
+// in commit 2 removed the original detail_editor_test.go declaration.
+type errStub string
+
+func (e errStub) Error() string { return string(e) }
+
+// TestDetail_EKey_OpensBodyEditForm: pressing `e` from the detail
+// view opens the centered body editor pre-filled with the issue
+// body. Replaces the old shell-out-to-$EDITOR path.
+func TestDetail_EKey_OpensBodyEditForm(t *testing.T) {
+	m := formFixture()
+	m.view = viewDetail
+	out, _ := m.Update(runeKey('e'))
+	nm := out.(Model)
+	if nm.input.kind != inputBodyEditForm {
+		t.Fatalf("e did not open body edit form; kind = %v", nm.input.kind)
+	}
+	if got := nm.input.activeField().value(); got != "current body" {
+		t.Fatalf("textarea = %q, want %q (pre-fill from issue)",
+			got, "current body")
+	}
+}
+
+// TestDetail_CKey_OpensCommentForm: pressing `c` from the detail
+// view opens the centered comment editor empty. Replaces the old
+// shell-out-to-$EDITOR path.
+func TestDetail_CKey_OpensCommentForm(t *testing.T) {
+	m := formFixture()
+	m.view = viewDetail
+	out, _ := m.Update(runeKey('c'))
+	nm := out.(Model)
+	if nm.input.kind != inputCommentForm {
+		t.Fatalf("c did not open comment form; kind = %v", nm.input.kind)
+	}
+	if got := nm.input.activeField().value(); got != "" {
+		t.Fatalf("textarea = %q, want empty", got)
+	}
+}
+
+// TestDetail_FormKeys_NoIssue_NoOp: `e`/`c` while no issue is open
+// (loading state) must not open a form.
+func TestDetail_FormKeys_NoIssue_NoOp(t *testing.T) {
+	m := formFixture()
+	m.view = viewDetail
+	m.detail.issue = nil
+	for _, k := range []rune{'e', 'c'} {
+		out, _ := m.Update(runeKey(k))
+		nm := out.(Model)
+		if nm.input.kind != inputNone {
+			t.Fatalf("%q opened a form with no issue: %v", k, nm.input.kind)
+		}
+	}
+}
+
+// TestPostCreate_SuccessChainsIntoBodyEditor: a successful
+// inline-row create dispatches AND opens the post-create body
+// editor for the newly-created issue. The editor's target carries
+// the new issue's number so esc lands on its detail.
+func TestPostCreate_SuccessChainsIntoBodyEditor(t *testing.T) {
+	m := formFixture()
+	mut := mutationDoneMsg{
+		origin: "list", kind: "create",
+		resp: &MutationResp{Issue: &Issue{Number: 99}},
+	}
+	out, _ := m.Update(mut)
+	nm := out.(Model)
+	if nm.input.kind != inputBodyEditPostCreate {
+		t.Fatalf("create success did not chain into post-create form; kind = %v",
+			nm.input.kind)
+	}
+	if nm.input.target.issueNumber != 99 {
+		t.Fatalf("post-create form target = %d, want 99",
+			nm.input.target.issueNumber)
+	}
+}
+
+// TestPostCreate_FailureDoesNotChain: a failed create does NOT open
+// the post-create form (no issue exists to add a body to).
+func TestPostCreate_FailureDoesNotChain(t *testing.T) {
+	m := formFixture()
+	mut := mutationDoneMsg{
+		origin: "list", kind: "create", err: errStub("boom"),
+	}
+	out, _ := m.Update(mut)
+	nm := out.(Model)
+	if nm.input.kind != inputNone {
+		t.Fatalf("failed create chained into form: %v", nm.input.kind)
+	}
+}
+
+// TestPostCreate_Esc_OpensDetailOfNewIssue: esc on the post-create
+// body editor lands the user on the new issue's detail view (the
+// issue exists with empty body — esc means "no body for now," not
+// "discard issue"). The cancelInput path emits openDetailMsg with
+// the form target.
+func TestPostCreate_Esc_OpensDetailOfNewIssue(t *testing.T) {
+	m := formFixture()
+	m = m.openBodyEditPostCreate(99)
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	nm := out.(Model)
+	if nm.input.kind != inputNone {
+		t.Fatalf("esc did not close post-create form; kind = %v", nm.input.kind)
+	}
+	if cmd == nil {
+		t.Fatal("esc on post-create form must dispatch openDetailMsg cmd")
+	}
+	msg := cmd()
+	od, ok := msg.(openDetailMsg)
+	if !ok {
+		t.Fatalf("cancel cmd produced %T, want openDetailMsg", msg)
+	}
+	if od.issue.Number != 99 {
+		t.Fatalf("openDetailMsg issue.Number = %d, want 99", od.issue.Number)
+	}
+}
+
+// TestPostCreate_Esc_NonPostCreateForm_NoCmd: esc on a regular
+// edit-body or comment form does NOT emit openDetailMsg — only the
+// post-create chain has the auto-open behavior.
+func TestPostCreate_Esc_NonPostCreateForm_NoCmd(t *testing.T) {
+	for _, opener := range []func(Model) Model{
+		func(m Model) Model { return m.openBodyEditForm() },
+		func(m Model) Model { return m.openCommentForm() },
+	} {
+		m := opener(formFixture())
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		if cmd != nil {
+			if msg := cmd(); msg != nil {
+				if _, isOpen := msg.(openDetailMsg); isOpen {
+					t.Fatal("esc on non-post-create form emitted openDetailMsg")
+				}
+			}
+		}
+	}
+}
+
+// TestRouteFormMutation_Success_ClosesFormAndDispatchesToDetail: a
+// successful form-side mutationDoneMsg closes the form (input clears)
+// and re-classifies as origin=detail so the existing detail
+// applyMutation logic refreshes the body / comments.
+func TestRouteFormMutation_Success_ClosesFormAndDispatchesToDetail(t *testing.T) {
+	m := formFixture()
+	m.view = viewDetail
+	m = m.openBodyEditForm()
+	m.input.saving = true // simulate in-flight
+	mut := mutationDoneMsg{
+		origin: "form", kind: "form.body.edit",
+		resp: &MutationResp{Issue: &Issue{Number: 42, Body: "new body"}},
+	}
+	out, _ := m.Update(mut)
+	nm := out.(Model)
+	if nm.input.kind != inputNone {
+		t.Fatalf("form did not close on success; kind = %v", nm.input.kind)
+	}
+}
+
+// TestRouteFormMutation_Error_KeepsFormAndShowsError: a form-side
+// mutation error leaves the form open and surfaces the error on
+// the form's err line; saving=false so the user can retry.
+func TestRouteFormMutation_Error_KeepsFormAndShowsError(t *testing.T) {
+	m := formFixture()
+	m.view = viewDetail
+	m = m.openBodyEditForm()
+	m.input.saving = true
+	mut := mutationDoneMsg{
+		origin: "form", kind: "form.body.edit", err: errStub("daemon 500"),
+	}
+	out, _ := m.Update(mut)
+	nm := out.(Model)
+	if nm.input.kind != inputBodyEditForm {
+		t.Fatalf("form closed on error; kind = %v", nm.input.kind)
+	}
+	if nm.input.saving {
+		t.Fatal("saving flag stayed true after error; user can't retry")
+	}
+	if !strings.Contains(nm.input.err, "daemon 500") {
+		t.Fatalf("err = %q, want it to contain the error message", nm.input.err)
+	}
+}
+
 // formFixture returns a Model with an open detail issue so the M4
 // form-open helpers can resolve a target. issueNumber=42 / projectID=7
 // matches the existing test fixtures.

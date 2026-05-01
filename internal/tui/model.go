@@ -302,7 +302,27 @@ func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	return m.dispatchToView(mut)
+	next, cmd := m.dispatchToView(mut)
+	// Post-create chain (M4): a successful inline-row create opens the
+	// post-create body editor for the newly-created issue. The list-
+	// side applyMutation has already seeded selectedNumber/cursor for
+	// the new row by the time we get here, so esc-out lands the user
+	// on the right list cursor.
+	if isCreateSuccess(mut) {
+		nm, ok := next.(Model)
+		if ok {
+			nm = nm.openBodyEditPostCreate(mut.resp.Issue.Number)
+			return nm, cmd
+		}
+	}
+	return next, cmd
+}
+
+// isCreateSuccess reports whether mut is a successful create-issue
+// mutation that should chain into the post-create body editor.
+func isCreateSuccess(mut mutationDoneMsg) bool {
+	return mut.origin == "list" && mut.kind == "create" &&
+		mut.err == nil && mut.resp != nil && mut.resp.Issue != nil
 }
 
 // routeTopLevel handles non-SSE messages that the parent Model owns:
@@ -325,6 +345,12 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			return next, cmd, true
 		}
 		if next, cmd, ok := m.routeGlobalKey(msg); ok {
+			return next, cmd, true
+		}
+		// Detail-view `e` and `c` open M4 centered forms instead of
+		// shelling out to $EDITOR. Routed at the Model level because
+		// the form lives on m.input, which detail.Update can't reach.
+		if next, cmd, ok := m.routeDetailFormKey(msg); ok {
 			return next, cmd, true
 		}
 	case openInputMsg:
@@ -467,6 +493,27 @@ func (m Model) handoffToEditor() (Model, tea.Cmd) {
 	}
 	editorKind := editorKindFor(m.input.kind)
 	return m, editorCmd(editorKind, f.value(), m.input.formGen)
+}
+
+// routeDetailFormKey intercepts the detail-view `e` and `c` keys
+// and opens the corresponding centered form instead of letting them
+// reach the (now-removed) shell-out path. Returns ok=false for
+// non-detail views so the key falls through to dispatchToView.
+//
+// The form needs Model-level state (m.input + nextFormGen counter),
+// so this can't live in detail.Update. Gated by view + the absence
+// of an open issue so an `e` press during loading is a no-op.
+func (m Model) routeDetailFormKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	if m.view != viewDetail || m.detail.issue == nil {
+		return m, nil, false
+	}
+	switch {
+	case m.keymap.EditBody.matches(msg):
+		return m.openBodyEditForm(), nil, true
+	case m.keymap.NewComment.matches(msg):
+		return m.openCommentForm(), nil, true
+	}
+	return m, nil, false
 }
 
 // editorKindFor maps a form kind onto the editorReturnedMsg kind tag.
@@ -662,17 +709,36 @@ func dispatchFormEditBody(
 // closes the input — undoing every live keystroke the user typed.
 // Panel-local prompts have no live mirror, so cancel is just close.
 //
-// Returns a tea.Cmd because future cancel paths need to dispatch
-// downstream actions (e.g. the post-create body editor's esc lands
-// the user on the new issue's detail). Today no kind needs a cmd
-// on cancel; the return slot is reserved for commit 2's wiring.
+// Special case: esc on the post-create body form opens the new
+// issue's detail view. The issue exists with an empty body — esc is
+// "I don't want to add a body right now," not "discard the issue."
+// The user lands on the detail view they would have eventually
+// reached anyway; the list refetch the create dispatched will have
+// the new issue at the top.
 func (m Model) cancelInput() (Model, tea.Cmd) {
 	if m.input.kind.isCommandBar() {
 		m.list.filter = m.input.preFilter
 		m.list = m.list.clampCursorToFilter()
 	}
+	postCreate := m.input.kind == inputBodyEditPostCreate
+	target := m.input.target
 	m.input = inputState{}
+	if postCreate {
+		return m, openDetailFromTarget(target)
+	}
 	return m, nil
+}
+
+// openDetailFromTarget emits an openDetailMsg for the post-create
+// chain's esc path, seeding a minimal Issue (the create response
+// already has number + project; the rest fills in via the detail
+// fetch the open kicks off).
+func openDetailFromTarget(t formTarget) tea.Cmd {
+	return func() tea.Msg {
+		return openDetailMsg{issue: Issue{
+			Number: t.issueNumber, ProjectID: t.projectID,
+		}}
+	}
 }
 
 // routeGlobalKey handles the global key family (quit, help, scope
