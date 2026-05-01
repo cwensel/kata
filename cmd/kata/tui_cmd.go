@@ -17,6 +17,7 @@ func newTUICmd() *cobra.Command {
 		Short: "open the interactive issue browser",
 		Long: `kata tui opens a Bubble Tea TUI scoped to the current project (per .kata.toml)
 or, with --all-projects, across every registered project. Press ? for help, q to quit.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			if ctx == nil {

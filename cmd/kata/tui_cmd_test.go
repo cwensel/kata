@@ -27,3 +27,26 @@ func TestTUI_CommandRegistered(t *testing.T) {
 		}
 	}
 }
+
+// TestTUI_RejectsExtraArgs guards the cobra.NoArgs constraint: a typo'd
+// positional must error out before RunE so the user sees a usage
+// failure (and the TTY check in tui.Run is never reached, which would
+// be inappropriate for an arg-parse failure).
+func TestTUI_RejectsExtraArgs(t *testing.T) {
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"tui", "extra-positional"})
+	cmd.SetContext(context.Background())
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for extra positional arg")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "unknown command") &&
+		!strings.Contains(msg, "accepts no args") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
