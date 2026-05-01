@@ -51,9 +51,9 @@ mutation handler                      mutation handler
 | Path | Responsibility |
 |---|---|
 | `internal/hooks/config.go` | TOML schema, parsing, validation; types `Snapshot`, `Config`, `LoadedConfig`, `ResolvedHook`; `LoadStartup`, `LoadReload` |
-| `internal/hooks/dispatcher.go` | `Dispatcher` type with `Enqueue`, `Reload`, `Shutdown`; `NoopDispatcher`; queue, snapshot pointer, queue-full counter |
+| `internal/hooks/dispatcher.go` | `Sink` interface; `Dispatcher` type with `Enqueue`, `Reload`, `Shutdown`, `CurrentConfig`; `NewNoop()` returning a `Sink`; queue, `done` channel, `stopped` flag, snapshot pointer, queue-full counter |
 | `internal/hooks/runner.go` | Worker exec path: process spawn, stdin write, output capture, timeout SIGTERM/grace/SIGKILL, runs.jsonl record |
-| `internal/hooks/payload.go` | Stdin JSON envelope construction + truncation; alias enrichment |
+| `internal/hooks/payload.go` | Stdin JSON envelope construction + truncation; calls `IssueResolver`/`CommentResolver`/`AliasResolver` and merges results into the envelope |
 | `internal/hooks/prune.go` | Output-dir disk-cap rescan + run-group delete; `runs.jsonl` rotation |
 | `internal/hooks/proc_unix.go` | `Setpgid: true` on `cmd.SysProcAttr` (build tag `!windows`) |
 | `internal/hooks/proc_windows.go` | No-op stub (build tag `windows`) |
@@ -64,7 +64,7 @@ mutation handler                      mutation handler
 
 | Path | Change |
 |---|---|
-| `internal/daemon/server.go` | Load hooks at startup (fatal on malformed); construct `Dispatcher`; wire SIGHUP bridge → `ReloadCh`; `defer Dispatcher.Shutdown(ctx)`; expose `cfg.Hooks` on `ServerConfig` |
+| `internal/daemon/server.go` | Load hooks at startup (fatal on malformed); `MkdirAll` the hook root + output dir; construct `*Dispatcher`; run a SIGHUP loop that calls `disp.Reload(...)`; `defer disp.Shutdown(ctx)`; assign `cfg.Hooks = disp` (typed as `hooks.Sink`) |
 | `internal/daemon/handlers_*.go` (every mutation handler that already broadcasts) | Add `cfg.Hooks.Enqueue(evt)` immediately after the existing `Broadcaster.Broadcast(...)` call |
 | `cmd/kata/daemon_cmd.go` | Register `daemon reload` and `daemon logs --hooks` subcommands |
 
@@ -173,36 +173,75 @@ type LoadedConfig struct {
 ### 5.1 Public API
 
 ```go
-type Dispatcher struct { /* unexported */ }
-
-type DispatcherDeps struct {
-    DBHash         string
-    KataHome       string
-    DaemonLog      *log.Logger
-    AliasResolver  func(evt db.Event) (AliasSnapshot, bool, error)
-    ReloadCh       <-chan struct{}     // tests send/close; daemon wires SIGHUP into it
-    Now            func() time.Time    // tests inject
-    GraceWindow    time.Duration       // SIGTERM→SIGKILL window; default 5s; tests shorten
+// Sink is the minimal interface mutation handlers depend on. cfg.Hooks
+// has type Sink so the daemon can swap in a Noop in tests / disabled
+// builds without exposing the full Dispatcher surface.
+type Sink interface {
+    Enqueue(evt db.Event)
 }
 
+// Dispatcher is the live hook runtime. Daemon wires the *Dispatcher
+// directly and stores it as Sink on ServerConfig; reload/shutdown are
+// daemon-side concerns and not part of the Sink contract.
+type Dispatcher struct { /* unexported */ }
+
+type IssueSnapshot struct {
+    Number int64
+    Title  string
+    Status string
+    Labels []string  // sorted for determinism
+    Owner  string
+    Author string
+}
+
+type CommentSnapshot struct {
+    ID   int64
+    Body string
+}
+
+type DispatcherDeps struct {
+    DBHash           string
+    KataHome         string
+    DaemonLog        *log.Logger
+    AliasResolver    func(evt db.Event) (AliasSnapshot, bool, error)
+    IssueResolver    func(ctx context.Context, issueID int64) (IssueSnapshot, error)
+    CommentResolver  func(ctx context.Context, commentID int64) (CommentSnapshot, error)
+    Now              func() time.Time   // tests inject
+    GraceWindow      time.Duration      // SIGTERM→SIGKILL; default 5s; tests shorten
+}
+
+// New constructs a Dispatcher. It MkdirAll's the hook root + output
+// directories under deps.KataHome / deps.DBHash (mode 0o700), seeds the
+// prune running total via filepath.WalkDir, opens the runs.jsonl file
+// for append, and starts the worker pool. Returns an error if any of
+// these prerequisites fail.
 func New(loaded LoadedConfig, deps DispatcherDeps) (*Dispatcher, error)
+func NewNoop() Sink
 func (d *Dispatcher) Enqueue(evt db.Event)
+func (d *Dispatcher) CurrentConfig() Config              // for LoadReload diff
 func (d *Dispatcher) Reload(loaded LoadedConfig)         // logs UnchangedTunables; swaps Snapshot
 func (d *Dispatcher) Shutdown(ctx context.Context) error // see §5.4
 ```
 
-`hooks.NoopDispatcher` satisfies the same surface but every method is a no-op. `cfg.Hooks` is always non-nil; default server configs (e.g., older daemon tests) wire `NoopDispatcher`.
+`*Dispatcher` and the unexported noop type both satisfy `Sink`. `cfg.Hooks Sink` is always non-nil. Daemon code that needs `Reload`/`Shutdown` keeps a private `*Dispatcher` reference; mutation handlers only see `Sink`.
+
+`AliasResolver`/`IssueResolver`/`CommentResolver` enrich the stdin payload (§7); they are pluggable so tests can inject deterministic snapshots without exercising the DB. The dispatcher passes `daemonCtx` to them so a daemon shutdown cancels in-progress lookups.
 
 ### 5.2 Enqueue
 
 ```
-snap := atomic snapshot
+if d.stopped.Load(): return                         // no-op after Shutdown
+snap := d.snapshot.Load()
 matches := []ResolvedHook{} for h in snap.Hooks where h.Match(evt.Type)
-if shutdown started: return  // no-op, no panic, no block
 for h in matches in source order:
-    job := HookJob{Event: evt, Hook: h, EnqueuedAt: now()}
+    // Two-phase send: bail out if Shutdown started between iterations.
     select {
-    case queue <- job: /* ok */
+    case <-d.done: return
+    default:
+    }
+    job := HookJob{Event: evt, Hook: h, EnqueuedAt: d.now()}
+    select {
+    case d.queue <- job: /* ok */
     default:
         atomic.AddInt64(&d.dropped, 1)
         d.maybeLogQueueFull()  // rate-limited per QueueFullLogInterval
@@ -215,33 +254,115 @@ Drop-newest is per-job, not per-event. If an event matches N hooks but only M �
 
 `Dispatcher.Reload(loaded)` does:
 1. For each `s` in `loaded.UnchangedTunables`: `daemonLog.Printf("hooks: %s", s)`.
-2. `snapshot.Store(&loaded.Snapshot)`.
+2. `d.snapshot.Store(&loaded.Snapshot)` — atomic pointer swap.
 3. `daemonLog.Printf("hooks reload ok: %d hook(s) active", len(loaded.Snapshot.Hooks))`.
 
 Queued and in-flight `HookJob`s are unaffected: each carries its own `ResolvedHook` so workers never consult the snapshot.
 
+The signal-to-load loop lives **on the daemon side**, not in the dispatcher (separation: daemon owns signal wiring, dispatcher owns swap):
+
+```go
+// internal/daemon/server.go (sketch)
+go func() {
+    sigs := make(chan os.Signal, 1)
+    signal.Notify(sigs, syscall.SIGHUP)
+    defer signal.Stop(sigs)
+    for {
+        select {
+        case <-ctx.Done(): return
+        case <-sigs:
+            loaded, err := hooks.LoadReload(config.HookConfigPath(), disp.CurrentConfig())
+            if err != nil {
+                daemonLog.Printf("hooks reload failed: %v (keeping previous config)", err)
+                continue
+            }
+            disp.Reload(loaded)
+        }
+    }
+}()
+```
+
+Tests bypass signals entirely and call `disp.Reload(loaded)` directly. `Dispatcher.CurrentConfig() Config` returns the active startup-only `Config` so `LoadReload` can compute the `UnchangedTunables` diff.
+
 ### 5.4 Shutdown
 
-`Dispatcher.Shutdown(ctx context.Context) error`:
-1. Set `shutdown` flag (subsequent `Enqueue` calls are no-ops).
-2. Close the queue (workers see channel close after draining items they've already popped).
-3. Drop queued (un-popped) jobs.
-4. Wait for in-flight workers up to `ctx` deadline.
-5. On timeout, log `hooks shutdown timed out: N in-flight` and return a non-nil error. Daemon proceeds with shutdown either way.
+```go
+type Dispatcher struct {
+    queue    chan HookJob
+    done     chan struct{}      // closed by Shutdown
+    stopped  atomic.Bool        // gates Enqueue
+    wg       sync.WaitGroup     // tracks workers
+    snapshot atomic.Pointer[Snapshot]
+    cfg      Config             // startup-only, captured at New
+    // ... other unexported fields
+}
+
+func (d *Dispatcher) worker() {
+    defer d.wg.Done()
+    for {
+        // Two-phase: prefer the done signal over the queue.
+        select {
+        case <-d.done: return
+        default:
+        }
+        select {
+        case <-d.done: return
+        case job := <-d.queue:
+            d.runJob(job)   // long-running; uses d.done as exec ctx (§6.1)
+        }
+    }
+}
+
+func (d *Dispatcher) Shutdown(ctx context.Context) error {
+    d.stopped.Store(true)   // Enqueue becomes no-op
+    close(d.done)           // workers exit after current in-flight job
+
+    waited := make(chan struct{})
+    go func() { d.wg.Wait(); close(waited) }()
+    select {
+    case <-waited:
+        return nil
+    case <-ctx.Done():
+        d.daemonLog.Printf("hooks shutdown timed out: %d in-flight", d.inflightCount())
+        return fmt.Errorf("hooks shutdown timed out: %w", ctx.Err())
+    }
+}
+```
+
+**Contract:**
+- After `Shutdown` is called, `Enqueue` is a no-op (returns immediately, no panic, no send).
+- Workers idle at the moment `done` closes return without popping further jobs. Workers running a job complete it (subject to `runJob`'s own response to `daemonCtx.Done()`/`done`, which resolves into a `daemon_shutdown` result per §6.4).
+- Queued (un-popped) jobs are not run.
+- `Shutdown` returns `nil` if all workers exit before `ctx` deadline; otherwise returns an error and the caller proceeds with daemon shutdown anyway. The daemon log captures "timed out: N in-flight".
+- The queue channel is **not** closed; `Enqueue` gates on `stopped` rather than relying on closed-channel send (which would panic on race).
 
 ## 6. Runner (per-job execution)
 
 ### 6.1 Sequence
 
 ```go
+// Precondition: at New(), the dispatcher MkdirAll's
+//   <KataHome>/hooks/<dbhash>/output/   (mode 0o700)
+// and seeds the prune running total. Workers assume the dir exists.
+
 job := <-queue
 out := <KataHome>/hooks/<dbhash>/output/<event_id>.<hook_index>.out
 err := <KataHome>/hooks/<dbhash>/output/<event_id>.<hook_index>.err
 
 // 1. Open output files first so every recordRun references valid paths,
 //    even for early-exit failure modes.
-outFile, _ := os.OpenFile(out, O_CREATE|O_WRONLY|O_TRUNC, 0o600)
-errFile, _ := os.OpenFile(err, O_CREATE|O_WRONLY|O_TRUNC, 0o600)
+outFile, oErr := os.OpenFile(out, O_CREATE|O_WRONLY|O_TRUNC, 0o600)
+errFile, eErr := os.OpenFile(err, O_CREATE|O_WRONLY|O_TRUNC, 0o600)
+if oErr != nil || eErr != nil {
+    // Output dir was deleted, permissions changed, or fs is full. Record
+    // as spawn_failed so runs.jsonl reflects the run attempt; we cannot
+    // record output paths because we don't have valid handles.
+    msg := fmt.Sprintf("open output files: out=%v err=%v", oErr, eErr)
+    recordRun(result="spawn_failed", spawn_error=msg, stdout_path="", stderr_path="")
+    if outFile != nil { _ = outFile.Close() }
+    if errFile != nil { _ = errFile.Close() }
+    return
+}
 
 // 2. Pre-spawn working_dir check.
 if st, e := os.Stat(job.Hook.WorkingDir); e != nil {
@@ -254,21 +375,35 @@ if st, e := os.Stat(job.Hook.WorkingDir); e != nil {
     recordRun(result="spawn_failed", spawn_error="working_dir is not a directory")
     return
 
-// 3. Build command — exec.Command, NOT exec.CommandContext.
+// 3. Resolve enrichment data at fire time. Failures are tolerated: each
+//    block is omitted with a rate-limited log line. The hook still runs.
+issue, issueErr := deps.IssueResolver(daemonCtx, deref(evt.IssueID))
+alias, hasAlias, aliasErr := deps.AliasResolver(evt)
+var commentBody string
+if evt.Type == "issue.commented" {
+    if cid, ok := parseCommentID(evt.Payload); ok {
+        if c, cErr := deps.CommentResolver(daemonCtx, cid); cErr == nil {
+            commentBody = c.Body
+        }
+    }
+}
+stdinPayload, payloadTruncated := buildStdinJSON(evt, issue, issueErr, alias, hasAlias, aliasErr, commentBody)
+
+// 4. Build command — exec.Command, NOT exec.CommandContext.
 cmd := exec.Command(job.Hook.Command, job.Hook.Args...)
 cmd.Dir = job.Hook.WorkingDir
-cmd.Env = buildEnv(job.Hook.UserEnv, job.Event, alias)  // §6.3
-cmd.Stdin = bytes.NewReader(stdinPayload)               // §7
+cmd.Env = buildEnv(job.Hook.UserEnv, evt, alias, hasAlias)  // §6.3
+cmd.Stdin = bytes.NewReader(stdinPayload)                   // §7
 cmd.Stdout = outFile
 cmd.Stderr = errFile
-applyProcessGroupAttrs(cmd)                             // unix Setpgid; windows no-op
+applyProcessGroupAttrs(cmd)                                 // unix Setpgid; windows no-op
 
-// 4. Spawn.
+// 5. Spawn.
 if e := cmd.Start(); e != nil:
     recordRun(result="spawn_failed", spawn_error=e.Error())
     return
 
-// 5. Wait with two contexts: hook timeout + daemon shutdown.
+// 6. Wait with two contexts: hook timeout + daemon shutdown (d.done).
 done := make(chan error, 1)
 go func() { done <- cmd.Wait() }()
 
@@ -283,16 +418,16 @@ case <-timer.C:
     result = "timed_out"
     killTreeWithGrace(cmd, deps.GraceWindow)
     <-done
-case <-daemonCtx.Done():
+case <-d.done:    // dispatcher Shutdown signal (§5.4)
     result = "daemon_shutdown"
     killTreeWithGrace(cmd, deps.GraceWindow)
     <-done
 }
 
-// 6. Close output files; record run.
+// 7. Close output files; record run.
 recordRun(result, exit_code, durations, file paths and sizes, payload_truncated)
 
-// 7. Best-effort prune.
+// 8. Best-effort prune (§9).
 prune.MaybeSweep(deps.OutputDir, deps.OutputDiskCap)
 ```
 
@@ -382,7 +517,27 @@ After per-field caps, if total bytes still > 256 KB:
 2. Drop optional fields in priority order until under cap: `payload` → `issue.body` → `issue.title`.
 3. Field-level `_truncated` flags persist across the top-level fallback.
 
-### 7.3 Alias enrichment
+### 7.3 Sources of payload data
+
+`db.Event` rows carry only event-level fields (id, type, actor, project_id, project_identity, issue_id, issue_number, related_issue_id, payload JSON, created_at). The richer `issue` block (title, status, labels, owner, author) and the `payload.comment_body` for `issue.commented` come from sibling tables and are loaded via dispatcher resolvers:
+
+| Payload section | Source | Resolver |
+|---|---|---|
+| `event_id`, `type`, `actor`, `created_at`, `project.id`, `project.identity`, `issue.number` | `evt` directly | — |
+| `project.name` | DB `projects.name` | (cached at startup or looked up on first need; trivial) |
+| `issue.title`/`status`/`labels`/`owner`/`author` | DB `issues` + `issue_labels` | `IssueResolver(ctx, evt.IssueID)` |
+| `payload.comment_id` | `evt.Payload` JSON (already there for `issue.commented`) | — |
+| `payload.comment_body` | DB `comments.body` (when event type is `issue.commented`) | `CommentResolver(ctx, commentID)` |
+| `alias` | resolved from event context | `AliasResolver(evt)` |
+
+Resolver behavior:
+
+- **`IssueResolver`**: returns `(IssueSnapshot, error)`. On error, the entire `issue` block is omitted from the payload and a rate-limited line is logged. On success the snapshot fills the block. Snapshots are read at hook-fire time (not enqueue time) so a recently-edited issue reflects current state.
+- **`CommentResolver`**: only invoked when `evt.Type == "issue.commented"`. On error, `payload.comment_body` is omitted (the `comment_id` from the event payload is preserved). On success the body fills the field, subject to per-field truncation.
+- **`AliasResolver`**: `func(evt db.Event) (AliasSnapshot, bool, error)`:
+  - `(snap, true, nil)` → embed `alias` block.
+  - `(_, false, nil)` → omit `alias` (events emitted from contexts without a single workspace; rare).
+  - `(_, _, err)` → omit `alias`, log via `daemonLog`. Run the hook anyway.
 
 ```go
 type AliasSnapshot struct {
@@ -390,12 +545,23 @@ type AliasSnapshot struct {
     Kind     string  // "alias_kind"
     RootPath string  // "root_path"
 }
+
+type IssueSnapshot struct {
+    Number int64
+    Title  string
+    Status string
+    Labels []string  // sorted
+    Owner  string
+    Author string
+}
+
+type CommentSnapshot struct {
+    ID   int64
+    Body string
+}
 ```
 
-`AliasResolver` is `func(evt db.Event) (AliasSnapshot, bool, error)`:
-- `(snap, true, nil)` → embed `alias` block in the payload.
-- `(_, false, nil)` → omit `alias` (events emitted from contexts without a single workspace; rare).
-- `(_, _, err)` → omit `alias`, log via `daemonLog`. Run the hook anyway.
+All three resolvers receive `daemonCtx` so a daemon shutdown cancels DB calls in flight; canceled lookups are treated as "missing" with a rate-limited log line.
 
 ## 8. `runs.jsonl`
 
@@ -535,7 +701,8 @@ Subcommands:
 | Dispatcher | in-flight `HookJob` uses old config across reload |
 | Dispatcher | `Shutdown(ctx)` with deadline shorter than in-flight `term-ignore` → returns error, logs "timed out" |
 | Dispatcher | post-Shutdown `Enqueue` is no-op (no panic, no block) |
-| Dispatcher | `NoopDispatcher` Enqueue/Reload/Shutdown all no-op |
+| Dispatcher | queued jobs present at Shutdown time are not executed (assertion: configure `pool_size=1`, hold the worker on a long-running job, fill the queue with N more jobs, call Shutdown; observe N un-popped jobs are dropped, only the in-flight one finishes or times out) |
+| Dispatcher | `NewNoop()` returns a `Sink`; `Enqueue` is a no-op (no panic, no block); type-assert to `*Dispatcher` fails (interface-only) |
 | Runner | `hookprobe exit 0` → `result=ok, exit_code=0` |
 | Runner | `hookprobe exit 7` → `result=ok, exit_code=7` |
 | Runner | nonexistent command → `result=spawn_failed`; empty `.out`/`.err` written |
@@ -557,6 +724,10 @@ Subcommands:
 | Payload | construct event with all fields oversized → top-level `payload_truncated:true`, optional fields dropped in priority order, field flags persist |
 | Payload | `AliasResolver` returns `(_, false, nil)` → no `alias` key |
 | Payload | `AliasResolver` returns error → no `alias` key, daemon log captures |
+| Payload | `IssueResolver` returns error → no `issue` block, daemon log captures, hook still runs |
+| Payload | `CommentResolver` returns error on `issue.commented` → `payload.comment_id` preserved, `comment_body` omitted, hook still runs |
+| Payload | non-`issue.commented` events → `CommentResolver` not called |
+| Runner | output file open fails (dir deleted between New and fire) → `result=spawn_failed`, empty `stdout_path`/`stderr_path` in runs.jsonl, hook not spawned |
 | Prune | startup walk seeds running total |
 | Prune | run-group delete: `81237.2.out` + `81237.2.err` deleted together |
 | Prune | best-effort: injected delete error → run still records, daemon log rate-limited |
@@ -565,8 +736,8 @@ Subcommands:
 | Runs.jsonl | `RunsLogKeep=2` → only `.1` and `.2` survive multiple rotations |
 | Server wiring | startup with malformed config → daemon exits non-zero with clear error |
 | Server wiring | issue.created HTTP create → mock dispatcher's `Enqueue` called once with the right event |
-| Server wiring | default server config (no hook config supplied) → `NoopDispatcher` wired; mutations don't panic |
-| SIGHUP bridge | inject `ReloadCh`, send signal, observe `Reload` called |
+| Server wiring | default server config (no hook config supplied) → `NewNoop()` wired; mutations don't panic |
+| SIGHUP bridge | unit-test daemon's reload loop by feeding a synthetic signal channel + a fake `Dispatcher` (records Reload calls); send signal, observe `Reload(loaded)` invoked exactly once with the parsed snapshot |
 | CLI reload | no running daemon → `ExitUsage` |
 | CLI reload | running daemon → exit 0 + stdout `reload signal sent` |
 | CLI logs | reads `runs.jsonl.{3,2,1}` + `runs.jsonl` in chronological order; `--limit 100` is global last 100 |
