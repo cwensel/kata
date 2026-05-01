@@ -42,6 +42,7 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 		}
 		if changed && evt != nil {
 			cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: in.ProjectID})
+			cfg.Hooks.Enqueue(*evt)
 		}
 		out := &api.MutationResponse{}
 		out.Body.Issue = updated
@@ -74,6 +75,7 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 		}
 		if changed && evt != nil {
 			cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: in.ProjectID})
+			cfg.Hooks.Enqueue(*evt)
 		}
 		out := &api.MutationResponse{}
 		out.Body.Issue = updated

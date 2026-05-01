@@ -84,6 +84,7 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &evt, ProjectID: in.ProjectID})
+		cfg.Hooks.Enqueue(evt)
 		out := &api.MutationResponse{}
 		out.Body.Issue = issue
 		out.Body.Event = &evt
@@ -183,6 +184,7 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		}
 		if changed && evt != nil {
 			cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: in.ProjectID})
+			cfg.Hooks.Enqueue(*evt)
 		}
 		out := &api.MutationResponse{}
 		out.Body.Issue = updated

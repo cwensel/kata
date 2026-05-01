@@ -38,6 +38,7 @@ func registerCommentsHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &evt, ProjectID: in.ProjectID})
+		cfg.Hooks.Enqueue(evt)
 		updated, err := cfg.DB.IssueByID(ctx, issue.ID)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)

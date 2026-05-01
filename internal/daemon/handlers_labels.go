@@ -74,6 +74,7 @@ func addLabelHandler(cfg ServerConfig) func(context.Context, *api.AddLabelReques
 		}
 
 		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &evt, ProjectID: in.ProjectID})
+		cfg.Hooks.Enqueue(evt)
 		updatedIssue, err := cfg.DB.IssueByID(ctx, issue.ID)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
@@ -119,6 +120,7 @@ func removeLabelHandler(cfg ServerConfig) func(context.Context, *api.RemoveLabel
 		}
 
 		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &evt, ProjectID: in.ProjectID})
+		cfg.Hooks.Enqueue(evt)
 		updatedIssue, err := cfg.DB.IssueByID(ctx, issue.ID)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
