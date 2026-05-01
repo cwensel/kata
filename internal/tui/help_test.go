@@ -10,24 +10,34 @@ import (
 
 // TestHelpSections_AllBindingsCovered guards against drift between
 // keymap.go and helpSections: if a future task adds a key field, the
-// test fails until helpSections also references it. The check uses
-// reflection to enumerate keymap fields so adding a new binding
-// automatically participates.
+// test fails until helpSections also references it. The check counts
+// occurrences of each rendered display string so duplicate-bound keys
+// (e.g. Open and JumpRef both bind "enter", ClearFilters and NewComment
+// both bind "c") all stay covered — dropping one half of a duplicate
+// pair leaves a count gap that the assertion catches. The unchecked
+// type assertion is replaced by a guarded form so future non-key fields
+// on keymap (e.g. a config struct) wouldn't panic the test.
 func TestHelpSections_AllBindingsCovered(t *testing.T) {
 	km := newKeymap()
-	listed := map[string]bool{}
+	found := map[string]int{}
 	for _, s := range helpSections(km) {
 		for _, r := range s.rows {
-			listed[r.key] = true
+			found[r.key]++
 		}
 	}
+	required := map[string]int{}
 	v := reflect.ValueOf(km)
 	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i).Interface().(key)
-		display := keyDisplay(field)
-		if !listed[display] {
-			t.Errorf("keymap field %q (binding %s) not in helpSections",
-				v.Type().Field(i).Name, display)
+		k, ok := v.Field(i).Interface().(key)
+		if !ok {
+			continue
+		}
+		required[keyDisplay(k)]++
+	}
+	for display, want := range required {
+		if got := found[display]; got < want {
+			t.Errorf("display %q: helpSections has %d, keymap requires %d",
+				display, got, want)
 		}
 	}
 }
@@ -123,5 +133,50 @@ func TestHelpToggle_QuitFromHelp(t *testing.T) {
 		t.Fatal("q from help cmd produced nil msg, want tea.QuitMsg")
 	} else if _, ok := msg.(tea.QuitMsg); !ok {
 		t.Fatalf("q from help produced %T, want tea.QuitMsg", msg)
+	}
+}
+
+// TestHelp_GatedByInputting: pressing ? while a list-view inline prompt
+// is open must reach the buffer instead of opening help. The gate lives
+// on canQuit (model.go), shared with q and R.
+func TestHelp_GatedByInputting(t *testing.T) {
+	m := initialModel(Options{})
+	m.list.search.inputting = true
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if out.(Model).view == viewHelp {
+		t.Fatal("? opened help while inputting; should be gated")
+	}
+}
+
+// TestHelp_RefetchWhileOpen_KeepsListInSync: a refetchedMsg landing
+// while the help overlay is active must update lm.issues so toggling
+// back to the list does not show stale rows. Pre-fix, dispatchToView
+// only forwarded to viewList/viewDetail, so the refetch updated the
+// cache but left lm.issues at the pre-help snapshot. The fix moves
+// applyFetched into populateCache so cache and list stay in lockstep
+// regardless of the active view.
+func TestHelp_RefetchWhileOpen_KeepsListInSync(t *testing.T) {
+	m := initialModel(Options{})
+	m.scope = scope{projectID: 1}
+	m.list.issues = []Issue{{Number: 1, Title: "old"}}
+	m.prevView = viewList
+	m.view = viewHelp
+	out, _ := m.Update(refetchedMsg{
+		issues: []Issue{{Number: 2, Title: "new"}},
+	})
+	nm := out.(Model)
+	if got := len(nm.list.issues); got != 1 {
+		t.Fatalf("list.issues len = %d, want 1", got)
+	}
+	if nm.list.issues[0].Number != 2 || nm.list.issues[0].Title != "new" {
+		t.Fatalf("list.issues = %+v, want [{Number:2 Title:new}]", nm.list.issues)
+	}
+	// Toggling back to the list must surface the refreshed rows.
+	out2, _ := nm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if out2.(Model).view != viewList {
+		t.Fatalf("after ? from help, view = %v, want viewList", out2.(Model).view)
+	}
+	if out2.(Model).list.issues[0].Number != 2 {
+		t.Fatal("returning to list must show refetched issues, not stale snapshot")
 	}
 }

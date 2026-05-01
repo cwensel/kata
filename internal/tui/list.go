@@ -76,6 +76,12 @@ func newListModel() listModel {
 // keeps responsibility for global keys (q, ?, R) and SSE messages, but
 // it must skip those handlers while lm.search.inputting is true so
 // character keys reach the prompt buffer (see model.go::Update).
+//
+// initialFetchMsg/refetchedMsg are also applied by Model.populateCache
+// before dispatch (so help/detail-overlay refetches keep lm.issues in
+// sync); applyFetched is idempotent so re-applying here for the
+// viewList path — and from drainCmd-style tests that drive lm.Update
+// directly — is harmless.
 func (lm listModel) Update(
 	msg tea.Msg, km keymap, api listAPI, sc scope,
 ) (listModel, tea.Cmd) {

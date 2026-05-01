@@ -124,6 +124,18 @@ func TestScopeToggle_RKeyDispatch(t *testing.T) {
 	}
 }
 
+// TestScopeToggle_GatedByInputting: pressing R while a list-view inline
+// prompt is open must reach the buffer instead of toggling scope. The
+// gate lives on canQuit (model.go), shared with q and ?.
+func TestScopeToggle_GatedByInputting(t *testing.T) {
+	m := scopeFixtureSingle()
+	m.list.search.inputting = true
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	if out.(Model).scope.allProjects {
+		t.Fatal("R toggled scope while inputting; should be gated")
+	}
+}
+
 // TestEmptyState_RendersHint: viewEmpty renders the onboarding hint
 // containing both the "no kata projects" line and the kata init hint.
 func TestEmptyState_RendersHint(t *testing.T) {

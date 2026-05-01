@@ -175,11 +175,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if next, cmd, ok := m.routeSSE(msg); ok {
 		return next, cmd
 	}
-	switch msg := msg.(type) {
-	case initialFetchMsg:
-		m = m.populateCache(msg.issues, msg.err)
-	case refetchedMsg:
-		m = m.populateCache(msg.issues, msg.err)
+	switch msg.(type) {
+	case initialFetchMsg, refetchedMsg:
+		m = m.populateCache(msg)
 	}
 	return m.dispatchToView(msg)
 }
@@ -269,19 +267,37 @@ func (m Model) routeSSE(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 }
 
 // populateCache updates the single-slot cache after a successful list
-// fetch. Errors leave the cache untouched so a transient failure does
-// not erase the prior snapshot. The slot key is the current scope+filter
-// so a follow-up filter change starts from a clean slate.
-func (m Model) populateCache(issues []Issue, err error) Model {
-	if err != nil || m.cache == nil {
-		return m
+// fetch and forwards the result into lm.applyFetched so list state stays
+// in sync with the cache. Doing this here (rather than in
+// listModel.Update via dispatchToView) keeps the list rows fresh even
+// when the help overlay or detail view is active when the fetch lands —
+// otherwise toggling back to the list would render the pre-fetch
+// snapshot. Errors still update lm.err and clear loading via
+// applyFetched but leave the cache untouched so a transient failure
+// does not erase the prior snapshot.
+func (m Model) populateCache(msg tea.Msg) Model {
+	issues, err := fetchPayload(msg)
+	if err == nil && m.cache != nil {
+		m.cache.put(cacheKey{
+			allProjects: m.scope.allProjects,
+			projectID:   m.scope.projectID,
+			filter:      m.list.filter,
+		}, issues)
 	}
-	m.cache.put(cacheKey{
-		allProjects: m.scope.allProjects,
-		projectID:   m.scope.projectID,
-		filter:      m.list.filter,
-	}, issues)
+	m.list = m.list.applyFetched(msg)
 	return m
+}
+
+// fetchPayload extracts (issues, err) from the two list-fetch message
+// shapes so populateCache can share one cache-update path across them.
+func fetchPayload(msg tea.Msg) ([]Issue, error) {
+	switch m := msg.(type) {
+	case initialFetchMsg:
+		return m.issues, m.err
+	case refetchedMsg:
+		return m.issues, m.err
+	}
+	return nil, nil
 }
 
 // handleEventReceived marks the cache stale, kicks off (or coalesces
