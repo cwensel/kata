@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,12 +36,25 @@ type Model struct {
 // once it has the opts.Stdout to pin color detection to the real stream.
 func initialModel(opts Options) Model {
 	applyDefaultColorMode(opts.Stdout)
+	lm := newListModel()
+	lm.actor = resolveTUIActor()
 	return Model{
 		opts:   opts,
 		view:   viewList,
 		keymap: newKeymap(),
-		list:   newListModel(),
+		list:   lm,
 	}
+}
+
+// resolveTUIActor mirrors cmd/kata's actor precedence (env → fallback)
+// minus the --as flag and git fallback: the TUI has no flag plumbing
+// here and we keep the dependency surface small. Tasks 9/10 re-evaluate
+// once the broader mutation path lands and may add a git fallback.
+func resolveTUIActor() string {
+	if v := os.Getenv("KATA_AUTHOR"); v != "" {
+		return v
+	}
+	return "anonymous"
 }
 
 // Init dispatches the initial fetch unless boot landed on the empty
@@ -84,22 +98,25 @@ func initialFilter(opts Options) ListFilter {
 	return ListFilter{IncludeDeleted: opts.IncludeDeleted}
 }
 
-// Update routes messages to the active sub-view, with quit handled at
-// the top level so it works from every view.
+// Update routes messages to the active sub-view. Quit is handled at the
+// top level so it works from every view, EXCEPT while a list-view inline
+// prompt is active: typing 'q' into the search/owner/title prompt must
+// reach the buffer instead of quitting. The same gate applies to ?, R,
+// and any future global key.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case tea.KeyMsg:
-		if m.keymap.Quit.matches(msg) {
+		if !m.list.search.inputting && m.keymap.Quit.matches(msg) {
 			return m, tea.Quit
 		}
 	}
 	switch m.view {
 	case viewList:
 		var cmd tea.Cmd
-		m.list, cmd = m.list.Update(msg, m.keymap)
+		m.list, cmd = m.list.Update(msg, m.keymap, m.api, m.scope)
 		return m, cmd
 	}
 	return m, nil

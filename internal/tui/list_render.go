@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -13,6 +14,11 @@ import (
 // row is highlighted via the table's StyleFunc; see selMarker for the
 // in-row glyph. Width is the full terminal width; the title column
 // flex-fills whatever the fixed columns leave behind.
+//
+// A single header row above the table holds either the active inline
+// prompt (search/owner/label/new title) or the chip strip summarizing
+// active filters. A status line below renders one-shot mutation
+// feedback ("created #4") until the next keypress clears it.
 func (lm listModel) View(width, _ int) string {
 	if lm.loading {
 		return statusStyle.Render("loading…")
@@ -20,6 +26,24 @@ func (lm listModel) View(width, _ int) string {
 	if lm.err != nil {
 		return errorStyle.Render(lm.err.Error())
 	}
+	header := lm.renderHeader()
+	body := lm.renderBody(width)
+	footer := lm.renderFooter()
+	return joinNonEmpty([]string{header, body, footer})
+}
+
+// renderHeader returns the prompt (when inputting) or chip strip.
+// Empty string when neither is active so the table sits flush against
+// the top.
+func (lm listModel) renderHeader() string {
+	if lm.search.inputting {
+		return renderPrompt(lm.search)
+	}
+	return renderChips(lm.filter)
+}
+
+// renderBody is the main table or the empty-state hint.
+func (lm listModel) renderBody(width int) string {
 	if len(lm.issues) == 0 {
 		return statusStyle.Render(
 			"no issues match. press c to clear filters or n to create one.",
@@ -39,6 +63,76 @@ func (lm listModel) View(width, _ int) string {
 			return s
 		})
 	return t.Render()
+}
+
+// renderFooter is the one-shot status line. It is the seed of the
+// future toast machinery (Task 12); for now it is plain text.
+func (lm listModel) renderFooter() string {
+	if lm.status == "" {
+		return ""
+	}
+	return statusStyle.Render(lm.status)
+}
+
+// renderPrompt formats the inline input. The cursor is a literal block
+// glyph appended to the buffer so tests can assert on a deterministic
+// shape; a richer caret blink lands later.
+func renderPrompt(s searchState) string {
+	label := promptLabel(s.field)
+	body := fmt.Sprintf("%s%s_  (esc to cancel)", label, s.buffer)
+	return chipActive.Render(body)
+}
+
+// promptLabel maps the active field to its prompt prefix.
+func promptLabel(f searchField) string {
+	switch f {
+	case searchFieldQuery:
+		return "search:"
+	case searchFieldOwner:
+		return "owner:"
+	case searchFieldLabel:
+		return "label:"
+	case searchFieldNewTitle:
+		return "new title:"
+	default:
+		return ""
+	}
+}
+
+// renderChips returns one chip per active filter slot. Inactive defaults
+// (status="", owner="", labels nil, search="") are skipped so the
+// strip stays empty when the user has not constrained the list.
+func renderChips(f ListFilter) string {
+	chips := []string{}
+	if f.Status != "" {
+		chips = append(chips, chipActive.Render("status:"+f.Status))
+	}
+	if f.Owner != "" {
+		chips = append(chips, chipStyle.Render("owner:"+f.Owner))
+	}
+	if len(f.Labels) > 0 {
+		chips = append(chips, chipStyle.Render("label:"+strings.Join(f.Labels, ",")))
+	}
+	if f.Search != "" {
+		chips = append(chips, chipStyle.Render(fmt.Sprintf("q:%q", f.Search)))
+	}
+	if len(chips) == 0 {
+		return ""
+	}
+	return strings.Join(chips, "  ")
+}
+
+// joinNonEmpty assembles the view from its non-empty sections. A naive
+// strings.Join would leave blank lines between absent sections; this
+// drops them so the table starts at row 0 in the steady state.
+func joinNonEmpty(parts []string) string {
+	out := []string{}
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // buildRows projects issues to the six-column shape the table renders.

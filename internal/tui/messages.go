@@ -20,7 +20,9 @@ type detailFetchedMsg struct {
 	err   error
 }
 
-//nolint:unused // Task 9
+// mutationDoneMsg is the result of any single mutation (create now,
+// close/reopen/label/owner in Task 9). kind names which mutation so the
+// list/detail Update can route to the right post-success behavior.
 type mutationDoneMsg struct {
 	kind string
 	resp *MutationResp
