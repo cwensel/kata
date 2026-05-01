@@ -153,8 +153,7 @@ func TestDispatcher_Shutdown_DropsQueued(t *testing.T) {
 		t.Fatal(err)
 	}
 	runsPath := filepath.Join(d.deps.KataHome, "hooks", dbHash, "runs.jsonl")
-	data, _ := os.ReadFile(runsPath) //nolint:gosec // G304: test-controlled path under t.TempDir()
-	lines := strings.Count(strings.TrimSpace(string(data)), "\n") + 1
+	lines := countJSONLLines(runsPath)
 	// Only the in-flight job should have produced a line. (4xx all
 	// completing would be > 1.) Allow <=2 to tolerate edge timing.
 	if lines > 2 {
@@ -188,13 +187,28 @@ func waitForLines(t *testing.T, path string, n int, timeout time.Duration) bool 
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path) //nolint:gosec // G304: test-controlled path under t.TempDir()
-		if err == nil && strings.Count(strings.TrimSpace(string(data)), "\n")+1 >= n {
+		if countJSONLLines(path) >= n {
 			return true
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+// countJSONLLines returns the number of non-empty lines in path. A
+// missing file or empty file both count as 0; the appender creates an
+// empty runs.jsonl at startup, so naive `Count("\n")+1` would falsely
+// report 1 line on every empty file.
+func countJSONLLines(path string) int {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: test-controlled path under t.TempDir()
+	if err != nil {
+		return 0
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return 0
+	}
+	return strings.Count(trimmed, "\n") + 1
 }
 
 func matchExact(want string) func(string) bool { return func(s string) bool { return s == want } }
