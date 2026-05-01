@@ -302,11 +302,12 @@ func TestDetail_AddLink_Blocks(t *testing.T) {
 	}
 }
 
-// TestDetail_AddLink_Other: 'L' opens modalAddLink; "relates_to 7" +
-// Enter parses as <kind> <number> and calls AddLink. The implementer's
-// dispatchAddLinkSyntax splits on whitespace; whatever the first token is
-// gets passed verbatim as Type to AddLink (the daemon enforces the
-// allowed vocabulary).
+// TestDetail_AddLink_Other: 'L' opens modalAddLink; "related 7" + Enter
+// parses as <kind> <number> and calls AddLink. The daemon's CHECK
+// constraint accepts only 'parent', 'blocks', or 'related'
+// (internal/db/migrations/0001_init.sql:66); the L-key path passes the
+// first whitespace token verbatim as Type, so users must use those
+// exact names.
 func TestDetail_AddLink_Other(t *testing.T) {
 	api := &fakeDetailAPI{
 		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
@@ -318,7 +319,7 @@ func TestDetail_AddLink_Other(t *testing.T) {
 	if dm.modal.kind != modalAddLink {
 		t.Fatalf("modal.kind = %d, want modalAddLink", dm.modal.kind)
 	}
-	dm = typeRunes(t, dm, "relates_to 7", km, api)
+	dm = typeRunes(t, dm, "related 7", km, api)
 	out, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
 	if cmd == nil {
 		t.Fatal("expected addlink cmd on Enter")
@@ -327,8 +328,8 @@ func TestDetail_AddLink_Other(t *testing.T) {
 	if api.addLinkCalls != 1 {
 		t.Fatalf("addLinkCalls = %d, want 1", api.addLinkCalls)
 	}
-	if api.lastLinkBody.Type != "relates_to" || api.lastLinkBody.ToNumber != 7 {
-		t.Fatalf("lastLinkBody = %+v, want {relates_to 7}", api.lastLinkBody)
+	if api.lastLinkBody.Type != "related" || api.lastLinkBody.ToNumber != 7 {
+		t.Fatalf("lastLinkBody = %+v, want {related 7}", api.lastLinkBody)
 	}
 }
 
