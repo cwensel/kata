@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -34,12 +35,17 @@ func renderQuitConfirmModal() string {
 
 // overlayModal centers a modal panel over the rendered background
 // view. Mirrors msgvault's view.go::overlayModal: split the bg into
-// lines, compute centering, splice the modal into the right offset
-// preserving lipgloss Width math (so colored bg lines around the
-// modal stay intact).
+// lines, compute centering, splice the modal into the right offset.
 //
-// width / height come from Model.width / Model.height. background is
-// the already-rendered sub-view (list, detail, help, empty).
+// ANSI handling: the bg lines may carry escape sequences (lipgloss
+// styled chrome), so we use ansiAwareSlice to skip past escapes
+// when measuring width and to preserve them when slicing. Without
+// ANSI awareness the splice would either count escape bytes toward
+// visible width (modal misalignment) or cut a sequence mid-escape
+// (terminal control mangling) — see roborev #111 finding 2.
+//
+// width / height come from Model.width / Model.height. background
+// is the already-rendered sub-view (list, detail, help, empty).
 func overlayModal(background, modal string, width, height int) string {
 	if modal == "" {
 		return background
@@ -62,64 +68,106 @@ func overlayModal(background, modal string, width, height int) string {
 			break
 		}
 		bg := bgLines[idx]
-		bgW := lipgloss.Width(bg)
 		var b strings.Builder
-		// Left portion of bg before modal.
 		if leftPad > 0 {
-			left := truncateBgToWidth(bg, leftPad)
+			left, leftWidth := ansiAwarePrefix(bg, leftPad)
 			b.WriteString(left)
-			if lipgloss.Width(left) < leftPad {
-				b.WriteString(strings.Repeat(" ", leftPad-lipgloss.Width(left)))
+			if leftWidth < leftPad {
+				b.WriteString(strings.Repeat(" ", leftPad-leftWidth))
 			}
 		}
 		b.WriteString(mLine)
-		// Right portion of bg after modal.
 		rightStart := leftPad + modalW
-		if rightStart < bgW {
-			b.WriteString(skipBgToWidth(bg, rightStart))
-		}
+		b.WriteString(ansiAwareSuffix(bg, rightStart))
 		bgLines[idx] = b.String()
 	}
 	return strings.Join(bgLines, "\n")
 }
 
-// truncateBgToWidth returns the prefix of s whose visible width is
-// at most w, preserving ANSI escape sequences. Helper for overlayModal
-// when slicing the background to make room for the modal.
-func truncateBgToWidth(s string, w int) string {
-	if lipgloss.Width(s) <= w {
-		return s
-	}
-	// runewidth.Truncate with empty tail returns the prefix; lipgloss
-	// doesn't expose a width-truncate helper that handles its own
-	// styles, so we fall back to a rune-aware loop.
+// ansiAwarePrefix returns the prefix of s whose visible width is at
+// most w. ANSI escape sequences are passed through verbatim and
+// don't contribute to width. Returns the (possibly truncated)
+// prefix and its visible width.
+func ansiAwarePrefix(s string, w int) (string, int) {
 	var b strings.Builder
 	used := 0
-	for _, r := range s {
-		rw := runewidthRune(r)
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b {
+			end := i + ansiEscapeLen(s[i:])
+			if end > len(s) {
+				end = len(s)
+			}
+			b.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		r, sz := utf8.DecodeRuneInString(s[i:])
+		rw := runewidth.RuneWidth(r)
 		if used+rw > w {
 			break
 		}
-		b.WriteRune(r)
+		b.WriteString(s[i : i+sz])
 		used += rw
+		i += sz
 	}
-	return b.String()
+	return b.String(), used
 }
 
-// skipBgToWidth returns the suffix of s starting after the first
-// visible w cells. ANSI sequences are preserved by the loop (they
-// don't add to visible width).
-func skipBgToWidth(s string, w int) string {
+// ansiAwareSuffix returns the suffix of s starting after the first
+// `skip` visible cells. ANSI escape sequences encountered while
+// skipping are concatenated and prefixed onto the returned suffix
+// so styling continues correctly past the splice point.
+func ansiAwareSuffix(s string, skip int) string {
 	used := 0
-	for i, r := range s {
-		if used >= w {
-			return s[i:]
+	var carried strings.Builder
+	i := 0
+	for i < len(s) && used < skip {
+		if s[i] == 0x1b {
+			end := i + ansiEscapeLen(s[i:])
+			if end > len(s) {
+				end = len(s)
+			}
+			carried.WriteString(s[i:end])
+			i = end
+			continue
 		}
-		used += runewidthRune(r)
+		r, sz := utf8.DecodeRuneInString(s[i:])
+		used += runewidth.RuneWidth(r)
+		i += sz
 	}
-	return ""
+	if i >= len(s) {
+		return ""
+	}
+	return carried.String() + s[i:]
 }
 
-// runewidthRune returns the cell width of a single rune. Thin wrapper
-// over runewidth.RuneWidth so the truncate/skip helpers stay readable.
-func runewidthRune(r rune) int { return runewidth.RuneWidth(r) }
+// ansiEscapeLen returns the byte length of an ANSI escape sequence
+// starting at s[0]. Handles CSI (`ESC [ ... <final>`) and OSC
+// (`ESC ] ... BEL or ESC \`) shapes. Falls back to 2 for
+// unrecognized escapes so the caller skips ESC + next byte rather
+// than looping forever.
+func ansiEscapeLen(s string) int {
+	if len(s) < 2 || s[0] != 0x1b {
+		return 1
+	}
+	switch s[1] {
+	case '[': // CSI: ESC [ params ... <final byte 0x40-0x7e>
+		for i := 2; i < len(s); i++ {
+			c := s[i]
+			if c >= 0x40 && c <= 0x7e {
+				return i + 1
+			}
+		}
+	case ']': // OSC: ESC ] ... (BEL | ESC \)
+		for i := 2; i < len(s); i++ {
+			if s[i] == 0x07 {
+				return i + 1
+			}
+			if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
+				return i + 2
+			}
+		}
+	}
+	return 2
+}

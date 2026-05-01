@@ -26,5 +26,5 @@
   #39   open      issue 39                                                                                    1d ago    
   #40   open      issue 40                                                                                    1d ago    
   #41   open      issue 41                                                                                    1d ago    
-                                                                                                          [18-43 of 50] 
+                                                                                                          [18-41 of 50] 
  ↑↓ move │ ↵ open │ n new │ / search │ o owner │ s status │ c clear │ x close │ ? help │ q quit                 [26/50] 

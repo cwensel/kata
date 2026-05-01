@@ -265,9 +265,15 @@ func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 		if mut.gen != m.detail.gen {
 			// Stale-to-current-detail: the original UI is gone but
 			// the underlying data still changed. Mark the list cache
-			// stale so the next refetch repopulates.
+			// stale and schedule a debounced refetch so the rows the
+			// original mutation touched repopulate without waiting
+			// for SSE (roborev #102 finding 1 follow-up).
 			if m.cache != nil {
 				m.cache.markStale()
+			}
+			if !m.pendingRefetch && m.api != nil {
+				m.pendingRefetch = true
+				return m, debouncedRefetch(refetchDebounce)
 			}
 			return m, nil
 		}
@@ -757,7 +763,14 @@ func (m Model) canQuit() bool {
 // only handles modalQuitConfirm: y/Y commits → tea.Quit; n/N/esc
 // cancels → close the modal. Other keys are absorbed (the modal owns
 // dispatch; nothing reaches the underlying view).
+//
+// ctrl+c always fast-quits regardless of which modal is open — the
+// power-user escape hatch must not be trapped behind a confirmation
+// (roborev #111 finding 1).
 func (m Model) routeModalKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if msg.Type == tea.KeyCtrlC {
+		return m, tea.Quit
+	}
 	switch m.modal {
 	case modalQuitConfirm:
 		switch msg.String() {

@@ -396,7 +396,7 @@ If the smoke test panics or `go mod tidy` won't resolve, **stop**. Open a discus
 
 - [ ] **`n` opens a dedicated new-issue row at the top of the table** — NOT at the cursor position (recency-sorted lists make cursor-position fake; the row would jump after create anyway).
 - [ ] **The row hosts a `bubbles/textinput`** styled to look like the other table rows (same column widths). Cursor sits in the title cell; status/owner/updated cells render as `--`/blank/blank placeholders.
-- [ ] **`enter` commits the title immediately** — `api.CreateIssue(title, "", actor)` — and on success opens the centered body form for optional refinement (M4 wires the body form; M3.5 just leaves an empty body and shows the row at the top of the refreshed list).
+- [ ] **`enter` commits the title immediately** — `api.CreateIssue(title, "", actor)`. M3.5c stops there: the issue exists with an empty body, the row appears at the top of the refreshed list. M4 will add an opt-in **post-create body editor** (NOT a separate `n`-driven form) that opens after a successful create so the user can refine the body without retyping the title. Esc on that editor leaves the body empty.
 - [ ] **`esc` cancels** without creating.
 - [ ] **The row replaces** the current `n` → `searchFieldNewTitle` → `submitNewIssue` → `editorCmd("create")` chain. M4 layers the post-create body form on top.
 - [ ] **Footer help row swaps** when the inline new-issue row is active: `enter create · esc cancel`.
@@ -447,59 +447,51 @@ If the smoke test panics or `go mod tidy` won't resolve, **stop**. Open a discus
 **Goal:** Replace the `$EDITOR`-driven edit-body / add-comment flows with in-app centered forms (bubbles/textarea). Add the post-create body form that opens immediately after the M3.5 inline row commits a title. `ctrl+e` is the explicit `$EDITOR` escape hatch from any multiLine field. The existing `editorCmd` machinery in `editor.go` stays intact.
 
 **Files:**
-- Modify: `internal/tui/input.go` — add `inputNewIssueForm`/`inputEditBodyForm`/`inputCommentForm` kinds + constructors with `bubbles/textarea`
-- Modify: `internal/tui/inputs_render.go` — flesh out `renderCenteredForm` (multi-field aware)
-- Modify: `internal/tui/list.go` — `n` opens the new-issue form instead of an inline title prompt
-- Modify: `internal/tui/detail.go`, `detail_editor.go` — `e` and `c` open the edit-body / comment forms instead of `$EDITOR` shell-out
-- Modify: `internal/tui/editor.go` — keep `editorCmd` and `trimComments`; add a helper that hands a buffer back to a form on resume
-- Modify: `internal/tui/keymap.go` — add `ctrl+s` (`Submit`?) and `ctrl+e` (`OpenInEditor`?) bindings if they don't exist as keymap entries. Could also leave them inline since they're modal-only.
-- Tests: new `form_create_test.go`, `form_edit_body_test.go`, `form_comment_test.go`, `form_editor_handoff_test.go`
+- Modify: `internal/tui/input.go` — add `inputBodyEditorForm` (post-create + edit-body) and `inputCommentForm` kinds + constructors with `bubbles/textarea`. NO `inputNewIssueForm` — that's M3.5c's inline row.
+- Modify: `internal/tui/inputs_render.go` — flesh out `renderCenteredForm` (single-field for now; multi-field reserved for a future plan)
+- Modify: `internal/tui/model.go` — on successful `inputNewIssueRow` commit, chain into the post-create body editor (open `inputBodyEditorForm` pointing at the new issue's number).
+- Modify: `internal/tui/detail.go`, `detail_editor.go` — `e` opens the edit-body form (re-uses `inputBodyEditorForm` with current body pre-filled); `c` opens the comment form, both replacing the current `$EDITOR` shell-out.
+- Modify: `internal/tui/editor.go` — keep `editorCmd` and `trimComments`; add a helper that hands a buffer back to a form on resume (the `ctrl+e` escape hatch).
+- Modify: `internal/tui/detail_mutation.go` — drop `openInputCmd` async race (roborev #96/#97): open prompts synchronously by setting `m.input` in the same Update tick that handles the key.
+- Tests: new `form_post_create_test.go`, `form_edit_body_test.go`, `form_comment_test.go`, `form_editor_handoff_test.go`
 - Tests: existing `editor_test.go` and `detail_editor_test.go` get extended for the `ctrl+e` handoff path
 
 **Invariants touched:**
-- Title whitespace preservation (the form's title field commits to `lm.pendingTitle` directly, no `TrimSpace`).
 - Comment-only sentinel strip (`trimComments(kind, content)` still gates by kind; the form's `ctrl+e` handoff produces a `kind="edit"` or `kind="comment"` buffer per the original kind).
 - CRLF handling in `stripSentinelBlock`.
 
 - [ ] **Step 1: Add form input kinds + constructors.**
-    - `newNewIssueForm() inputState` — two fields: `title` (singleLine, required) + `body` (multiLine).
-    - `newEditBodyForm(issueNum int64, current string) inputState` — single multiLine field pre-filled with the current body.
+    - `newBodyEditorForm(issueNum int64, current string) inputState` — single multiLine field pre-filled with `current`. Used by both the post-create body editor (current="") and the `e` edit-body flow (current=dm.issue.Body).
     - `newCommentForm(issueNum int64) inputState` — single multiLine field, empty.
-- [ ] **Step 2: Render shell.** `renderCenteredForm(s inputState, width, height int) string` — bordered panel via `lipgloss.Place`, fields stacked vertically with labels above each input box. Active field's input box gets the magenta border; others gray. Footer hint inside the panel: `tab switch field   ctrl+s save   esc cancel   ctrl+e $EDITOR` (only show ctrl+e when active field is multiLine).
-- [ ] **Step 3: Field-cycling logic** in `inputState.Update` for multi-field forms.
-    - `tab` / `shift-tab`: advance `s.active`, calling `Blur()` on the old field's input/area and `Focus()` on the new one.
-    - `enter` on singleLine field with non-empty buffer: advance to next field (if any). Empty buffer: no-op (or could highlight the field).
-    - `enter` on multiLine field: insert newline (delegate to textarea).
-- [ ] **Step 4: Commit handler.** `ctrl+s` validates required fields (non-empty); on success, returns `actionCommit` with the field values. The Model-level handler dispatches the appropriate `tea.Cmd`:
-    - `inputNewIssueForm` → `api.CreateIssue(title, body, actor)`. Title whitespace preserved (no `TrimSpace` on the staged value; only check `TrimSpace == ""` for the required-field gate).
-    - `inputEditBodyForm` → `api.EditBody(...)`.
+- [ ] **Step 2: Render shell.** `renderCenteredForm(s inputState, width, height int) string` — bordered panel via `lipgloss.Place`, single textarea field, magenta border. Footer hint inside the panel: `ctrl+s save · esc cancel · ctrl+e $EDITOR`.
+- [ ] **Step 3: Commit handler.** `ctrl+s` returns `actionCommit`; Model-level handler dispatches the right `tea.Cmd`:
+    - `inputBodyEditorForm` → `api.EditBody(issueNum, body, actor)` for both the post-create chain and the `e` edit flow. The dispatcher knows the issueNum from the form state.
     - `inputCommentForm` → `api.AddComment(...)`.
-- [ ] **Step 5: $EDITOR handoff (ctrl+e).** When the active field is multiLine, `ctrl+e` triggers the existing `editorCmd("edit", currentBuffer)` (or `"comment"` for the comment form). On `editorReturnedMsg` arrival, write the returned content back into the active field's `textarea.Model` (`area.SetValue(content)`) — the form re-opens with the edited buffer pre-loaded. The user can then tweak and `ctrl+s`. `editor.go::trimComments` still applies on commit (the `ctrl+e` round-trip doesn't bypass sanitization).
-- [ ] **Step 6: Replace `n` (new issue) trigger** in `list.go`. Currently it opens an inline title prompt then dispatches `editorCmd("create", "")`. Replace with: `n` opens `newNewIssueForm()` via `openInputMsg`. Drop the `pendingTitle` field on `listModel` (the form holds it directly until commit).
-- [ ] **Step 7: Replace `e` (edit body) trigger** in `detail.go`. Currently dispatches `editorCmd("edit", dm.issue.Body)`. Replace with: `e` opens `newEditBodyForm(dm.issue.Number, dm.issue.Body)`.
-- [ ] **Step 8: Replace `c` (add comment) trigger** in `detail.go`. Currently dispatches `editorCmd("comment", commentTemplate())`. Replace with: `c` opens `newCommentForm(dm.issue.Number)`.
-- [ ] **Step 9: Sanitize the form buffers at render time.** Every field's rendered value flows through `sanitizeForDisplay` so a paste of an ANSI sequence can't paint the modal. (`bubbles/textinput`/`textarea` are usually safe but pasting via `bracketed-paste` is a known vector.)
+- [ ] **Step 4: $EDITOR handoff (ctrl+e).** When the active field is multiLine, `ctrl+e` triggers the existing `editorCmd("edit", currentBuffer)` (or `"comment"` for the comment form). On `editorReturnedMsg` arrival, write the returned content back into the active field's `textarea.Model` — the form re-opens with the edited buffer pre-loaded. `editor.go::trimComments` still applies on commit.
+- [ ] **Step 5: Post-create chain.** When the M3.5c `inputNewIssueRow` commit succeeds (mutationDoneMsg with origin=list, kind=create, no err), Model.routeMutation opens `newBodyEditorForm(resp.Issue.Number, "")`. Esc on that form leaves the body empty (the issue is already created). Ctrl+s dispatches EditBody.
+- [ ] **Step 6: Replace `e` (edit body) trigger** in `detail.go`. Currently dispatches `editorCmd("edit", dm.issue.Body)`. Replace with: `e` opens `newBodyEditorForm(dm.issue.Number, dm.issue.Body)` synchronously (no openInputCmd indirection — fixes the async-race finding).
+- [ ] **Step 7: Replace `c` (add comment) trigger** in `detail.go`. Currently dispatches `editorCmd("comment", commentTemplate())`. Replace with: `c` opens `newCommentForm(dm.issue.Number)` synchronously.
+- [ ] **Step 8: Sanitize the form buffers at render time.** Every field's rendered value flows through `sanitizeForDisplay` so a paste of an ANSI sequence can't paint the modal.
+- [ ] **Step 9: Drop async openInputCmd for panel prompts** (`detail_mutation.go`). Switch every `+/-/a/p/b/L` handler to set `m.input` directly in the same Update tick instead of emitting `openInputCmd(kind)`. Same for the list-side `/`/`o`/`n` to keep the routing uniform. This addresses roborev #96 / #97 finding 1.
 - [ ] **Step 10: Tests.**
-    - `TestForm_NewIssue_TitleAndBody_Commit`: type title, tab to body, type body, ctrl+s; asserts `CreateIssue` called with both values intact.
-    - `TestForm_NewIssue_PreservesTitleWhitespace`: title `"  spaced  "` reaches the wire untrimmed.
-    - `TestForm_NewIssue_EmptyTitle_BlocksCommit`: ctrl+s with blank title shows error in modal, no API call.
-    - `TestForm_NewIssue_EnterAdvancesFromTitle`: enter on title field with content moves focus to body.
-    - `TestForm_NewIssue_Esc_CancelsWithoutSave`: form closes, no API call, no `pendingTitle` leftover.
+    - `TestForm_PostCreate_OpensAfterRowCommit`: drive the inline new-issue row with a title; mutation success → body editor opens with title context.
+    - `TestForm_PostCreate_EscLeavesBodyEmpty`: Esc on the body editor doesn't create a second issue or wipe the title; the issue exists with empty body.
     - `TestForm_EditBody_PrefilledWithCurrentBody`: opens the form, asserts `area.Value()` equals the issue body.
     - `TestForm_EditBody_CtrlSDispatchesEditBody`.
     - `TestForm_Comment_CtrlSDispatchesAddComment`.
-    - `TestForm_EditorHandoff_RoundTripsBuffer`: ctrl+e from edit-body form, simulate `editorReturnedMsg{kind:"edit", content:"new"}`, assert form reopens with body=`"new"`. ctrl+s then dispatches edit with `"new"`.
+    - `TestForm_EditorHandoff_RoundTripsBuffer`: ctrl+e from edit-body form, simulate `editorReturnedMsg{kind:"edit", content:"new"}`, assert form reopens with body=`"new"`. Ctrl+s then dispatches edit with `"new"`.
     - `TestForm_EditorHandoff_TrimCommentsAppliesOnCommit`: ctrl+e from comment form returns content with sentinel block, ctrl+s on the reopened form dispatches with sentinel-stripped body.
     - `TestForm_SanitizesPastedAnsi`: paste a value with `\x1b[31m`, render the form, assert the rendered output has no ESC.
-- [ ] **Step 11: Remove the inline `n` title prompt** from `list.go` (`searchFieldNewTitle`, the prompt branch in `applyPromptKey`, `submitNewIssue` in its current form, and the `lm.pendingTitle` field). Title now lives on the form until commit.
-- [ ] **Step 12: Lint + test.** All hard invariants still hold.
+    - `TestInput_PromptOpenIsSynchronous`: pressing `+` on detail sets `m.input.kind == inputLabelPrompt` in the same Update — no openInputCmd intermediate. Regression guard for roborev #96/#97.
+- [ ] **Step 11: Lint + test.** All hard invariants still hold.
 
 **Acceptance criteria:**
 - `make lint` clean, `go test ./...` green.
-- `n` from list, `e`/`c` from detail open centered forms — verified by snapshot.
-- `ctrl+e` from a multiLine form successfully suspends to `$EDITOR` and re-loads the buffer on resume — verified by `TestForm_EditorHandoff_RoundTripsBuffer`.
-- `searchFieldNewTitle` and `lm.pendingTitle` are gone (`grep` confirms).
-- All hard invariants hold, including title-whitespace preservation and comment-only sentinel strip.
+- `e`/`c` from detail open centered forms — verified by snapshot.
+- New-issue row commit chains into post-create body editor — verified by `TestForm_PostCreate_OpensAfterRowCommit`.
+- `ctrl+e` from a multiLine form successfully suspends to `$EDITOR` and re-loads the buffer on resume.
+- All synchronous opens — `grep` for `openInputCmd` returns nothing.
+- All hard invariants hold, including comment-only sentinel strip.
 
 **Risks:** High. Largest surface change. The `editor.go` machinery has to keep working through `ctrl+e` — don't delete it. The `bubbles/textarea` `enter`-vs-newline semantics may need testing against the actual library version (preflight in M3a).
 

@@ -26,5 +26,5 @@ Click the login button twice.
 
                                                                                                                         
                                                                                                                         
-                                                                                                                        
+                                                                                                 [13-20 of 30 comments] 
  ↑↓ move │ ↹ tab │ ↵ jump │ esc back │ e edit │ c comment │ x close │ + label │ a owner │ ? help │ q quit               

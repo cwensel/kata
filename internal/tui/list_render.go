@@ -57,14 +57,22 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	title := renderTitleBar(width, chrome.scope, chrome.version)
 	stats := renderStatsLine(width, chrome.scope, lm.issueCounts(), lm.filter)
 	footer := renderFooterBar(width, listFooterItemsFor(chrome.input), lm.cursor, lm.issues, lm.filter)
-	infoLine := renderListInfoLine(width, chrome, lm)
 
-	// Body area: everything between header (lines 1-2) and the info+footer
-	// (last 2 lines). Any extra lines get padded so the footer pins.
+	// Body area: everything between header (lines 1-2) and the
+	// info+footer (last 2 lines). bodyRows is computed first so the
+	// info-line scroll indicator uses the actual budget (not a
+	// hardcoded approximation — roborev #107 finding 2). The
+	// table-overhead cost (header + separator) is baked into
+	// renderBodyArea, so bodyRows here is the *visible-data* budget.
 	bodyRows := height - 2 /* header */ - 2 /* info+footer */
 	if bodyRows < listBodyFloor {
 		bodyRows = listBodyFloor
 	}
+	dataBudget := bodyRows - 2 /* table header + separator */
+	if dataBudget < 1 {
+		dataBudget = 1
+	}
+	infoLine := renderListInfoLine(width, chrome, lm, dataBudget)
 	body := lm.renderBodyArea(width, bodyRows, chrome)
 
 	return strings.Join([]string{title, stats, body, infoLine, footer}, "\n")
@@ -298,18 +306,26 @@ func statsCountsText(c issueCounts) string {
 }
 
 // renderListInfoLine renders the info line just above the footer.
-// Three sources, in priority order:
-//  1. Active inline command bar (search/owner) — the bar's full
-//     `/buffer` form via renderInputBar.
-//  2. A toast/flash (e.g. "resynced", "closed #42") — these include
-//     the SSE-degraded indicator when sseStatus != connected.
-//  3. The scroll indicator `[start-end of N issues]` when the visible
-//     window doesn't fit the full filtered list.
-//  4. Blank if none of the above apply.
+// Sources, in priority order:
 //
-// Always rendered inside statsLineStyle so the line reads as part of
-// the chrome strip even when blank (background fills the row).
-func renderListInfoLine(width int, chrome viewChrome, lm listModel) string {
+//  1. Active inline command bar (search/owner) — `/buffer` form via
+//     renderInfoBar.
+//  2. A status flash (mutation result like "closed #42").
+//  3. SSE-degraded indicator when sseStatus != connected.
+//  4. A toast (e.g. "resynced").
+//  5. The scroll indicator `[start-end of N]` when the visible window
+//     doesn't fit the full filtered list.
+//  6. Blank if none of the above apply.
+//
+// dataBudget is the actual data-row budget the table renders into;
+// the scroll indicator only fires when the visible list exceeds it.
+// Threading it from View instead of approximating fixes roborev
+// #107 finding 2 (hardcoded `lastBodyRows()` was wrong on terminals
+// other than 30 rows tall).
+//
+// Always rendered inside statsLineStyle so the line reads as part
+// of the chrome strip even when blank (background fills the row).
+func renderListInfoLine(width int, chrome viewChrome, lm listModel, dataBudget int) string {
 	body := ""
 	switch {
 	case chrome.input.kind.isCommandBar():
@@ -321,11 +337,9 @@ func renderListInfoLine(width int, chrome viewChrome, lm listModel) string {
 	case chrome.toast != nil:
 		body = chrome.toast.text
 	default:
-		// Scroll indicator (right-aligned)
 		visible := filteredIssues(lm.issues, lm.filter)
-		bodyRows := lm.lastBodyRows() // see comment in lastBodyRows
-		if n := len(visible); n > 0 && bodyRows > 0 && n > bodyRows {
-			start, end := windowBounds(n, lm.cursor, bodyRows)
+		if n := len(visible); n > 0 && dataBudget > 0 && n > dataBudget {
+			start, end := windowBounds(n, lm.cursor, dataBudget)
 			body = rightAlignInside(
 				fmt.Sprintf("[%d-%d of %d]", start+1, end, n),
 				titleBarInnerWidth(width),
@@ -333,24 +347,6 @@ func renderListInfoLine(width int, chrome viewChrome, lm listModel) string {
 		}
 	}
 	return statsLineStyle.Render(padToWidth(body, titleBarInnerWidth(width)))
-}
-
-// lastBodyRows returns the row budget the body used most recently.
-// We don't have access to the live `bodyRows` value at render time
-// from inside the info line (renderListInfoLine is called by View
-// before bodyRows is fully resolved). Approximation: assume the body
-// took everything except the four chrome lines. Since the scroll
-// indicator only appears when the visible list exceeds bodyRows, a
-// loose approximation is fine.
-//
-// TODO(M3.5 cleanup): plumb bodyRows down from View so the indicator
-// math is exact. For now this prevents the indicator from rendering
-// on terminals where the body fits.
-func (lm listModel) lastBodyRows() int {
-	// 30 is a conservative default that matches the snapshot fixtures'
-	// terminal heights (120×30); the snapshot suite is the only place
-	// this matters today, and it consistently uses height=30.
-	return 30 - 4
 }
 
 // renderInfoBar formats the inline command bar for the info line.

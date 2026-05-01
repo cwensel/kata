@@ -37,7 +37,6 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	titleRow := dm.renderTitleRow(width)
 	tabs := dm.renderTabStrip()
 	footer := renderFooterBar(width, detailFooterItemsFor(chrome.input), 0, nil, ListFilter{})
-	infoLine := dm.renderInfoLine(width, chrome)
 
 	// Reserve: header (1) + detail-header (1) + title-row (1) +
 	// body-rule (1) + tab-rule (1) + info (1) + footer (1) = 7 fixed.
@@ -59,6 +58,9 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	rule := separatorRuleStyle.Render(strings.Repeat("─", width))
 	bodyArea := dm.padArea(body, bodyA, width)
 	tabArea := dm.padArea(tabContent, tabA, width)
+	// Info line uses the real tabA budget so the scroll indicator
+	// fires correctly (roborev #107 finding 1).
+	infoLine := dm.renderInfoLine(width, chrome, tabA)
 	return strings.Join([]string{
 		title, header, titleRow, rule, bodyArea, tabs, tabArea,
 		infoLine, footer,
@@ -88,9 +90,15 @@ func (dm detailModel) padArea(content string, rows, width int) string {
 
 // renderInfoLine renders the info line just above the footer for the
 // detail view. Same priority order as the list view: active panel
-// prompt > flash > toast > scroll indicator. Always rendered inside
-// statsLineStyle so the row reads as chrome even when blank.
-func (dm detailModel) renderInfoLine(width int, chrome viewChrome) string {
+// prompt > flash > SSE-degraded > toast > scroll indicator. Always
+// rendered inside statsLineStyle so the row reads as chrome even
+// when blank.
+//
+// tabBudget is the actual tab-content row budget (computed in View
+// from height). When 0 the scroll indicator is suppressed — used by
+// the early View call before bodyA/tabA are resolved; View calls
+// this again with the real budget once it knows tabA.
+func (dm detailModel) renderInfoLine(width int, chrome viewChrome, tabBudget int) string {
 	body := ""
 	switch {
 	case chrome.input.kind.isPanelPrompt():
@@ -102,17 +110,13 @@ func (dm detailModel) renderInfoLine(width int, chrome viewChrome) string {
 	case chrome.toast != nil:
 		body = chrome.toast.text
 	default:
-		// Scroll indicator for the active tab (computed against the
-		// current tab's row count, not the body lines).
 		n := dm.activeRowCount()
-		if n > 0 {
-			start, end := windowBounds(n, dm.tabCursor, max(1, n))
-			if end-start < n {
-				body = rightAlignInside(
-					fmt.Sprintf("[%d-%d of %d %s]",
-						start+1, end, n, dm.activeTabLabel()),
-					titleBarInnerWidth(width))
-			}
+		if n > 0 && tabBudget > 0 && n > tabBudget {
+			start, end := windowBounds(n, dm.tabCursor, tabBudget)
+			body = rightAlignInside(
+				fmt.Sprintf("[%d-%d of %d %s]",
+					start+1, end, n, dm.activeTabLabel()),
+				titleBarInnerWidth(width))
 		}
 	}
 	return statsLineStyle.Render(padToWidth(body, titleBarInnerWidth(width)))

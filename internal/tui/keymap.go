@@ -29,7 +29,7 @@ func newKeymap() keymap {
 	return keymap{
 		Help:         key{Keys: []string{"?"}, Help: "help"},
 		Quit:         key{Keys: []string{"q", "ctrl+c"}, Help: "quit"},
-		ToggleScope:  key{Keys: []string{"R"}, Help: "toggle scope (gated — daemon route pending)"},
+		ToggleScope:  key{Keys: []string{"R"}, Help: "scope toggle (gated)"},
 		Up:           key{Keys: []string{"k", "up"}, Help: "up"},
 		Down:         key{Keys: []string{"j", "down"}, Help: "down"},
 		PageUp:       key{Keys: []string{"pgup"}, Help: "page up"},

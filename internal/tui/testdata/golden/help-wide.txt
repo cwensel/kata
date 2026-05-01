@@ -1,19 +1,19 @@
 kata — keybindings
 
-Global                                               List                       Detail                                 
-?         help                                       k/up    up                 tab            next tab                
-q/ctrl+c  quit                                       j/down  down               shift+tab      prev tab                
-R         toggle scope (gated — daemon route pending)pgup    page up            enter          jump to referenced issue
-                                                     pgdown  page down          esc/backspace  back                    
-                                                     g       first              e              edit body               
-                                                     G       last               c              new comment             
-                                                     enter   open detail        p              set parent              
-                                                     n       new issue          b              add blocker             
-                                                     /       search             L              add link                
-                                                     s       cycle status filter+              add label               
-                                                     o       filter by owner    -              remove label            
-                                                     c       clear filters      a              assign owner            
-                                                     x       close              A              clear owner             
-                                                     r       reopen                                                    
+Global                        List                       Detail                                 
+?         help                k/up    up                 tab            next tab                
+q/ctrl+c  quit                j/down  down               shift+tab      prev tab                
+R         scope toggle (gated)pgup    page up            enter          jump to referenced issue
+                              pgdown  page down          esc/backspace  back                    
+                              g       first              e              edit body               
+                              G       last               c              new comment             
+                              enter   open detail        p              set parent              
+                              n       new issue          b              add blocker             
+                              /       search             L              add link                
+                              s       cycle status filter+              add label               
+                              o       filter by owner    -              remove label            
+                              c       clear filters      a              assign owner            
+                              x       close              A              clear owner             
+                              r       reopen                                                    
 
 press ? to return
