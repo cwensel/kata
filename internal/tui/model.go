@@ -23,6 +23,7 @@ type Model struct {
 }
 
 func initialModel(opts Options) Model {
+	applyDefaultColorMode()
 	return Model{opts: opts, view: viewList}
 }
 
