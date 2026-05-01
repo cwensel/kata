@@ -336,6 +336,13 @@ func (lm listModel) syncSelection(rows []Issue) listModel {
 // The cursor is reset to 0 because the filtered-row count (and thus
 // the index space lm.cursor lives in) changes with every filter
 // adjustment.
+//
+// selectedNumber is also cleared on each commit so the identity-
+// based restore in applyFetched (after the refetch lands) doesn't
+// fight the cursor=0 reset by jumping the cursor back to the
+// previously-selected issue if it survived the new filter. The
+// explicit "I changed the filter" intent overrides the implicit
+// "follow the same issue across refetches" intent.
 func (lm listModel) applyFilterKey(
 	msg tea.KeyMsg, km keymap, api listAPI, sc scope,
 ) (listModel, tea.Cmd, bool) {
@@ -343,11 +350,13 @@ func (lm listModel) applyFilterKey(
 	case km.FilterStatus.matches(msg):
 		lm.filter.Status = nextStatus(lm.filter.Status)
 		lm.cursor = 0
+		lm.selectedNumber = 0
 		lm.status = ""
 		return lm, lm.refetchCmd(api, sc), true
 	case km.ClearFilters.matches(msg):
 		lm.filter = ListFilter{}
 		lm.cursor = 0
+		lm.selectedNumber = 0
 		lm.status = ""
 		return lm, lm.refetchCmd(api, sc), true
 	}

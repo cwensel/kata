@@ -357,6 +357,124 @@ func TestEdge_StaleRefetch_DroppedAcrossScopeToggle(t *testing.T) {
 	}
 }
 
+// TestEdge_DetailMutation_StaleGen_MarksCacheStale: a detail-side
+// close is in flight; the user jumps to a different issue (gen
+// advances). When the original close completes, dm.applyMutation
+// would silently drop it on gen mismatch — leaving the list cache
+// stale. routeMutation now marks the cache stale so the next list
+// refetch picks up the change without waiting for SSE. Regression
+// for roborev #89 finding 1.
+func TestEdge_DetailMutation_StaleGen_MarksCacheStale(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	m.view = viewDetail
+	// Pretend the user is now on issue #99 (gen=10) after jumping
+	// from issue #42 (gen=5).
+	m.detail.issue = &Issue{ProjectID: 7, Number: 99}
+	m.detail.gen = 10
+	// Prime the cache so isStale() can detect the stale mark.
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 42}, {Number: 99}})
+
+	mut := mutationDoneMsg{
+		origin: "detail", gen: 5, kind: "close",
+		resp: &MutationResp{Issue: &Issue{Number: 42}},
+	}
+	out, _ := m.Update(mut)
+	nm := out.(Model)
+	if !nm.cache.isStale() {
+		t.Fatal("stale-gen detail mutation must mark cache stale so next refetch repopulates")
+	}
+	// dm itself is unchanged — no status churn for the now-current
+	// detail issue (#99) from a mutation that targeted #42.
+	if nm.detail.status != "" {
+		t.Fatalf("detail status should not be churned: %q", nm.detail.status)
+	}
+}
+
+// TestEdge_JumpDetail_ViewGuard: a queued jumpDetailMsg that arrives
+// after the user popped to the list view (or opened help) must NOT
+// mutate detail state or dispatch fetches. handleJumpDetail gates on
+// view==viewDetail. Regression for roborev #89 finding 2.
+func TestEdge_JumpDetail_ViewGuard(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	// User left detail view between the keypress and the jump msg.
+	m.view = viewList
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42}
+	m.detail.scopePID = 7
+	m.detail.gen = 5
+	priorGen := m.detail.gen
+	priorIssue := m.detail.issue.Number
+
+	out, cmd := m.Update(jumpDetailMsg{number: 99})
+	nm := out.(Model)
+	if cmd != nil {
+		t.Fatalf("jump while not in viewDetail must dispatch no fetches, got %T", cmd)
+	}
+	if nm.detail.gen != priorGen {
+		t.Fatalf("detail.gen was bumped while not in viewDetail: %d → %d",
+			priorGen, nm.detail.gen)
+	}
+	if nm.detail.issue.Number != priorIssue {
+		t.Fatalf("detail.issue churned by stale jump: %d → %d",
+			priorIssue, nm.detail.issue.Number)
+	}
+}
+
+// TestEdge_FilterChange_ClearsSelectedNumber: pressing `s` (cycle
+// status) or `c` (clear filters) must reset both cursor AND
+// selectedNumber. Otherwise the identity-restore in applyFetched
+// can pull the cursor back to the previously-selected issue if it
+// survived the new filter, defeating the explicit "I changed the
+// filter" intent. Regression for roborev #90 finding 1.
+func TestEdge_FilterChange_ClearsSelectedNumber(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	m.list.loading = false
+	m.list.issues = []Issue{
+		{Number: 1, Title: "alpha", Status: "open"},
+		{Number: 2, Title: "beta", Status: "open"},
+		{Number: 3, Title: "gamma", Status: "open"},
+	}
+	m.list.cursor = 1
+	m.list.selectedNumber = 2 // cursor on #2
+
+	out, cmd := m.Update(runeKey('s'))
+	nm := out.(Model)
+	if nm.list.selectedNumber != 0 {
+		t.Fatalf("selectedNumber = %d, want 0 (filter change clears identity)",
+			nm.list.selectedNumber)
+	}
+	if cmd == nil {
+		t.Fatal("status filter change should dispatch a refetch")
+	}
+}
+
+// TestEdge_ClearFilters_ClearsSelectedNumber: same as above for `c`
+// (clear filters).
+func TestEdge_ClearFilters_ClearsSelectedNumber(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	m.list.loading = false
+	m.list.filter = ListFilter{Status: "open", Owner: "alice"}
+	m.list.issues = []Issue{
+		{Number: 1, Title: "alpha", Status: "open", Owner: ptrString("alice")},
+	}
+	m.list.cursor = 0
+	m.list.selectedNumber = 1
+
+	out, _ := m.Update(runeKey('c'))
+	nm := out.(Model)
+	if nm.list.selectedNumber != 0 {
+		t.Fatalf("selectedNumber = %d, want 0 (clear filters resets identity)",
+			nm.list.selectedNumber)
+	}
+}
+
 // TestEdge_ListMutation_CompletesAfterDetailOpen: the user closes an
 // issue from the list view (mutationDoneMsg origin="list" is in
 // flight), then opens a different issue in detail view before the

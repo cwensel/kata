@@ -102,6 +102,48 @@ func TestSanitizeForDisplay_PreservesUnicode(t *testing.T) {
 	}
 }
 
+// TestSanitizeForDisplay_StripsBidiOverride: U+202E RIGHT-TO-LEFT
+// OVERRIDE is in Unicode category Cf (Format), not C (Control), so
+// the older unicode.IsControl-only check let it through. It can
+// reorder text visually — agent-supplied content can use it to spoof
+// safe-looking strings. Sanitize must drop it.
+//
+// The bidi rune is constructed with string(rune(0x202E)) rather than
+// embedded literally so this source file doesn't trip gosec G116
+// (Trojan Source) on its own scan.
+func TestSanitizeForDisplay_StripsBidiOverride(t *testing.T) {
+	rlo := rune(0x202E)
+	in := "fix " + string(rlo) + "txetnoc lacitirc"
+	got := sanitizeForDisplay(in)
+	if strings.ContainsRune(got, rlo) {
+		t.Fatalf("U+202E RIGHT-TO-LEFT OVERRIDE survived: %q", got)
+	}
+	if !strings.Contains(got, "fix") {
+		t.Fatalf("legitimate text dropped: %q", got)
+	}
+}
+
+// TestSanitizeForDisplay_StripsZeroWidthFormatRunes: U+200B/200C/200D
+// (zero-width space / non-joiner / joiner) are also Cf. They can be
+// invisible in rendered output but interfere with searches and
+// terminal copy-paste. Strip them too. Runes constructed from their
+// code points to avoid embedding invisible characters in source.
+func TestSanitizeForDisplay_StripsZeroWidthFormatRunes(t *testing.T) {
+	zwsp := rune(0x200B)
+	zwnj := rune(0x200C)
+	zwj := rune(0x200D)
+	in := "spo" + string(zwsp) + "of" + string(zwnj) + "er" + string(zwj) + "ed"
+	got := sanitizeForDisplay(in)
+	for _, r := range []rune{zwsp, zwnj, zwj} {
+		if strings.ContainsRune(got, r) {
+			t.Fatalf("zero-width format rune %U survived: %q", r, got)
+		}
+	}
+	if got != "spoofered" {
+		t.Fatalf("got %q, want %q", got, "spoofered")
+	}
+}
+
 // TestSanitizeForDisplay_EmptyInput: empty string short-circuits.
 func TestSanitizeForDisplay_EmptyInput(t *testing.T) {
 	if got := sanitizeForDisplay(""); got != "" {

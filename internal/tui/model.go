@@ -222,29 +222,49 @@ func (m Model) isStaleListFetch(msg tea.Msg) bool {
 }
 
 // routeMutation dispatches a mutationDoneMsg to the view that
-// originated the mutation, regardless of which view is now active. If
-// the originating view is also the active view, the result is just one
-// dispatch (the active sub-view consumes it). If the user view-switched
-// after dispatching the mutation (e.g. closed an issue from the list,
-// then opened a different issue's detail before the close completed),
-// we still apply the result to the originating model so its next
-// render is correct — list and detail each keep their own cache.
+// originated the mutation, with a gen-aware path for detail
+// completions that arrive after the user opened a different issue.
 //
-// Without this top-level routing, listModel.applyMutation drops
-// origin != "list" and detailModel.applyMutation drops origin !=
-// "detail", so a view-switched mutation completion would land nowhere
-// and the originating cache would stay stale until SSE invalidation
-// caught up.
+// Three cases:
+//
+//  1. origin=list, view!=viewList → apply directly to listModel so
+//     the list status/refetch fires even though the user is in
+//     detail view now.
+//  2. origin=detail, view!=viewDetail → apply directly to dm; its
+//     gen is unchanged (no new open since pop) so applyMutation
+//     accepts the message.
+//  3. origin=detail, view==viewDetail, mut.gen != m.detail.gen →
+//     the user opened a *different* detail issue between dispatch
+//     and arrival. dm.applyMutation would silently drop the message
+//     on the gen mismatch and leave the list cache stale. Mark the
+//     cache stale here so the next list refetch (or SSE invalidation)
+//     repopulates the rows the original mutation touched.
+//
+// Without case (3), a "close issue A in detail → jump to issue B
+// before the close completes" sequence would update neither A's UI
+// (it's gone) nor any cache, and the list rows would stay stale
+// until an unrelated SSE event happened to refresh them.
 func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 	if mut.origin == "list" && m.view != viewList {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.applyMutation(mut, m.api, m.scope)
 		return m, cmd
 	}
-	if mut.origin == "detail" && m.view != viewDetail {
-		var cmd tea.Cmd
-		m.detail, cmd = m.detail.applyMutation(mut, m.api)
-		return m, cmd
+	if mut.origin == "detail" {
+		if m.view != viewDetail {
+			var cmd tea.Cmd
+			m.detail, cmd = m.detail.applyMutation(mut, m.api)
+			return m, cmd
+		}
+		if mut.gen != m.detail.gen {
+			// Stale-to-current-detail: the original UI is gone but
+			// the underlying data still changed. Mark the list cache
+			// stale so the next refetch repopulates.
+			if m.cache != nil {
+				m.cache.markStale()
+			}
+			return m, nil
+		}
 	}
 	return m.dispatchToView(mut)
 }
@@ -759,6 +779,15 @@ func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 // jump's gen into colliding with a stale fetch.
 func (m Model) handleJumpDetail(msg jumpDetailMsg) (tea.Model, tea.Cmd) {
 	if m.api == nil {
+		return m, nil
+	}
+	// jumpDetailCmd is asynchronous (emits jumpDetailMsg via tea.Cmd),
+	// so the user can pop back to the list — or the help overlay can
+	// open — between the keypress and Model.Update seeing the message.
+	// Without this guard the queued jump would mutate hidden detail
+	// state and dispatch four fetches against an issue the user is no
+	// longer looking at. View check first; navStack cap second.
+	if m.view != viewDetail {
 		return m, nil
 	}
 	if len(m.detail.navStack) >= detailNavCap {

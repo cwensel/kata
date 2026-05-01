@@ -53,13 +53,19 @@ func sanitizeForDisplay(s string) string {
 	return b.String()
 }
 
-// isStripControl reports whether r is a control character that should
-// be stripped. Newline and tab survive so multi-line bodies render
-// correctly; everything else (including \r, ESC, and Unicode format
-// controls) is removed.
+// isStripControl reports whether r is a control character or
+// invisible Unicode format rune that should be stripped. Newline and
+// tab survive so multi-line bodies render correctly; everything else
+// is removed.
+//
+// Cf (Unicode "Format" category) is dropped explicitly because
+// unicode.IsControl returns false for it — but Cf includes runes like
+// U+202E RIGHT-TO-LEFT OVERRIDE that can spoof or visually reorder
+// agent-authored text in the TUI even after ANSI/control stripping.
+// Treat them as untrusted alongside the C0/C1 controls.
 func isStripControl(r rune) bool {
 	if r == '\n' || r == '\t' {
 		return false
 	}
-	return unicode.IsControl(r)
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
 }
