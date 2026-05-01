@@ -74,6 +74,7 @@ func newRootCmd() *cobra.Command {
 		newWhoamiCmd(),
 		newHealthCmd(),
 		newProjectsCmd(),
+		newTUICmd(),
 	}
 	cmd.AddCommand(subs...)
 	return cmd
