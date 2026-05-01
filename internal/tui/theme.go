@@ -37,6 +37,13 @@ func resolveColorMode() colorMode {
 
 // Style vars are package-level so View() functions don't reach into
 // state. applyColorMode rebuilds them once at boot.
+//
+// The palette mirrors roborev's (cmd/roborev/tui/tui.go:38-77) so the
+// two TUIs feel consistent. Where kata's status semantics differ from
+// roborev's, the colors are remapped: openStyle reuses roborev's
+// passStyle (green), closedStyle keeps the cyan, deletedStyle reuses
+// roborev's failStyle (red) with Faint so deleted rows read as
+// out-of-band rather than alarming.
 var (
 	titleStyle    lipgloss.Style
 	subtleStyle   lipgloss.Style
@@ -53,6 +60,16 @@ var (
 	chipActive    lipgloss.Style
 	tabActive     lipgloss.Style
 	tabInactive   lipgloss.Style
+)
+
+// Border colors used by M3+ render code for panel chrome (focused vs
+// unfocused panes, form/prompt boxes). Stored as lipgloss.TerminalColor
+// so callers pass them straight to BorderForeground without re-resolving
+// the color mode. Re-bound by applyColorMode so KATA_COLOR_MODE picks
+// the right shade.
+var (
+	panelActiveBorder   lipgloss.TerminalColor // magenta
+	panelInactiveBorder lipgloss.TerminalColor // gray
 )
 
 // applyColorMode rebuilds all package-level styles. Called at TUI boot
@@ -82,6 +99,11 @@ func applyColorMode(m colorMode, w io.Writer) {
 		chipActive = base.Bold(true)
 		tabActive = base.Bold(true).Underline(true)
 		tabInactive = base.Faint(true)
+		// Borders carry no foreground in colorNone — lipgloss renders
+		// them in the default terminal color. NoColor is the closest
+		// stand-in for "use whatever the terminal would otherwise pick."
+		panelActiveBorder = lipgloss.NoColor{}
+		panelInactiveBorder = lipgloss.NoColor{}
 		return
 	}
 	pick := func(light, dark string) lipgloss.TerminalColor {
@@ -100,7 +122,10 @@ func applyColorMode(m colorMode, w io.Writer) {
 	selectedStyle = r.NewStyle().Background(pick("153", "24"))
 	openStyle = r.NewStyle().Foreground(pick("28", "46"))
 	closedStyle = r.NewStyle().Foreground(pick("30", "51"))
-	deletedStyle = r.NewStyle().Faint(true).Foreground(pick("243", "245"))
+	// deletedStyle is the dim-red semantic remap of roborev's failStyle
+	// — design doc §"Visual language". Faint avoids reading as alarming
+	// while still distinguishing soft-deleted rows from open/closed.
+	deletedStyle = r.NewStyle().Faint(true).Foreground(pick("124", "196"))
 	helpKeyStyle = r.NewStyle().Foreground(pick("242", "246"))
 	helpDescStyle = r.NewStyle().Foreground(pick("248", "240"))
 	errorStyle = r.NewStyle().Bold(true).Foreground(pick("124", "196"))
@@ -109,6 +134,8 @@ func applyColorMode(m colorMode, w io.Writer) {
 	chipActive = r.NewStyle().Bold(true).Foreground(pick("125", "205"))
 	tabActive = r.NewStyle().Bold(true).Underline(true).Foreground(pick("125", "205"))
 	tabInactive = r.NewStyle().Foreground(pick("242", "246"))
+	panelActiveBorder = pick("125", "205")
+	panelInactiveBorder = pick("242", "246")
 }
 
 // applyDefaultColorMode wires the resolved color mode to the active

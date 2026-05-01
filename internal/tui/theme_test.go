@@ -75,6 +75,11 @@ func TestApplyColorMode_RebuildsAllStyles(t *testing.T) {
 	chipActive = sentinel
 	tabActive = sentinel
 	tabInactive = sentinel
+	// Panel-border vars are TerminalColor (not Style); poison them
+	// with the same sentinel value so we can detect a forgotten
+	// rebuild via the same colorNone test.
+	panelActiveBorder = sentinelColor
+	panelInactiveBorder = sentinelColor
 
 	applyColorMode(colorNone, io.Discard)
 
@@ -88,5 +93,50 @@ func TestApplyColorMode_RebuildsAllStyles(t *testing.T) {
 		if fg, ok := s.GetForeground().(lipgloss.Color); ok && fg == sentinelColor {
 			t.Fatalf("style %d not rebuilt by applyColorMode(colorNone): retained sentinel %q", i, fg)
 		}
+	}
+	if c, ok := panelActiveBorder.(lipgloss.Color); ok && c == sentinelColor {
+		t.Fatal("panelActiveBorder not rebuilt by applyColorMode(colorNone)")
+	}
+	if c, ok := panelInactiveBorder.(lipgloss.Color); ok && c == sentinelColor {
+		t.Fatal("panelInactiveBorder not rebuilt by applyColorMode(colorNone)")
+	}
+}
+
+// TestApplyColorMode_DeletedStyleIsRedFaint locks the M0 semantic
+// remap: deletedStyle uses roborev's failStyle codes (124/196) with
+// Faint so soft-deleted rows read as out-of-band but not alarming.
+// Earlier the codes were gray (243/245) — that didn't differentiate
+// from statusStyle.
+func TestApplyColorMode_DeletedStyleIsRedFaint(t *testing.T) {
+	applyColorMode(colorDark, io.Discard)
+	fg, ok := deletedStyle.GetForeground().(lipgloss.Color)
+	if !ok {
+		t.Fatalf("deletedStyle.GetForeground() = %T, want lipgloss.Color", deletedStyle.GetForeground())
+	}
+	if string(fg) != "196" {
+		t.Fatalf("deletedStyle dark foreground = %q, want %q", string(fg), "196")
+	}
+	if !deletedStyle.GetFaint() {
+		t.Fatal("deletedStyle must be faint so the red doesn't read as an error chip")
+	}
+}
+
+// TestApplyColorMode_PanelBorderColorsBound asserts the M3+ panel
+// border vars are bound after a normal-mode apply. M0 introduces these
+// vars even though the first usage lands in M3a — locking the values
+// here keeps them honest.
+func TestApplyColorMode_PanelBorderColorsBound(t *testing.T) {
+	applyColorMode(colorDark, io.Discard)
+	if panelActiveBorder == nil {
+		t.Fatal("panelActiveBorder must be bound by applyColorMode(colorDark)")
+	}
+	if panelInactiveBorder == nil {
+		t.Fatal("panelInactiveBorder must be bound by applyColorMode(colorDark)")
+	}
+	if c, ok := panelActiveBorder.(lipgloss.Color); ok && string(c) != "205" {
+		t.Fatalf("panelActiveBorder dark = %q, want %q", string(c), "205")
+	}
+	if c, ok := panelInactiveBorder.(lipgloss.Color); ok && string(c) != "246" {
+		t.Fatalf("panelInactiveBorder dark = %q, want %q", string(c), "246")
 	}
 }
