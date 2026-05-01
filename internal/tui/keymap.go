@@ -1,0 +1,73 @@
+package tui
+
+import tea "github.com/charmbracelet/bubbletea"
+
+// keymap is the single source of truth for keybindings. The help view
+// reads from this same value so rendered help stays in lockstep with
+// what Update actually handles.
+type keymap struct {
+	Help, Quit, ToggleScope                              key
+	Up, Down, PageUp, PageDown, Home, End                key
+	Open, NewIssue, Search                               key
+	FilterStatus, FilterOwner, FilterLabel, ClearFilters key
+	Close, Reopen                                        key
+	NextTab, PrevTab, JumpRef, Back                      key
+	EditBody, NewComment                                 key
+	SetParent, AddBlocker, AddLink                       key
+	AddLabel, RemoveLabel, AssignOwner, ClearOwner       key
+}
+
+// key is a binding plus its human label. matches() compares against the
+// canonical string Bubble Tea reports for a KeyMsg.
+type key struct {
+	Keys []string
+	Help string
+}
+
+// newKeymap returns the spec §7.3 bindings.
+func newKeymap() keymap {
+	return keymap{
+		Help:         key{Keys: []string{"?"}, Help: "help"},
+		Quit:         key{Keys: []string{"q", "ctrl+c"}, Help: "quit"},
+		ToggleScope:  key{Keys: []string{"R"}, Help: "toggle project / all-projects"},
+		Up:           key{Keys: []string{"k", "up"}, Help: "up"},
+		Down:         key{Keys: []string{"j", "down"}, Help: "down"},
+		PageUp:       key{Keys: []string{"pgup"}, Help: "page up"},
+		PageDown:     key{Keys: []string{"pgdown"}, Help: "page down"},
+		Home:         key{Keys: []string{"g"}, Help: "first"},
+		End:          key{Keys: []string{"G"}, Help: "last"},
+		Open:         key{Keys: []string{"enter"}, Help: "open detail"},
+		NewIssue:     key{Keys: []string{"n"}, Help: "new issue"},
+		Search:       key{Keys: []string{"/"}, Help: "search"},
+		FilterStatus: key{Keys: []string{"s"}, Help: "cycle status filter"},
+		FilterOwner:  key{Keys: []string{"o"}, Help: "filter by owner"},
+		FilterLabel:  key{Keys: []string{"l"}, Help: "filter by label"},
+		ClearFilters: key{Keys: []string{"c"}, Help: "clear filters"},
+		Close:        key{Keys: []string{"x"}, Help: "close"},
+		Reopen:       key{Keys: []string{"r"}, Help: "reopen"},
+		NextTab:      key{Keys: []string{"tab"}, Help: "next tab"},
+		PrevTab:      key{Keys: []string{"shift+tab"}, Help: "prev tab"},
+		JumpRef:      key{Keys: []string{"enter"}, Help: "jump to referenced issue"},
+		Back:         key{Keys: []string{"esc", "backspace"}, Help: "back"},
+		EditBody:     key{Keys: []string{"e"}, Help: "edit body"},
+		NewComment:   key{Keys: []string{"c"}, Help: "new comment"},
+		SetParent:    key{Keys: []string{"p"}, Help: "set parent"},
+		AddBlocker:   key{Keys: []string{"b"}, Help: "add blocker"},
+		AddLink:      key{Keys: []string{"L"}, Help: "add link"},
+		AddLabel:     key{Keys: []string{"+"}, Help: "add label"},
+		RemoveLabel:  key{Keys: []string{"-"}, Help: "remove label"},
+		AssignOwner:  key{Keys: []string{"a"}, Help: "assign owner"},
+		ClearOwner:   key{Keys: []string{"A"}, Help: "clear owner"},
+	}
+}
+
+// matches reports whether msg is one of k's bound keys.
+func (k key) matches(msg tea.KeyMsg) bool {
+	s := msg.String()
+	for _, b := range k.Keys {
+		if s == b {
+			return true
+		}
+	}
+	return false
+}
