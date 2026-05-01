@@ -44,6 +44,12 @@ type detailAPI interface {
 	AddLink(
 		ctx context.Context, projectID, number int64, body LinkBody, actor string,
 	) (*MutationResp, error)
+	EditBody(
+		ctx context.Context, projectID, number int64, body, actor string,
+	) (*MutationResp, error)
+	AddComment(
+		ctx context.Context, projectID, number int64, body, actor string,
+	) (*MutationResp, error)
 }
 
 // detailModel owns detail-view state. activeTab + tabCursor address
@@ -85,6 +91,8 @@ func (dm detailModel) Update(msg tea.Msg, km keymap, api detailAPI) (detailModel
 		return dm.handleKey(m, km, api)
 	case mutationDoneMsg:
 		return dm.applyMutation(m, api)
+	case editorReturnedMsg:
+		return dm.applyEditorReturned(m, api)
 	case detailFetchedMsg, commentsFetchedMsg, eventsFetchedMsg, linksFetchedMsg:
 		return dm.applyFetched(msg), nil
 	}
@@ -131,6 +139,9 @@ func (dm detailModel) handleKey(
 	msg tea.KeyMsg, km keymap, api detailAPI,
 ) (detailModel, tea.Cmd) {
 	if next, cmd, ok := dm.handleNavKey(msg, km, api); ok {
+		return next, cmd
+	}
+	if next, cmd, ok := dm.handleEditorKey(msg, km); ok {
 		return next, cmd
 	}
 	if next, cmd, ok := dm.handleMutationKey(msg, km, api); ok {

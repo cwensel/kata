@@ -61,7 +61,12 @@ type mutationDoneMsg struct {
 	err  error
 }
 
-//nolint:unused // Task 10
+// editorReturnedMsg carries the result of a $EDITOR suspend/resume
+// cycle. kind discriminates which mutation should run on the trimmed
+// content: "create" (new-issue body, handled by listModel), "edit"
+// (issue body, handled by detailModel), or "comment" (new comment,
+// handled by detailModel). err is non-nil when the editor exited with
+// a non-zero status or the tmpfile read-back failed.
 type editorReturnedMsg struct {
 	kind, content string
 	err           error

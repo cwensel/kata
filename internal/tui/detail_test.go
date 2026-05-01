@@ -317,12 +317,15 @@ type fakeDetailAPI struct {
 	removeLabelCalls int
 	assignCalls      int
 	addLinkCalls     int
+	editBodyCalls    int
+	addCommentCalls  int
 
 	lastProjectID int64
 	lastNumber    int64
 	lastActor     string
 	lastLabel     string
 	lastOwner     string
+	lastBody      string
 	lastLinkBody  LinkBody
 
 	mutationResult *MutationResp
@@ -414,6 +417,28 @@ func (f *fakeDetailAPI) AddLink(
 	f.lastProjectID = projectID
 	f.lastNumber = number
 	f.lastLinkBody = body
+	f.lastActor = actor
+	return f.mutationResult, f.mutationErr
+}
+
+func (f *fakeDetailAPI) EditBody(
+	_ context.Context, projectID, number int64, body, actor string,
+) (*MutationResp, error) {
+	f.editBodyCalls++
+	f.lastProjectID = projectID
+	f.lastNumber = number
+	f.lastBody = body
+	f.lastActor = actor
+	return f.mutationResult, f.mutationErr
+}
+
+func (f *fakeDetailAPI) AddComment(
+	_ context.Context, projectID, number int64, body, actor string,
+) (*MutationResp, error) {
+	f.addCommentCalls++
+	f.lastProjectID = projectID
+	f.lastNumber = number
+	f.lastBody = body
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }

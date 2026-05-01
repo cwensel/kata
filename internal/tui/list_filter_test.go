@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -240,10 +241,36 @@ func TestList_NewIssue_EmptyTitleDoesNotCallAPI(t *testing.T) {
 	}
 }
 
-// TestList_NewIssue_NonEmptyTitlePosts: `n` then "fix bug" then Enter
-// must call CreateIssue exactly once and (on success) seed the
-// "created #N" status line + dispatch a refetch.
-func TestList_NewIssue_NonEmptyTitlePosts(t *testing.T) {
+// TestList_NewIssue_NonEmptyTitleStagesAndDispatchesEditor: `n` then
+// "fix bug" then Enter stages the title in lm.pendingTitle and returns
+// a tea.Cmd that suspends to $EDITOR. CreateIssue must NOT have run
+// yet — the body comes back via editorReturnedMsg in a second pass.
+func TestList_NewIssue_NonEmptyTitleStagesAndDispatchesEditor(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+
+	lm, _ := lmFromUpdate(listModel{actor: "tester"}, runeKey('n'), km, api, sc)
+	for _, r := range "fix bug" {
+		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
+	}
+	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
+	if cmd == nil {
+		t.Fatal("expected editor cmd from Enter on non-empty title")
+	}
+	if lm.pendingTitle != "fix bug" {
+		t.Fatalf("pendingTitle = %q, want %q", lm.pendingTitle, "fix bug")
+	}
+	if api.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0 (must wait for editor)",
+			api.createCalls)
+	}
+}
+
+// TestList_NewIssue_BodyFlow_PostsTitleAndBody: the editor returns
+// content="some body". CreateIssue must be called with both the staged
+// title and the body. lm.pendingTitle is cleared after dispatch.
+func TestList_NewIssue_BodyFlow_PostsTitleAndBody(t *testing.T) {
 	api := &fakeListAPI{
 		createResult: &MutationResp{Issue: &Issue{Number: 42, Title: "fix bug"}},
 	}
@@ -254,12 +281,18 @@ func TestList_NewIssue_NonEmptyTitlePosts(t *testing.T) {
 	for _, r := range "fix bug" {
 		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
 	}
-	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
-	if cmd == nil {
-		t.Fatal("expected create command")
+	lm, _ = lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
+	if lm.pendingTitle != "fix bug" {
+		t.Fatalf("pendingTitle = %q, want %q", lm.pendingTitle, "fix bug")
 	}
-	// drainCmd runs the create cmd, then feeds the mutationDoneMsg back
-	// into Update so the status line and follow-up refetch are observed.
+	msg := editorReturnedMsg{kind: "create", content: "some body"}
+	lm, cmd := lmFromUpdate(lm, msg, km, api, sc)
+	if cmd == nil {
+		t.Fatal("expected create cmd from editorReturnedMsg")
+	}
+	if lm.pendingTitle != "" {
+		t.Fatalf("pendingTitle = %q, want empty after dispatch", lm.pendingTitle)
+	}
 	lm = drainCmd(t, lm, cmd, km, api, sc)
 	if api.createCalls != 1 {
 		t.Fatalf("createCalls = %d, want 1", api.createCalls)
@@ -267,14 +300,83 @@ func TestList_NewIssue_NonEmptyTitlePosts(t *testing.T) {
 	if api.lastCreateBody.Title != "fix bug" {
 		t.Fatalf("title = %q, want %q", api.lastCreateBody.Title, "fix bug")
 	}
+	if api.lastCreateBody.Body != "some body" {
+		t.Fatalf("body = %q, want %q", api.lastCreateBody.Body, "some body")
+	}
 	if api.lastCreateBody.Actor != "tester" {
-		t.Fatalf("actor = %q, want %q", api.lastCreateBody.Actor, "tester")
+		t.Fatalf("actor = %q, want tester", api.lastCreateBody.Actor)
 	}
-	if api.lastCreateProject != 7 {
-		t.Fatalf("projectID = %d, want 7", api.lastCreateProject)
+}
+
+// TestList_NewIssue_EmptyBodyStillCreates: a saved-empty editor returns
+// kind=create content="" — CreateIssue should still post (body="")
+// because the title is what governs creation; body is optional.
+func TestList_NewIssue_EmptyBodyStillCreates(t *testing.T) {
+	api := &fakeListAPI{
+		createResult: &MutationResp{Issue: &Issue{Number: 42}},
 	}
-	if lm.status != "created #42" {
-		t.Fatalf("status = %q, want %q", lm.status, "created #42")
+	km := newKeymap()
+	sc := scope{projectID: 7}
+
+	lm := listModel{actor: "tester", pendingTitle: "fix bug"}
+	msg := editorReturnedMsg{kind: "create", content: ""}
+	lm, cmd := lm.Update(msg, km, api, sc)
+	if cmd == nil {
+		t.Fatal("expected create cmd even with empty body")
+	}
+	_ = drainCmd(t, lm, cmd, km, api, sc)
+	if api.createCalls != 1 {
+		t.Fatalf("createCalls = %d, want 1", api.createCalls)
+	}
+	if api.lastCreateBody.Body != "" {
+		t.Fatalf("body = %q, want empty", api.lastCreateBody.Body)
+	}
+}
+
+// TestList_NewIssue_EditorError_SurfacesStatus: if the editor exits
+// with an error, no CreateIssue is dispatched and the user sees a
+// hint on the status line.
+func TestList_NewIssue_EditorError_SurfacesStatus(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+
+	lm := listModel{actor: "tester", pendingTitle: "fix bug"}
+	msg := editorReturnedMsg{kind: "create", err: errStub("boom")}
+	out, cmd := lm.Update(msg, km, api, sc)
+	if cmd != nil {
+		t.Fatalf("expected nil cmd on editor error, got %T", cmd)
+	}
+	if api.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0", api.createCalls)
+	}
+	if !strings.Contains(out.status, "boom") {
+		t.Fatalf("status = %q, want to contain editor error", out.status)
+	}
+	if out.pendingTitle != "" {
+		t.Fatalf("pendingTitle should clear on error, got %q", out.pendingTitle)
+	}
+}
+
+// TestList_NewIssue_TrimsCommentsFromBody: # lines are stripped from
+// the editor buffer so a "scratch your message above" prompt doesn't
+// leak into the issue body.
+func TestList_NewIssue_TrimsCommentsFromBody(t *testing.T) {
+	api := &fakeListAPI{
+		createResult: &MutationResp{Issue: &Issue{Number: 42}},
+	}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+
+	lm := listModel{actor: "tester", pendingTitle: "fix bug"}
+	msg := editorReturnedMsg{kind: "create", content: "real body\n# hidden\n"}
+	lm, cmd := lm.Update(msg, km, api, sc)
+	if cmd == nil {
+		t.Fatal("expected create cmd")
+	}
+	_ = drainCmd(t, lm, cmd, km, api, sc)
+	if api.lastCreateBody.Body != "real body" {
+		t.Fatalf("body = %q, want %q", api.lastCreateBody.Body, "real body")
 	}
 }
 

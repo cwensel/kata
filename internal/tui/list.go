@@ -40,18 +40,21 @@ const (
 // listModel owns list-view state: the current rows, cursor, the filter
 // in effect, an optional active inline prompt, the resolved actor for
 // mutations, and a one-shot status line that the View renders below the
-// table. The keymap lives on the parent Model and is passed into Update;
-// one instance keeps the help view in lockstep with what handlers
-// actually do.
+// table. pendingTitle stages the new-issue title between the inline-
+// prompt commit and the editor-returned body so CreateIssue can be
+// posted with both fields once the user finishes editing. The keymap
+// lives on the parent Model and is passed into Update; one instance
+// keeps the help view in lockstep with what handlers actually do.
 type listModel struct {
-	issues  []Issue
-	cursor  int
-	filter  ListFilter
-	search  searchState
-	actor   string
-	status  string
-	err     error
-	loading bool
+	issues       []Issue
+	cursor       int
+	filter       ListFilter
+	search       searchState
+	actor        string
+	status       string
+	pendingTitle string
+	err          error
+	loading      bool
 }
 
 // searchState tracks the inline prompt. inputting=true while the user
@@ -86,6 +89,8 @@ func (lm listModel) Update(
 		lm = lm.applyFetched(m)
 	case mutationDoneMsg:
 		return lm.applyMutation(m, api, sc)
+	case editorReturnedMsg:
+		return lm.applyEditorReturned(m, api, sc)
 	}
 	return lm, nil
 }
@@ -426,22 +431,48 @@ func (lm listModel) commitPrompt(api listAPI, sc scope) (listModel, tea.Cmd) {
 	return lm, nil
 }
 
-// submitNewIssue issues a CreateIssue when the title is non-empty.
-// Empty title is a quiet no-op so accidental Enter doesn't churn the
-// daemon.
+// submitNewIssue stages the title and dispatches the editor for an
+// optional body. Empty title is a quiet no-op so accidental Enter
+// doesn't churn the daemon. The actual CreateIssue runs from
+// applyEditorReturned once $EDITOR exits — the user can save an empty
+// buffer to skip the body, in which case CreateIssue posts with body="".
 func (lm listModel) submitNewIssue(
-	title string, api listAPI, sc scope,
+	title string, _ listAPI, _ scope,
 ) (listModel, tea.Cmd) {
 	if title == "" {
 		return lm, nil
 	}
+	lm.pendingTitle = title
+	return lm, editorCmd("create", editorTemplate("create", ""))
+}
+
+// applyEditorReturned routes a "create" editorReturnedMsg back into a
+// CreateIssue dispatch. Editor errors clear the pending title and
+// surface a status hint; otherwise the trimmed buffer becomes the body
+// (empty body is fine — Task 6 already supports body-less creates).
+func (lm listModel) applyEditorReturned(
+	m editorReturnedMsg, api listAPI, sc scope,
+) (listModel, tea.Cmd) {
+	if m.kind != "create" {
+		return lm, nil
+	}
+	title := lm.pendingTitle
+	lm.pendingTitle = ""
+	if title == "" {
+		return lm, nil
+	}
+	if m.err != nil {
+		lm.status = errorStyle.Render("editor: " + m.err.Error())
+		return lm, nil
+	}
+	body := trimComments(m.content)
 	actor := lm.actor
 	pid := sc.projectID
 	return lm, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.CreateIssue(ctx, pid, CreateIssueBody{
-			Title: title, Actor: actor,
+			Title: title, Body: body, Actor: actor,
 		})
 		return mutationDoneMsg{kind: "create", resp: resp, err: err}
 	}

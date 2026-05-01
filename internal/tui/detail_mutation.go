@@ -149,6 +149,8 @@ var successTemplates = map[string]string{
 	"link.parent":  "linked #%d",
 	"link.blocks":  "linked #%d",
 	"link.relates": "linked #%d",
+	"body.edit":    "updated body of #%d",
+	"comment.add":  "added comment to #%d",
 }
 
 // mutationSuccessText is the per-kind toast for a successful mutation.
