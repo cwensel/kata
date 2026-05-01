@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,12 +21,32 @@ const (
 	inputNone inputKind = iota
 	inputSearchBar
 	inputOwnerBar
-	// M3b adds:
-	//   inputLabelPrompt, inputOwnerPrompt, inputLinkPrompt,
-	//   inputParentPrompt, inputBlockerPrompt
+	inputLabelPrompt       // detail `+` — add label
+	inputRemoveLabelPrompt // detail `-` — remove label
+	inputOwnerPrompt       // detail `a` — assign owner
+	inputParentPrompt      // detail `p` — set parent
+	inputBlockerPrompt     // detail `b` — add blocker
+	inputLinkPrompt        // detail `L` — add link "kind number"
 	// M4 adds:
 	//   inputNewIssueForm, inputEditBodyForm, inputCommentForm
 )
+
+// isPanelPrompt reports whether a kind is one of the M3b panel-local
+// prompt kinds (anchored to the bottom of the detail pane).
+func (k inputKind) isPanelPrompt() bool {
+	switch k {
+	case inputLabelPrompt, inputRemoveLabelPrompt, inputOwnerPrompt,
+		inputParentPrompt, inputBlockerPrompt, inputLinkPrompt:
+		return true
+	}
+	return false
+}
+
+// isCommandBar reports whether a kind is one of the M3a inline
+// command bar kinds (replaces the chip strip).
+func (k inputKind) isCommandBar() bool {
+	return k == inputSearchBar || k == inputOwnerBar
+}
 
 // fieldKind picks the bubbles component backing an inputField.
 type fieldKind int
@@ -202,4 +224,40 @@ func newOwnerBar(current ListFilter) inputState {
 		fields:    []inputField{{kind: fieldSingleLine, input: ti}},
 		preFilter: current,
 	}
+}
+
+// newPanelPrompt constructs an M3b panel-local prompt for kind. The
+// title carries the issue context so the user sees "add label to #42"
+// in the prompt's border.
+func newPanelPrompt(kind inputKind, issueNumber int64) inputState {
+	ti := textinput.New()
+	ti.Focus()
+	ti.Prompt = ""
+	return inputState{
+		kind:   kind,
+		title:  panelPromptTitle(kind, issueNumber),
+		fields: []inputField{{kind: fieldSingleLine, input: ti}},
+	}
+}
+
+// panelPromptTitle is the verbal label that appears in the prompt
+// border. Mirrors the modalLabel mapping from the now-retired
+// modal.go but reads as a sentence ("add label to #42") rather than
+// a CLI-style colon prefix.
+func panelPromptTitle(kind inputKind, n int64) string {
+	switch kind {
+	case inputLabelPrompt:
+		return fmt.Sprintf("add label to #%d", n)
+	case inputRemoveLabelPrompt:
+		return fmt.Sprintf("remove label from #%d", n)
+	case inputOwnerPrompt:
+		return fmt.Sprintf("assign #%d to", n)
+	case inputParentPrompt:
+		return fmt.Sprintf("set parent of #%d", n)
+	case inputBlockerPrompt:
+		return fmt.Sprintf("add blocker to #%d", n)
+	case inputLinkPrompt:
+		return fmt.Sprintf("add link to #%d (kind number)", n)
+	}
+	return ""
 }

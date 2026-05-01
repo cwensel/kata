@@ -91,21 +91,21 @@ type detailModel struct {
 	scopePID        int64
 	allProjects     bool
 	actor           string
-	modal           modal
 	status          string
+	// dm.modal was removed in M3b — the M3a/b input infrastructure on
+	// Model.input owns inline label/owner/link prompts now.
 }
 
 // newDetailModel returns a zeroed detailModel.
 func newDetailModel() detailModel { return detailModel{} }
 
 // Update routes detail-view messages: keys and the four fetch results.
-// Splitting the key path into handleKey keeps this dispatch ≤5 cyc.
+// After M3b the dm.modal in-place input was retired; the panel-local
+// prompt lives on Model.input and is dispatched at the Model level,
+// so dm.Update no longer has a "modal active" branch.
 func (dm detailModel) Update(msg tea.Msg, km keymap, api detailAPI) (detailModel, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.KeyMsg:
-		if dm.modal.active() {
-			return dm.handleModalKey(m, api)
-		}
 		return dm.handleKey(m, km, api)
 	case mutationDoneMsg:
 		return dm.applyMutation(m, api)

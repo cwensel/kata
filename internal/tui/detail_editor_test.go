@@ -17,9 +17,7 @@ func TestDetail_EditBody_Dispatches(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd from e (editor suspend)")
 	}
-	if out.modal.active() {
-		t.Fatal("e must not open a modal")
-	}
+	_ = out
 	if api.editBodyCalls != 0 {
 		t.Fatalf("editBodyCalls = %d, want 0 (no API call until editor returns)",
 			api.editBodyCalls)
@@ -36,9 +34,7 @@ func TestDetail_NewComment_Dispatches(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd from c (editor suspend)")
 	}
-	if out.modal.active() {
-		t.Fatal("c must not open a modal")
-	}
+	_ = out
 	if api.addCommentCalls != 0 {
 		t.Fatalf("addCommentCalls = %d, want 0", api.addCommentCalls)
 	}

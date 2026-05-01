@@ -39,83 +39,61 @@ func (dm detailModel) handleStatusKey(
 	return dm, nil, false
 }
 
-// handleModalOpenKey routes the keys that need a text prompt before the
-// mutation can fire. Opening a modal mutates dm.modal in place; the
-// actual mutation goes through handleModalKey on Enter.
+// handleModalOpenKey routes the keys that open a panel-local prompt
+// (M3b shell). Each binding emits openInputMsg so Model.openInput
+// constructs the inputState centrally; dm itself holds no input
+// state any more (M3b retired dm.modal).
 func (dm detailModel) handleModalOpenKey(
 	msg tea.KeyMsg, km keymap,
 ) (detailModel, tea.Cmd, bool) {
+	var kind inputKind
 	switch {
 	case km.AddLabel.matches(msg):
-		dm.modal = openModal(modalAddLabel)
+		kind = inputLabelPrompt
 	case km.RemoveLabel.matches(msg):
-		dm.modal = openModal(modalRemoveLabel)
+		kind = inputRemoveLabelPrompt
 	case km.AssignOwner.matches(msg):
-		dm.modal = openModal(modalAssignOwner)
+		kind = inputOwnerPrompt
 	case km.SetParent.matches(msg):
-		dm.modal = openModal(modalSetParent)
+		kind = inputParentPrompt
 	case km.AddBlocker.matches(msg):
-		dm.modal = openModal(modalAddBlocker)
+		kind = inputBlockerPrompt
 	case km.AddLink.matches(msg):
-		dm.modal = openModal(modalAddLink)
+		kind = inputLinkPrompt
 	default:
 		return dm, nil, false
 	}
 	dm.status = ""
-	return dm, nil, true
+	return dm, openInputCmd(kind), true
 }
 
-// handleModalKey routes keystrokes while a modal is open. Enter commits
-// the buffer to the kind-specific dispatch; Esc cancels.
-func (dm detailModel) handleModalKey(
-	msg tea.KeyMsg, api detailAPI,
+// dispatchPanelPromptCommit routes a panel-local prompt's committed
+// buffer through the right detail-side dispatcher. Called from
+// Model.commitInput when the active input is one of the M3b prompt
+// kinds. Parse failures (e.g., non-numeric blocker) surface as a
+// status hint via the existing parseFailedCmd path.
+//
+// dm is returned for shape-consistency with other detail handlers,
+// even though no dm field is mutated (the dispatch is purely a
+// command).
+func (dm detailModel) dispatchPanelPromptCommit(
+	api detailAPI, kind inputKind, buf string,
 ) (detailModel, tea.Cmd) {
-	next, action := dm.modal.HandleKey(msg)
-	dm.modal = next
-	switch action {
-	case modalCommit:
-		return dm.commitModal(api)
-	case modalCancel:
-		dm.modal = modal{}
-		return dm, nil
+	switch kind {
+	case inputLabelPrompt:
+		return dm, dm.dispatchLabel(api, buf, true)
+	case inputRemoveLabelPrompt:
+		return dm, dm.dispatchLabel(api, buf, false)
+	case inputOwnerPrompt:
+		return dm, dm.dispatchAssign(api, buf)
+	case inputParentPrompt:
+		return dm, dm.dispatchLink(api, "parent", buf)
+	case inputBlockerPrompt:
+		return dm, dm.dispatchLink(api, "blocks", buf)
+	case inputLinkPrompt:
+		return dm, dm.dispatchAddLinkSyntax(api, buf)
 	}
 	return dm, nil
-}
-
-// commitModal dispatches the mutation that the modal kind selected. The
-// buffer is the user's input — empty buffers no-op so accidental Enter
-// in a fresh modal doesn't churn the daemon.
-func (dm detailModel) commitModal(api detailAPI) (detailModel, tea.Cmd) {
-	kind := dm.modal.kind
-	buf := strings.TrimSpace(dm.modal.buffer)
-	dm.modal = modal{}
-	if buf == "" {
-		return dm, nil
-	}
-	return dm, dm.dispatchForKind(api, kind, buf)
-}
-
-// dispatchForKind routes the trimmed buffer through the right client
-// method. Parse failures (a non-numeric "blocker #") surface as a status
-// hint; the modal already closed so the user can retry.
-func (dm detailModel) dispatchForKind(
-	api detailAPI, kind modalKind, buf string,
-) tea.Cmd {
-	switch kind {
-	case modalAddLabel:
-		return dm.dispatchLabel(api, buf, true)
-	case modalRemoveLabel:
-		return dm.dispatchLabel(api, buf, false)
-	case modalAssignOwner:
-		return dm.dispatchAssign(api, buf)
-	case modalSetParent:
-		return dm.dispatchLink(api, "parent", buf)
-	case modalAddBlocker:
-		return dm.dispatchLink(api, "blocks", buf)
-	case modalAddLink:
-		return dm.dispatchAddLinkSyntax(api, buf)
-	}
-	return nil
 }
 
 // applyMutation handles mutationDoneMsg arriving back at the detail

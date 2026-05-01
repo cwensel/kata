@@ -49,14 +49,31 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 		title, statusBar, header, titleRow, rule, body, rule, tabs, rule, tabContent, rule,
 		dm.renderFooterLine(width, tabA),
 	}
-	if s := dm.modal.Render(); s != "" {
-		parts = append(parts, s)
+	// Panel-local prompt (M3b) renders below the footer line, anchored
+	// to the bottom of the detail pane. The chrome carries the active
+	// inputState so the renderer doesn't have to reach back to Model.
+	if chrome.input.kind.isPanelPrompt() {
+		parts = append(parts, renderPanelPrompt(chrome.input, panelPromptWidth(width)))
 	}
 	if t := renderToast(chrome.toast); t != "" {
 		parts = append(parts, t)
 	}
 	parts = append(parts, helpRow)
 	return joinNonEmpty(parts)
+}
+
+// panelPromptWidth caps the prompt's width so it doesn't span the
+// full terminal — visually it should feel like a small overlay
+// anchored to the detail pane. Min 40, max 60% of terminal width.
+func panelPromptWidth(termWidth int) int {
+	w := termWidth * 6 / 10
+	if w < 40 {
+		w = 40
+	}
+	if w > termWidth {
+		w = termWidth
+	}
+	return w
 }
 
 // viewerCounts returns the counts the title bar wants when rendered

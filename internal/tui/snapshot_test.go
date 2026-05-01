@@ -275,6 +275,18 @@ func TestSnapshot_List_WithFilterChips(t *testing.T) {
 	assertGolden(t, "list-with-filter-chips", got)
 }
 
+// TestSnapshot_Detail_WithLabelPrompt covers the M3b panel-local
+// prompt rendered at the bottom of the detail pane.
+func TestSnapshot_Detail_WithLabelPrompt(t *testing.T) {
+	defer snapshotInit(t)()
+	dm := snapDetailFixture()
+	chrome := viewChrome{
+		input: newPanelPrompt(inputLabelPrompt, dm.issue.Number),
+	}
+	got := dm.View(120, 30, chrome)
+	assertGolden(t, "detail-with-label-prompt", got)
+}
+
 // TestSnapshot_Detail_LongCommentsList locks the per-tab scroll
 // indicator: 30 comments on a 30-row terminal forces the visible
 // window to slice into the entries, and the footer shows

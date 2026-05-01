@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -281,41 +282,45 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 }
 
 // openInput constructs the inputState for a kind and applies the
-// initial state mutations the bar needs (e.g. preFilter snapshot for
-// search/owner). For inline command bars, the search/owner buffer
-// pre-fills from the existing filter so the user can refine an
-// active filter without retyping.
+// initial state mutations the input needs (e.g. preFilter snapshot
+// for bars; issue context for panel prompts). For inline command
+// bars, the search/owner buffer pre-fills from the existing filter
+// so the user can refine an active filter without retyping. For
+// panel-local prompts, the issue number lands in the prompt title.
 func (m Model) openInput(kind inputKind) Model {
-	switch kind {
-	case inputSearchBar:
+	switch {
+	case kind == inputSearchBar:
 		m.input = newSearchBar(m.list.filter)
-	case inputOwnerBar:
+	case kind == inputOwnerBar:
 		m.input = newOwnerBar(m.list.filter)
+	case kind.isPanelPrompt():
+		num := int64(0)
+		if m.detail.issue != nil {
+			num = m.detail.issue.Number
+		}
+		m.input = newPanelPrompt(kind, num)
 	}
 	return m
 }
 
 // routeInputKey delivers a key into the active input shell and
 // applies the resulting action. Bars apply their buffer to lm.filter
-// live on every keystroke (no debounce — filters are client-side);
-// commit closes the bar leaving the filter applied; cancel restores
-// the pre-open filter snapshot.
+// live on every keystroke (no debounce — filters are client-side).
+// Panel prompts (M3b) commit on action only — no live mirror; they
+// dispatch the mutation via dispatchPanelPromptCommit. Commit closes
+// the input; cancel restores any pre-open snapshot (bars only).
 func (m Model) routeInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	next, action := m.input.Update(msg)
 	m.input = next
 	switch action {
 	case actionCommit:
-		m = m.commitInput()
-		return m, nil
+		return m.commitInput()
 	case actionCancel:
-		m = m.cancelInput()
-		return m, nil
+		return m.cancelInput(), nil
 	}
-	// actionNone: mirror the bar's buffer into the live filter so the
-	// table re-renders on every keystroke. Only inline command bars
-	// have this live-apply behavior — prompts and forms (M3b/M4)
-	// commit on action only.
-	m = m.applyLiveBarFilter()
+	if m.input.kind.isCommandBar() {
+		m = m.applyLiveBarFilter()
+	}
 	return m, nil
 }
 
@@ -340,17 +345,30 @@ func (m Model) applyLiveBarFilter() Model {
 	return m
 }
 
-// commitInput closes the bar leaving the filter applied. Cursor is
-// already clamped via applyLiveBarFilter.
-func (m Model) commitInput() Model {
+// commitInput closes the input shell. For command bars, the live-
+// mirrored filter stays applied. For panel-local prompts, the
+// trimmed buffer dispatches the corresponding detail-side mutation
+// via dispatchPanelPromptCommit before the input clears.
+func (m Model) commitInput() (Model, tea.Cmd) {
+	kind := m.input.kind
+	buf := ""
+	if f := m.input.activeField(); f != nil {
+		buf = strings.TrimSpace(f.value())
+	}
 	m.input = inputState{}
-	return m
+	if kind.isPanelPrompt() && buf != "" {
+		var cmd tea.Cmd
+		m.detail, cmd = m.detail.dispatchPanelPromptCommit(m.api, kind, buf)
+		return m, cmd
+	}
+	return m, nil
 }
 
-// cancelInput restores the pre-open filter snapshot and closes the
-// bar — undoing every live keystroke the user typed into it.
+// cancelInput restores any pre-open filter snapshot (bars only) and
+// closes the input — undoing every live keystroke the user typed.
+// Panel-local prompts have no live mirror, so cancel is just close.
 func (m Model) cancelInput() Model {
-	if m.input.kind == inputSearchBar || m.input.kind == inputOwnerBar {
+	if m.input.kind.isCommandBar() {
 		m.list.filter = m.input.preFilter
 		m.list = m.list.clampCursorToFilter()
 	}
@@ -671,8 +689,7 @@ func toastExpireCmd(d time.Duration) tea.Cmd {
 
 // canQuit reports whether a global keystroke (q, ?, R) should be
 // honored. False while an input shell is open (search/owner bar from
-// M3a; panel-local prompts from M3b; centered forms from M4) or
-// while the detail-view's pre-M3b dm.modal is still active. The
+// M3a; panel-local prompts from M3b; centered forms from M4). The
 // input gate is the single source of truth for "user is typing into
 // a field" — global keys must reach the field instead of firing.
 //
@@ -683,9 +700,6 @@ func (m Model) canQuit() bool {
 		return false
 	}
 	if m.list.search.inputting {
-		return false
-	}
-	if m.view == viewDetail && m.detail.modal.active() {
 		return false
 	}
 	return true
