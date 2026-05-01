@@ -13,8 +13,6 @@ import (
 	"github.com/wesm/kata/internal/config"
 )
 
-func computeDBHashForTest(dbPath string) string { return config.DBHash(dbPath) }
-
 func writeRuns(t *testing.T, dir string, files map[string][]map[string]any) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -41,8 +39,7 @@ func setupHooksDir(t *testing.T) (home, hooksDir, dbHash string) {
 	if err := os.WriteFile(filepath.Join(home, "kata.db"), []byte{0}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dbPath := filepath.Join(home, "kata.db")
-	dbHash = computeDBHashForTest(dbPath)
+	dbHash = config.DBHash(filepath.Join(home, "kata.db"))
 	hooksDir = filepath.Join(home, "hooks", dbHash)
 	return
 }

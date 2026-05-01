@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -147,7 +148,7 @@ func readMatchesFromFile(path string, stderr io.Writer, f *hookLogFilter) ([]str
 	for scanner.Scan() {
 		lineNo++
 		line := scanner.Bytes()
-		if len(strings.TrimSpace(string(line))) == 0 {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		rec, ok := f.accept(append([]byte(nil), line...))
@@ -256,6 +257,12 @@ func rotationDetected(prev, current os.FileInfo, prevSize int64) bool {
 
 // emitNewLines reads from `from` to EOF and prints matching records.
 // Returns the number of bytes read so the caller can advance prevSize.
+// Caveat: bufio.Scanner emits the trailing line whether or not it ended
+// in `\n`. For runs.jsonl that's safe — runs.go writes one Append() as
+// a single Write of `[json + '\n']`, atomic for any record under
+// PIPE_BUF. Records exceeding PIPE_BUF could be torn across two ticks;
+// not a v1 concern given record size, but worth re-evaluating if
+// payload sizes ever grow above ~4KB.
 func emitNewLines(path string, from int64, stdout, stderr io.Writer, f *hookLogFilter) (int64, error) {
 	fh, err := os.Open(path) //nolint:gosec // G304: path is daemon-controlled state-dir filename
 	if err != nil {
@@ -273,7 +280,7 @@ func emitNewLines(path string, from int64, stdout, stderr io.Writer, f *hookLogF
 		lineNo++
 		line := scanner.Bytes()
 		read += int64(len(line)) + 1 // +1 for the newline
-		if len(strings.TrimSpace(string(line))) == 0 {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		rec, ok := f.accept(append([]byte(nil), line...))
