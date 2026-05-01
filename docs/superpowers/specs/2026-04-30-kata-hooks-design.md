@@ -199,6 +199,10 @@ type CommentSnapshot struct {
     Body string
 }
 
+type ProjectSnapshot struct {
+    Name string
+}
+
 type DispatcherDeps struct {
     DBHash           string
     KataHome         string
@@ -206,6 +210,7 @@ type DispatcherDeps struct {
     AliasResolver    func(evt db.Event) (AliasSnapshot, bool, error)
     IssueResolver    func(ctx context.Context, issueID int64) (IssueSnapshot, error)
     CommentResolver  func(ctx context.Context, commentID int64) (CommentSnapshot, error)
+    ProjectResolver  func(ctx context.Context, projectID int64) (ProjectSnapshot, error)
     Now              func() time.Time   // tests inject
     GraceWindow      time.Duration      // SIGTERM→SIGKILL; default 5s; tests shorten
 }
@@ -314,7 +319,12 @@ func (d *Dispatcher) worker() {
 }
 
 func (d *Dispatcher) Shutdown(ctx context.Context) error {
-    d.stopped.Store(true)   // Enqueue becomes no-op
+    // CompareAndSwap so a second Shutdown call is a no-op rather than
+    // panicking on close-of-closed-channel. Defensive: callers may
+    // retry shutdown on context-deadline expiry.
+    if !d.stopped.CompareAndSwap(false, true) {
+        return nil
+    }
     close(d.done)           // workers exit after current in-flight job
 
     waited := make(chan struct{})
@@ -354,29 +364,50 @@ err := <KataHome>/hooks/<dbhash>/output/<event_id>.<hook_index>.err
 outFile, oErr := os.OpenFile(out, O_CREATE|O_WRONLY|O_TRUNC, 0o600)
 errFile, eErr := os.OpenFile(err, O_CREATE|O_WRONLY|O_TRUNC, 0o600)
 if oErr != nil || eErr != nil {
-    // Output dir was deleted, permissions changed, or fs is full. Record
-    // as spawn_failed so runs.jsonl reflects the run attempt; we cannot
-    // record output paths because we don't have valid handles.
+    // Output dir was deleted, permissions changed, or fs is full. We
+    // cannot reference paths we couldn't create — recordRun with empty
+    // path/size fields and exit. No defer-close needed here since
+    // partial-success files are explicitly closed on this branch.
     msg := fmt.Sprintf("open output files: out=%v err=%v", oErr, eErr)
-    recordRun(result="spawn_failed", spawn_error=msg, stdout_path="", stderr_path="")
     if outFile != nil { _ = outFile.Close() }
     if errFile != nil { _ = errFile.Close() }
+    recordRun(
+        result="spawn_failed", spawn_error=msg,
+        stdout_path="", stderr_path="",
+        stdout_bytes=0, stderr_bytes=0,
+    )
     return
 }
+// From this point both files exist as 0-byte handles. Defer close so
+// every exit path — happy and early — closes both files exactly once
+// before recordRun reads their final sizes.
+defer outFile.Close()
+defer errFile.Close()
+
+// recordRunWithFiles is a small helper that:
+//   1. closes outFile/errFile (idempotent via the defers above plus a
+//      sync of remaining buffered bytes),
+//   2. stats both paths to populate stdout_bytes / stderr_bytes,
+//   3. appends one line to runs.jsonl (under the appender mutex).
+// Used by every exit point below so paths and byte counts are
+// recorded uniformly.
 
 // 2. Pre-spawn working_dir check.
 if st, e := os.Stat(job.Hook.WorkingDir); e != nil {
-    if errors.Is(e, fs.ErrNotExist):
-        recordRun(result="working_dir_missing", spawn_error=e.Error())
+    if errors.Is(e, fs.ErrNotExist) {
+        recordRunWithFiles(result="working_dir_missing", spawn_error=e.Error())
         return
-    recordRun(result="spawn_failed", spawn_error=e.Error())
+    }
+    recordRunWithFiles(result="spawn_failed", spawn_error=e.Error())
     return
-} else if !st.IsDir():
-    recordRun(result="spawn_failed", spawn_error="working_dir is not a directory")
+} else if !st.IsDir() {
+    recordRunWithFiles(result="spawn_failed", spawn_error="working_dir is not a directory")
     return
+}
 
 // 3. Resolve enrichment data at fire time. Failures are tolerated: each
 //    block is omitted with a rate-limited log line. The hook still runs.
+proj, projErr := deps.ProjectResolver(daemonCtx, evt.ProjectID)
 issue, issueErr := deps.IssueResolver(daemonCtx, deref(evt.IssueID))
 alias, hasAlias, aliasErr := deps.AliasResolver(evt)
 var commentBody string
@@ -387,7 +418,9 @@ if evt.Type == "issue.commented" {
         }
     }
 }
-stdinPayload, payloadTruncated := buildStdinJSON(evt, issue, issueErr, alias, hasAlias, aliasErr, commentBody)
+stdinPayload, payloadTruncated := buildStdinJSON(
+    evt, proj, projErr, issue, issueErr,
+    alias, hasAlias, aliasErr, commentBody)
 
 // 4. Build command — exec.Command, NOT exec.CommandContext.
 cmd := exec.Command(job.Hook.Command, job.Hook.Args...)
@@ -399,9 +432,10 @@ cmd.Stderr = errFile
 applyProcessGroupAttrs(cmd)                                 // unix Setpgid; windows no-op
 
 // 5. Spawn.
-if e := cmd.Start(); e != nil:
-    recordRun(result="spawn_failed", spawn_error=e.Error())
+if e := cmd.Start(); e != nil {
+    recordRunWithFiles(result="spawn_failed", spawn_error=e.Error())
     return
+}
 
 // 6. Wait with two contexts: hook timeout + daemon shutdown (d.done).
 done := make(chan error, 1)
@@ -424,12 +458,15 @@ case <-d.done:    // dispatcher Shutdown signal (§5.4)
     <-done
 }
 
-// 7. Close output files; record run.
-recordRun(result, exit_code, durations, file paths and sizes, payload_truncated)
+// 7. Record run. recordRunWithFiles closes the deferred files,
+//    stats the paths, and appends to runs.jsonl.
+recordRunWithFiles(result, exit_code, payload_truncated)
 
 // 8. Best-effort prune (§9).
 prune.MaybeSweep(deps.OutputDir, deps.OutputDiskCap)
 ```
+
+**Recording uniformity**: every exit path that reaches the deferred files calls `recordRunWithFiles` so `runs.jsonl` always carries `stdout_path` / `stderr_path` (the resolved on-disk filenames) and `stdout_bytes` / `stderr_bytes` (the final sizes — zero on early-exit before any process ran). The single pre-defer error path (output-file open failure) is the only case that records empty paths and zero bytes; that's intentional because we have no valid file to point at.
 
 ### 6.2 `killTreeWithGrace`
 
@@ -524,7 +561,7 @@ After per-field caps, if total bytes still > 256 KB:
 | Payload section | Source | Resolver |
 |---|---|---|
 | `event_id`, `type`, `actor`, `created_at`, `project.id`, `project.identity`, `issue.number` | `evt` directly | — |
-| `project.name` | DB `projects.name` | (cached at startup or looked up on first need; trivial) |
+| `project.name` | DB `projects.name` | `ProjectResolver(ctx, evt.ProjectID)` |
 | `issue.title`/`status`/`labels`/`owner`/`author` | DB `issues` + `issue_labels` | `IssueResolver(ctx, evt.IssueID)` |
 | `payload.comment_id` | `evt.Payload` JSON (already there for `issue.commented`) | — |
 | `payload.comment_body` | DB `comments.body` (when event type is `issue.commented`) | `CommentResolver(ctx, commentID)` |
@@ -534,6 +571,7 @@ Resolver behavior:
 
 - **`IssueResolver`**: returns `(IssueSnapshot, error)`. On error, the entire `issue` block is omitted from the payload and a rate-limited line is logged. On success the snapshot fills the block. Snapshots are read at hook-fire time (not enqueue time) so a recently-edited issue reflects current state.
 - **`CommentResolver`**: only invoked when `evt.Type == "issue.commented"`. On error, `payload.comment_body` is omitted (the `comment_id` from the event payload is preserved). On success the body fills the field, subject to per-field truncation.
+- **`ProjectResolver`**: returns `(ProjectSnapshot, error)`. On error, `project.name` is omitted (`project.id` and `project.identity` come from `evt` and are always present). Logged rate-limited.
 - **`AliasResolver`**: `func(evt db.Event) (AliasSnapshot, bool, error)`:
   - `(snap, true, nil)` → embed `alias` block.
   - `(_, false, nil)` → omit `alias` (events emitted from contexts without a single workspace; rare).
@@ -727,7 +765,11 @@ Subcommands:
 | Payload | `IssueResolver` returns error → no `issue` block, daemon log captures, hook still runs |
 | Payload | `CommentResolver` returns error on `issue.commented` → `payload.comment_id` preserved, `comment_body` omitted, hook still runs |
 | Payload | non-`issue.commented` events → `CommentResolver` not called |
+| Payload | `ProjectResolver` returns error → no `project.name`, but `project.id` and `project.identity` still present (sourced from event), hook still runs |
 | Runner | output file open fails (dir deleted between New and fire) → `result=spawn_failed`, empty `stdout_path`/`stderr_path` in runs.jsonl, hook not spawned |
+| Runner | `working_dir_missing` after files opened → `runs.jsonl` line carries non-empty `stdout_path`/`stderr_path` (zero-byte files) and `stdout_bytes=stderr_bytes=0` |
+| Runner | `cmd.Start` fails after files opened → same: `runs.jsonl` carries valid paths + zero sizes |
+| Dispatcher | `Shutdown` is idempotent — calling it twice does not panic and the second call returns nil immediately |
 | Prune | startup walk seeds running total |
 | Prune | run-group delete: `81237.2.out` + `81237.2.err` deleted together |
 | Prune | best-effort: injected delete error → run still records, daemon log rate-limited |
