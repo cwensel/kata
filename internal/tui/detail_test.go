@@ -239,14 +239,62 @@ func TestDetail_FetchedMsgs_Populate(t *testing.T) {
 	}
 }
 
-// TestDetail_FetchedMsgs_ErrorRecorded: an error on any tab fetch
-// surfaces on dm.err.
+// TestDetail_FetchedMsgs_ErrorRecorded: an error on a tab fetch
+// surfaces on the per-tab error slot (dm.commentsErr in this case).
+// The detail-issue dm.err remains a separate signal because it gates
+// the entire view rather than one tab.
 func TestDetail_FetchedMsgs_ErrorRecorded(t *testing.T) {
 	dm := detailModel{issue: &Issue{Number: 1}}
 	km := newKeymap()
 	dm, _ = dm.Update(commentsFetchedMsg{err: errors.New("boom")}, km, nil)
-	if dm.err == nil || dm.err.Error() != "boom" {
-		t.Fatalf("err = %v, want boom", dm.err)
+	if dm.commentsErr == nil || dm.commentsErr.Error() != "boom" {
+		t.Fatalf("commentsErr = %v, want boom", dm.commentsErr)
+	}
+}
+
+// TestDetail_TabPlaceholder_LoadingRendered: when a tab is marked
+// loading, the renderer substitutes "(loading…)" for the entry list
+// regardless of whether data is present.
+func TestDetail_TabPlaceholder_LoadingRendered(t *testing.T) {
+	dm := detailFixture()
+	dm.commentsLoading = true
+	out := dm.View(80, 30)
+	if !strings.Contains(out, "loading") {
+		t.Fatalf("expected loading placeholder on comments tab, got:\n%s", out)
+	}
+}
+
+// TestDetail_TabPlaceholder_ErrorRendered: a per-tab error renders
+// "comments: <err>" (style is theme-dependent so we just assert the
+// substring) so the user can tell which tab failed.
+func TestDetail_TabPlaceholder_ErrorRendered(t *testing.T) {
+	dm := detailFixture()
+	dm.commentsLoading = false
+	dm.commentsErr = errors.New("server down")
+	out := dm.View(80, 30)
+	if !strings.Contains(out, "comments: server down") {
+		t.Fatalf("expected per-tab error hint, got:\n%s", out)
+	}
+}
+
+// TestDetail_OpenDetail_SeedsLoadingFlags: opening detail through the
+// model-level handler seeds all three per-tab loading flags so the
+// initial render shows "(loading…)" until the tab fetches return.
+func TestDetail_OpenDetail_SeedsLoadingFlags(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7}
+	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
+	out, _ := m.Update(openDetailMsg{issue: iss})
+	m = out.(Model)
+	if !m.detail.commentsLoading {
+		t.Fatal("commentsLoading should be true after open")
+	}
+	if !m.detail.eventsLoading {
+		t.Fatal("eventsLoading should be true after open")
+	}
+	if !m.detail.linksLoading {
+		t.Fatal("linksLoading should be true after open")
 	}
 }
 
@@ -565,7 +613,7 @@ func TestDetail_RenderCommentsTab_FormatsAuthorAndIndentsBody(t *testing.T) {
 			CreatedAt: time.Date(2025, 1, 2, 15, 4, 0, 0, time.UTC),
 		},
 	}
-	out := renderCommentsTab(cs, 80, 20, -1)
+	out := renderCommentsTab(cs, 80, 20, -1, tabState{})
 	if !strings.Contains(out, "[alice] 2025-01-02 15:04") {
 		t.Fatalf("missing author/timestamp header:\n%s", out)
 	}
@@ -580,7 +628,7 @@ func TestDetail_RenderCommentsTab_FormatsAuthorAndIndentsBody(t *testing.T) {
 // TestDetail_RenderCommentsTab_EmptyShowsHint shows the placeholder when
 // there are no comments.
 func TestDetail_RenderCommentsTab_EmptyShowsHint(t *testing.T) {
-	out := renderCommentsTab(nil, 80, 5, -1)
+	out := renderCommentsTab(nil, 80, 5, -1, tabState{})
 	if !strings.Contains(out, "no comments yet") {
 		t.Fatalf("expected placeholder, got:\n%s", out)
 	}
@@ -608,7 +656,7 @@ func TestDetail_RenderEventsTab_FormatsCommonEventTypes(t *testing.T) {
 		{Type: "issue.assigned", Actor: "d", CreatedAt: when,
 			Payload: map[string]any{"owner": "wesm"}},
 	}
-	out := renderEventsTab(es, 200, 20, -1)
+	out := renderEventsTab(es, 200, 20, -1, tabState{})
 	checks := []string{
 		"[issue.created] 2025-01-02 15:04 a — created",
 		"[issue.closed] 2025-01-02 15:04 a — closed (wontfix)",
@@ -628,7 +676,7 @@ func TestDetail_RenderEventsTab_FormatsCommonEventTypes(t *testing.T) {
 // something coherent.
 func TestDetail_RenderEventsTab_UnknownTypeFallback(t *testing.T) {
 	es := []EventLogEntry{{Type: "issue.future_thing", Actor: "a"}}
-	out := renderEventsTab(es, 80, 5, -1)
+	out := renderEventsTab(es, 80, 5, -1, tabState{})
 	if !strings.Contains(out, "future_thing") {
 		t.Fatalf("expected fallback description:\n%s", out)
 	}
@@ -641,7 +689,7 @@ func TestDetail_RenderLinksTab_FormatsLinkLine(t *testing.T) {
 		{ID: 1, Type: "blocks", FromNumber: 42, ToNumber: 7,
 			Author: "wesm", CreatedAt: when},
 	}
-	out := renderLinksTab(ls, 200, 5, -1)
+	out := renderLinksTab(ls, 200, 5, -1, tabState{})
 	want := "[blocks] → #7 ← #42  by wesm @ 2025-01-02 15:04"
 	if !strings.Contains(out, want) {
 		t.Fatalf("missing link line %q in:\n%s", want, out)
@@ -651,7 +699,7 @@ func TestDetail_RenderLinksTab_FormatsLinkLine(t *testing.T) {
 // TestDetail_RenderLinksTab_EmptyShowsHint shows the placeholder when
 // there are no links.
 func TestDetail_RenderLinksTab_EmptyShowsHint(t *testing.T) {
-	out := renderLinksTab(nil, 80, 5, -1)
+	out := renderLinksTab(nil, 80, 5, -1, tabState{})
 	if !strings.Contains(out, "no links") {
 		t.Fatalf("expected placeholder, got:\n%s", out)
 	}
@@ -832,7 +880,7 @@ func TestDetail_TabWindow_KeepsCursorVisible(t *testing.T) {
 			Type: "issue.commented", Actor: fmt.Sprintf("user-%d", i),
 		}
 	}
-	out := renderEventsTab(events, 200, 5, 8) // header + 4 visible rows
+	out := renderEventsTab(events, 200, 5, 8, tabState{}) // header + 4 visible rows
 	if !strings.Contains(out, "user-8") {
 		t.Fatalf("cursor row (user-8) missing from windowed output:\n%s", out)
 	}
@@ -851,7 +899,7 @@ func TestDetail_TabWindow_NarrowFitsAll(t *testing.T) {
 		{Type: "issue.commented", Actor: "alice"},
 		{Type: "issue.commented", Actor: "bob"},
 	}
-	out := renderEventsTab(events, 200, 10, 0)
+	out := renderEventsTab(events, 200, 10, 0, tabState{})
 	if !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {
 		t.Fatalf("expected both rows, got:\n%s", out)
 	}
@@ -870,7 +918,7 @@ func TestDetail_CommentsTabWindow_KeepsCursorVisible(t *testing.T) {
 	}
 	// Each comment chunk is ~3 lines (header, body, separator). Budget
 	// of 6 → header + ~5 rows visible. Cursor at 5 (last) should appear.
-	out := renderCommentsTab(cs, 200, 6, 5)
+	out := renderCommentsTab(cs, 200, 6, 5, tabState{})
 	if !strings.Contains(out, "user-5") {
 		t.Fatalf("cursor entry user-5 missing from windowed output:\n%s", out)
 	}
@@ -889,7 +937,7 @@ func TestDetail_LinksTabWindow_KeepsCursorVisible(t *testing.T) {
 			FromNumber: 42, ToNumber: int64(i + 1), Author: fmt.Sprintf("u%d", i),
 		}
 	}
-	out := renderLinksTab(ls, 200, 5, 8)
+	out := renderLinksTab(ls, 200, 5, 8, tabState{})
 	if !strings.Contains(out, "by u8") {
 		t.Fatalf("cursor link (u8) missing:\n%s", out)
 	}

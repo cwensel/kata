@@ -238,6 +238,91 @@ func TestList_NewIssue_EmptyTitleDoesNotCallAPI(t *testing.T) {
 	}
 }
 
+// TestList_NewIssue_WhitespaceTitleDoesNotCallAPI: a buffer of only
+// spaces (or other whitespace) is also a no-op rather than a server
+// round-trip that the daemon would reject anyway. Regression for
+// finding 28: trim before the empty-check so " " doesn't churn the
+// daemon.
+func TestList_NewIssue_WhitespaceTitleDoesNotCallAPI(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+
+	lm, _ := lmFromUpdate(listModel{}, runeKey('n'), km, api, sc)
+	for _, r := range "   \t  " {
+		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
+	}
+	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
+	if cmd != nil {
+		t.Fatal("whitespace-only title must not dispatch an editor cmd")
+	}
+	if api.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0", api.createCalls)
+	}
+	if lm.pendingTitle != "" {
+		t.Fatalf("pendingTitle = %q, want empty", lm.pendingTitle)
+	}
+}
+
+// TestList_LabelFilter_StatusHintWhenSet: committing a non-empty label
+// filter surfaces a "not yet supported" hint rather than silently
+// applying a filter that the Issue projection cannot honor. Regression
+// for finding 29.
+func TestList_LabelFilter_StatusHintWhenSet(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+
+	lm, _ := lmFromUpdate(listModel{}, runeKey('l'), km, api, sc)
+	for _, r := range "bug" {
+		lm, _ = lmFromUpdate(lm, runeKey(r), km, api, sc)
+	}
+	lm, cmd := lmFromUpdate(lm, tea.KeyMsg{Type: tea.KeyEnter}, km, api, sc)
+	if cmd != nil {
+		t.Fatalf("label commit must not refetch (not yet supported), got %T", cmd)
+	}
+	if lm.status == "" {
+		t.Fatal("expected a status hint on label commit")
+	}
+	if !strings.Contains(lm.status, "not yet supported") {
+		t.Fatalf("status = %q, expected to contain 'not yet supported'", lm.status)
+	}
+}
+
+// TestList_Cursor_MovesInFilteredSpace: with a filter active, j/k
+// moves the cursor through filtered rows. Regression for finding 29:
+// previously j moved through all issues and the marker landed on the
+// wrong (sometimes invisible) row.
+func TestList_Cursor_MovesInFilteredSpace(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+	lm := listModel{
+		filter: ListFilter{Owner: "alice"},
+		issues: []Issue{
+			{Number: 1, Owner: ptrString("alice"), Title: "a"},
+			{Number: 2, Owner: ptrString("bob"), Title: "b"},
+			{Number: 3, Owner: ptrString("alice"), Title: "c"},
+			{Number: 4, Owner: ptrString("bob"), Title: "d"},
+		},
+	}
+	// Two filtered rows (1 and 3). j once → cursor=1 (the second
+	// filtered row, #3). j again clamps at len(filtered)-1=1.
+	lm, _ = lm.Update(runeKey('j'), km, api, sc)
+	if lm.cursor != 1 {
+		t.Fatalf("after j: cursor = %d, want 1", lm.cursor)
+	}
+	lm, _ = lm.Update(runeKey('j'), km, api, sc)
+	if lm.cursor != 1 {
+		t.Fatalf("after second j: cursor = %d, want 1 (clamped)", lm.cursor)
+	}
+	// targetRow must point at filtered[1] = issue #3.
+	iss, ok := lm.targetRow()
+	if !ok || iss.Number != 3 {
+		t.Fatalf("targetRow = (%+v, %v), want #3", iss, ok)
+	}
+}
+
 // TestList_NewIssue_NonEmptyTitleStagesAndDispatchesEditor: `n` then
 // "fix bug" then Enter stages the title in lm.pendingTitle and returns
 // a tea.Cmd that suspends to $EDITOR. CreateIssue must NOT have run

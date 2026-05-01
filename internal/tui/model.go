@@ -169,6 +169,12 @@ func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	m.detail.scopePID = pid
 	m.detail.allProjects = m.scope.allProjects
 	m.detail.actor = m.list.actor
+	// Per-tab loading flags drive the placeholder strings until each
+	// fetch returns; they're cleared (with the per-tab err set) by
+	// applyFetched.
+	m.detail.commentsLoading = true
+	m.detail.eventsLoading = true
+	m.detail.linksLoading = true
 	m.view = viewDetail
 	if m.api == nil {
 		return m, nil

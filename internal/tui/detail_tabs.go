@@ -5,18 +5,24 @@ import (
 	"strings"
 )
 
+// tabState carries the per-tab loading / error markers from the model
+// to the renderer. A non-nil err takes priority over loading; both
+// short-circuit the entry-list path so the user gets a clear hint.
+type tabState struct {
+	loading bool
+	err     error
+}
+
 // renderCommentsTab formats the comments tab as: header line plus per-
 // comment "[author] timestamp" header (selected row inverse-styled),
 // body line-wrapped to width with a 2-space indent, blank separator.
 // The cursor highlights the row under dm.tabCursor and the rendered
 // lines are windowed so the cursor entry is always visible even when
 // the entries don't all fit in height.
-func renderCommentsTab(cs []CommentEntry, width, height, cursor int) string {
+func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState) string {
 	headers := []string{titleStyle.Render(fmt.Sprintf("Comments (%d)", len(cs)))}
-	if len(cs) == 0 {
-		return assembleTab(headers, []entryChunk{
-			{lines: []string{statusStyle.Render("(no comments yet)")}},
-		}, width, height, -1)
+	if placeholder := tabPlaceholder(ts, "comments", "(no comments yet)", len(cs)); placeholder != nil {
+		return assembleTab(headers, []entryChunk{*placeholder}, width, height, -1)
 	}
 	chunks := make([]entryChunk, 0, len(cs))
 	for i, c := range cs {
@@ -37,12 +43,10 @@ func renderCommentsTab(cs []CommentEntry, width, height, cursor int) string {
 // row under dm.tabCursor; the rendered lines are windowed around the
 // cursor so a tabCursor past the visible height still has its row on
 // screen.
-func renderEventsTab(es []EventLogEntry, width, height, cursor int) string {
+func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState) string {
 	headers := []string{titleStyle.Render(fmt.Sprintf("Events (%d)", len(es)))}
-	if len(es) == 0 {
-		return assembleTab(headers, []entryChunk{
-			{lines: []string{statusStyle.Render("(no events yet)")}},
-		}, width, height, -1)
+	if placeholder := tabPlaceholder(ts, "events", "(no events yet)", len(es)); placeholder != nil {
+		return assembleTab(headers, []entryChunk{*placeholder}, width, height, -1)
 	}
 	chunks := make([]entryChunk, 0, len(es))
 	for i, e := range es {
@@ -60,12 +64,10 @@ func renderEventsTab(es []EventLogEntry, width, height, cursor int) string {
 // status is not on the LinkEntry projection; pressing Enter on a link
 // jumps to the target so the user can see the title and status there.
 // Lines are windowed around the cursor for the same reason.
-func renderLinksTab(ls []LinkEntry, width, height, cursor int) string {
+func renderLinksTab(ls []LinkEntry, width, height, cursor int, ts tabState) string {
 	headers := []string{titleStyle.Render(fmt.Sprintf("Links (%d)", len(ls)))}
-	if len(ls) == 0 {
-		return assembleTab(headers, []entryChunk{
-			{lines: []string{statusStyle.Render("(no links)")}},
-		}, width, height, -1)
+	if placeholder := tabPlaceholder(ts, "links", "(no links)", len(ls)); placeholder != nil {
+		return assembleTab(headers, []entryChunk{*placeholder}, width, height, -1)
 	}
 	chunks := make([]entryChunk, 0, len(ls))
 	for i, l := range ls {
@@ -76,6 +78,24 @@ func renderLinksTab(ls []LinkEntry, width, height, cursor int) string {
 		}})
 	}
 	return assembleTab(headers, chunks, width, height, cursor)
+}
+
+// tabPlaceholder returns the chunk to render in lieu of the entry list
+// when the tab is loading, errored, or empty. Returns nil when the
+// caller should render the entries normally.
+func tabPlaceholder(ts tabState, tab, emptyHint string, n int) *entryChunk {
+	if ts.err != nil {
+		return &entryChunk{lines: []string{
+			errorStyle.Render(tab + ": " + ts.err.Error()),
+		}}
+	}
+	if ts.loading {
+		return &entryChunk{lines: []string{statusStyle.Render("(loading…)")}}
+	}
+	if n == 0 {
+		return &entryChunk{lines: []string{statusStyle.Render(emptyHint)}}
+	}
+	return nil
 }
 
 // entryChunk groups the lines that belong to one tab entry. Comments

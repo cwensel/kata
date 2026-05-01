@@ -233,21 +233,28 @@ func (lm listModel) applyOpenKey(
 }
 
 // applyCursorKey handles the j/k/g/G family. ok=true means the key was
-// consumed.
+// consumed. The cursor moves in filtered-space (the slice the user
+// actually sees) so a hidden row preceding the cursor cannot desync
+// the marker from the highlighted row. lm.cursor is therefore an
+// index into filteredIssues(lm.issues, lm.filter), and every render
+// path that needs the unfiltered slice must re-look-up via that
+// helper.
 func (lm listModel) applyCursorKey(msg tea.KeyMsg, km keymap) (listModel, bool) {
+	rows := filteredIssues(lm.issues, lm.filter)
+	n := len(rows)
 	switch {
 	case km.Up.matches(msg):
 		if lm.cursor > 0 {
 			lm.cursor--
 		}
 	case km.Down.matches(msg):
-		if lm.cursor < len(lm.issues)-1 {
+		if lm.cursor < n-1 {
 			lm.cursor++
 		}
 	case km.Home.matches(msg):
 		lm.cursor = 0
 	case km.End.matches(msg):
-		if n := len(lm.issues); n > 0 {
+		if n > 0 {
 			lm.cursor = n - 1
 		}
 	default:
@@ -258,16 +265,21 @@ func (lm listModel) applyCursorKey(msg tea.KeyMsg, km keymap) (listModel, bool) 
 
 // applyFilterKey handles s (cycle status) and c (clear). Both dispatch
 // a refetch so the daemon is the source of truth for status filtering.
+// The cursor is reset to 0 because the filtered-row count (and thus
+// the index space lm.cursor lives in) changes with every filter
+// adjustment.
 func (lm listModel) applyFilterKey(
 	msg tea.KeyMsg, km keymap, api listAPI, sc scope,
 ) (listModel, tea.Cmd, bool) {
 	switch {
 	case km.FilterStatus.matches(msg):
 		lm.filter.Status = nextStatus(lm.filter.Status)
+		lm.cursor = 0
 		lm.status = ""
 		return lm, lm.refetchCmd(api, sc), true
 	case km.ClearFilters.matches(msg):
 		lm.filter = ListFilter{}
+		lm.cursor = 0
 		lm.status = ""
 		return lm, lm.refetchCmd(api, sc), true
 	}
@@ -326,7 +338,11 @@ func nextStatus(s string) string {
 }
 
 // applyFetched stores the latest issue list and clamps the cursor if
-// it would otherwise point past the new list end.
+// it would otherwise point past the new filtered-list end. The cursor
+// indexes into filteredIssues(lm.issues, lm.filter) so the clamp uses
+// that count rather than len(lm.issues) — a refetch that returns N
+// issues but only K satisfy the filter would otherwise leave the
+// cursor pointing into invisible rows.
 func (lm listModel) applyFetched(msg tea.Msg) listModel {
 	switch m := msg.(type) {
 	case initialFetchMsg:
@@ -341,8 +357,9 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 			lm.issues = m.issues
 		}
 	}
-	if lm.cursor >= len(lm.issues) {
-		lm.cursor = max(0, len(lm.issues)-1)
+	visible := len(filteredIssues(lm.issues, lm.filter))
+	if lm.cursor >= visible {
+		lm.cursor = max(0, visible-1)
 	}
 	return lm
 }
@@ -418,38 +435,62 @@ func (lm listModel) handleSearchKey(
 
 // commitPrompt routes the buffer to the configured field. The empty
 // case for owner/label/search clears that filter; the empty case for a
-// new-issue title cancels the create entirely.
+// new-issue title cancels the create entirely. The cursor is reset to
+// 0 on filter commits because the filtered-row count changes (and
+// lm.cursor indexes into the filtered slice).
 func (lm listModel) commitPrompt(api listAPI, sc scope) (listModel, tea.Cmd) {
 	field, buf := lm.search.field, lm.search.buffer
 	lm.search = searchState{}
 	switch field {
 	case searchFieldQuery:
 		lm.filter.Search = buf
+		lm.cursor = 0
 		return lm, lm.refetchCmd(api, sc)
 	case searchFieldOwner:
 		lm.filter.Owner = buf
+		lm.cursor = 0
 		return lm, lm.refetchCmd(api, sc)
 	case searchFieldLabel:
-		lm.filter.Labels = nonEmptyLabels(buf)
-		return lm, lm.refetchCmd(api, sc)
+		return lm.commitLabelPrompt(buf), nil
 	case searchFieldNewTitle:
 		return lm.submitNewIssue(buf, api, sc)
 	}
 	return lm, nil
 }
 
+// commitLabelPrompt handles label-prompt commits. The Issue projection
+// today carries no Labels, so a label filter would silently no-op;
+// surfacing a status hint instead of accepting the input keeps the
+// user from believing the filter was applied. The buffer is preserved
+// in lm.filter.Labels so a future server-side or wire-side label
+// surface can read it.
+func (lm listModel) commitLabelPrompt(buf string) listModel {
+	lm.filter.Labels = nonEmptyLabels(buf)
+	if len(lm.filter.Labels) == 0 {
+		lm.status = ""
+		return lm
+	}
+	lm.status = statusStyle.Render(
+		"label filter not yet supported (Issue projection lacks labels)",
+	)
+	return lm
+}
+
 // submitNewIssue stages the title and dispatches the editor for an
-// optional body. Empty title is a quiet no-op so accidental Enter
-// doesn't churn the daemon. The actual CreateIssue runs from
-// applyEditorReturned once $EDITOR exits — the user can save an empty
-// buffer to skip the body, in which case CreateIssue posts with body="".
+// optional body. Empty or whitespace-only titles are quiet no-ops so
+// accidental Enter (or a buffer of just spaces) doesn't churn the
+// daemon with a CreateIssue that would fail validation server-side
+// anyway. The actual CreateIssue runs from applyEditorReturned once
+// $EDITOR exits — the user can save an empty buffer to skip the body,
+// in which case CreateIssue posts with body="".
 func (lm listModel) submitNewIssue(
 	title string, _ listAPI, _ scope,
 ) (listModel, tea.Cmd) {
-	if title == "" {
+	t := strings.TrimSpace(title)
+	if t == "" {
 		return lm, nil
 	}
-	lm.pendingTitle = title
+	lm.pendingTitle = t
 	return lm, editorCmd("create", editorTemplate("create", ""))
 }
 

@@ -65,23 +65,34 @@ type detailAPI interface {
 // originated mutation captures the current gen at dispatch time, and
 // applyFetched/applyMutation discard messages whose gen no longer
 // matches so an in-flight response cannot pollute a different issue.
+//
+// commentsLoading / eventsLoading / linksLoading and their per-tab
+// error siblings drive the per-tab placeholders ("(loading...)" /
+// "comments: <err>") so the user can tell whether an empty tab is the
+// daemon still working or a real failure they should react to.
 type detailModel struct {
-	issue       *Issue
-	loading     bool
-	err         error
-	gen         int64
-	activeTab   detailTab
-	scroll      int // body scroll offset in lines
-	tabCursor   int // active-tab row cursor
-	comments    []CommentEntry
-	events      []EventLogEntry
-	links       []LinkEntry
-	navStack    []detailModel
-	scopePID    int64
-	allProjects bool
-	actor       string
-	modal       modal
-	status      string
+	issue           *Issue
+	loading         bool
+	err             error
+	gen             int64
+	activeTab       detailTab
+	scroll          int // body scroll offset in lines
+	tabCursor       int // active-tab row cursor
+	comments        []CommentEntry
+	events          []EventLogEntry
+	links           []LinkEntry
+	commentsLoading bool
+	eventsLoading   bool
+	linksLoading    bool
+	commentsErr     error
+	eventsErr       error
+	linksErr        error
+	navStack        []detailModel
+	scopePID        int64
+	allProjects     bool
+	actor           string
+	modal           modal
+	status          string
 }
 
 // newDetailModel returns a zeroed detailModel.
@@ -107,10 +118,12 @@ func (dm detailModel) Update(msg tea.Msg, km keymap, api detailAPI) (detailModel
 }
 
 // applyFetched seeds dm with the payload from one of the four fetched-
-// messages. Errors are last-write-wins; mergeErr factors that out so
-// each branch is a two-liner. Messages whose gen does not match dm.gen
-// are dropped so an in-flight fetch cannot pollute a different issue
-// after Esc + reopen or an Enter-jump to a referenced issue.
+// messages. Per-tab errors land on dm.commentsErr/eventsErr/linksErr
+// so the user can tell which tab failed; the detail-issue error still
+// rides dm.err because it gates the entire view. Messages whose gen
+// does not match dm.gen are dropped so an in-flight fetch cannot
+// pollute a different issue after Esc + reopen or an Enter-jump to a
+// referenced issue.
 func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
 	switch m := msg.(type) {
 	case detailFetchedMsg:
@@ -126,26 +139,31 @@ func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
 		if m.gen != dm.gen {
 			return dm
 		}
+		dm.commentsLoading = false
 		dm.comments = m.comments
-		dm.err = mergeErr(dm.err, m.err)
+		dm.commentsErr = m.err
 	case eventsFetchedMsg:
 		if m.gen != dm.gen {
 			return dm
 		}
+		dm.eventsLoading = false
 		dm.events = m.events
-		dm.err = mergeErr(dm.err, m.err)
+		dm.eventsErr = m.err
 	case linksFetchedMsg:
 		if m.gen != dm.gen {
 			return dm
 		}
+		dm.linksLoading = false
 		dm.links = m.links
-		dm.err = mergeErr(dm.err, m.err)
+		dm.linksErr = m.err
 	}
 	return dm
 }
 
 // mergeErr keeps the last non-nil error so a successful fetch on one
-// tab does not clear an earlier failure on another.
+// tab does not clear an earlier failure on another. Today only the
+// detail-issue fetch path uses this; the per-tab errors live on their
+// own dm fields.
 func mergeErr(prev, next error) error {
 	if next != nil {
 		return next
@@ -279,20 +297,24 @@ func (dm detailModel) jumpTarget() (int64, bool) {
 // gen advances so any fetch already in flight from the prior detail
 // view is discarded by applyFetched when it lands on the new dm. The
 // actor is preserved so a detail-side mutation after the jump still
-// carries the resolved identity.
+// carries the resolved identity. Per-tab loading flags are seeded so
+// the post-jump view shows "(loading...)" until the tab fetches land.
 func (dm detailModel) jumpTo(api detailAPI, number int64) (detailModel, tea.Cmd) {
 	prior := dm
 	prior.navStack = nil
 	pid := dm.scopePID
 	gen := dm.gen + 1
 	next := detailModel{
-		loading:     true,
-		gen:         gen,
-		activeTab:   dm.activeTab,
-		navStack:    append(dm.navStack, prior),
-		scopePID:    pid,
-		allProjects: dm.allProjects,
-		actor:       dm.actor,
+		loading:         true,
+		gen:             gen,
+		activeTab:       dm.activeTab,
+		navStack:        append(dm.navStack, prior),
+		scopePID:        pid,
+		allProjects:     dm.allProjects,
+		actor:           dm.actor,
+		commentsLoading: true,
+		eventsLoading:   true,
+		linksLoading:    true,
 	}
 	cmds := []tea.Cmd{
 		fetchIssue(api, pid, number, gen),

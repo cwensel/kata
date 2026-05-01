@@ -150,15 +150,20 @@ func (dm detailModel) renderTabStrip() string {
 // renderActiveTab dispatches to the per-tab renderer. The header line
 // "Comments (N)" / "Events (N)" / "Links (N)" sits above the entries
 // and is always rendered (even on empty data) so the tab strip + count
-// stays consistent across tab switches.
+// stays consistent across tab switches. The per-tab loading/err state
+// is forwarded so the renderer can substitute "(loading...)" or an
+// error chip for the entry list.
 func (dm detailModel) renderActiveTab(width, height int) string {
 	switch dm.activeTab {
 	case tabComments:
-		return renderCommentsTab(dm.comments, width, height, dm.tabCursor)
+		return renderCommentsTab(dm.comments, width, height, dm.tabCursor,
+			tabState{loading: dm.commentsLoading, err: dm.commentsErr})
 	case tabEvents:
-		return renderEventsTab(dm.events, width, height, dm.tabCursor)
+		return renderEventsTab(dm.events, width, height, dm.tabCursor,
+			tabState{loading: dm.eventsLoading, err: dm.eventsErr})
 	case tabLinks:
-		return renderLinksTab(dm.links, width, height, dm.tabCursor)
+		return renderLinksTab(dm.links, width, height, dm.tabCursor,
+			tabState{loading: dm.linksLoading, err: dm.linksErr})
 	}
 	return ""
 }
