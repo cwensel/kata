@@ -9,11 +9,14 @@ import (
 	"time"
 )
 
-// TestRunner_KillTree_OrphanedChildrenDieToo pins that timeout/shutdown
-// cleanup escalates to SIGKILL on the entire process group, even when
-// the leader has already exited. spawn-orphan forks a child that
-// ignores SIGTERM and outlives the parent's quick exit; the runner
-// must still tear that child down via the group SIGKILL.
+// TestRunner_KillTree_OrphanedChildrenDieToo pins that timeout cleanup
+// escalates to SIGKILL on the entire process group. The hook's parent
+// (hookprobe spawn-orphan) ignores SIGTERM AND outlives the hook
+// timeout, so the runner cannot fall back to "process exited normally"
+// — the only way the run can finish is for the SIGTERM/grace/SIGKILL
+// path to take down the whole group. The test asserts a timed_out
+// result and that the run completes well before the 30s child sleep
+// expires.
 func TestRunner_KillTree_OrphanedChildrenDieToo(t *testing.T) {
 	rs := newRunnerSetup(t)
 	bin := hookprobePath(t)
@@ -32,13 +35,12 @@ func TestRunner_KillTree_OrphanedChildrenDieToo(t *testing.T) {
 	rs.deps.GraceWindow = 100 * time.Millisecond
 	start := time.Now()
 	runJob(context.Background(), make(chan struct{}), job, rs.deps)
-	if got.Result != "ok" && got.Result != "timed_out" {
-		// Parent exits 0 quickly so result depends on race with timer.
-		t.Fatalf("result = %q, want ok or timed_out", got.Result)
+	if got.Result != "timed_out" {
+		t.Fatalf("result = %q, want timed_out (rs log: %s)", got.Result, rs.logBuf.String())
 	}
-	// Bound: full kill sequence (parent exit + grace + SIGKILL) must
-	// finish well under 5s. The orphaned 30s child would blow this if
-	// we didn't reach it.
+	// Bound: full kill sequence (SIGTERM + 100ms grace + SIGKILL +
+	// reap) must finish well before the 30s child sleep. If the group
+	// SIGKILL regressed, this would block until the 30s child exits.
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("runJob took %s, suggests orphan not killed", elapsed)
 	}
