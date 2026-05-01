@@ -466,6 +466,30 @@ func TestList_NewIssueRow_RendersFromTopOfList(t *testing.T) {
 	}
 }
 
+// TestList_NewIssueRow_ScrollIndicatorMatchesAnchoredWindow: the
+// info-line scroll indicator must use the same top-anchored window
+// as the rendered body when the inline new-issue row is open. With
+// cursor mid-list, the body anchors at index 0; the indicator must
+// report `[1-K of N]` (top slice) instead of a middle slice. The
+// budget shrinks by 1 to account for the synthetic row taking the
+// first data slot. Regression for roborev #121.
+func TestList_NewIssueRow_ScrollIndicatorMatchesAnchoredWindow(t *testing.T) {
+	issues := make([]Issue, 30)
+	for i := range issues {
+		issues[i] = Issue{Number: int64(i + 1), Title: "x", Status: "open"}
+	}
+	lm := listModel{issues: issues, cursor: 20}
+	chrome := viewChrome{
+		sseStatus: sseConnected,
+		input:     newNewIssueRow(),
+	}
+	info := renderListInfoLine(120, chrome, lm, 10)
+	// Anchored at top with budget 10-1=9 visible: window must be [1-9].
+	if !strings.Contains(info, "[1-9 of 30]") {
+		t.Fatalf("indicator mismatch; want [1-9 of 30], got %q", info)
+	}
+}
+
 // TestList_NewIssueRow_CommitSeedsSelectionToNewIssue: after a
 // successful create, the next refetch must land the cursor on the
 // newly-created issue (which lands at index 0 in a recency-sorted

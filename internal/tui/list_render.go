@@ -338,8 +338,19 @@ func renderListInfoLine(width int, chrome viewChrome, lm listModel, dataBudget i
 		body = chrome.toast.text
 	default:
 		visible := filteredIssues(lm.issues, lm.filter)
-		if n := len(visible); n > 0 && dataBudget > 0 && n > dataBudget {
-			start, end := windowBounds(n, lm.cursor, dataBudget)
+		// While the inline new-issue row is open, the body anchors
+		// at index 0 and gives up one data row to the synthetic row
+		// (renderBodyWithNewIssueRow). Mirror both adjustments here
+		// so the indicator matches the rendered window — roborev
+		// #121 follow-up to #113.
+		cursor := lm.cursor
+		budget := dataBudget
+		if chrome.input.kind == inputNewIssueRow {
+			cursor = 0
+			budget--
+		}
+		if n := len(visible); n > 0 && budget > 0 && n > budget {
+			start, end := windowBounds(n, cursor, budget)
 			body = rightAlignInside(
 				fmt.Sprintf("[%d-%d of %d]", start+1, end, n),
 				titleBarInnerWidth(width),
