@@ -20,12 +20,11 @@ func spawnOrphanAndExit(d time.Duration) {
 		os.Exit(1)
 	}
 	// Re-exec ourselves; exe path is from os.Executable, not user input.
-	cmd := exec.Command(exe, "term-ignore") //nolint:gosec // self-exec for orphan-spawn test helper
+	cmd := exec.Command(exe, "term-ignore", d.String()) //nolint:gosec // self-exec for orphan-spawn test helper
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: false}
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	time.Sleep(50 * time.Millisecond)
-	_ = d
 }

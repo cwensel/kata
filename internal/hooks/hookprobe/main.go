@@ -36,10 +36,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: hookprobe both OUT_LINE ERR_LINE")
 			os.Exit(2)
 		}
-		// Test helper: writing the literal arg to each stream is the
-		// whole point of this subcommand.
-		_, _ = fmt.Fprintln(os.Stdout, os.Args[2]) //nolint:gosec // intentional echo of CLI arg
-		_, _ = fmt.Fprintln(os.Stderr, os.Args[3]) //nolint:gosec // intentional echo of CLI arg
+		// Test helper: writing the literal arg to each stream is the whole
+		// point of this subcommand; gosec G705 (taint analysis) is moot
+		// here because the binary is built only by tests in this repo and
+		// is never exposed to untrusted callers.
+		_, _ = fmt.Fprintln(os.Stdout, os.Args[2]) //nolint:gosec // G705: test helper, see comment
+		_, _ = fmt.Fprintln(os.Stderr, os.Args[3]) //nolint:gosec // G705: test helper, see comment
 	case "exit":
 		if len(os.Args) != 3 {
 			fmt.Fprintln(os.Stderr, "usage: hookprobe exit N")
@@ -78,6 +80,15 @@ func main() {
 		time.Sleep(d)
 	case "term-ignore":
 		signal.Ignore(syscall.SIGTERM)
+		if len(os.Args) >= 3 {
+			d, err := time.ParseDuration(os.Args[2])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			time.Sleep(d)
+			return
+		}
 		select {}
 	case "spawn-orphan":
 		if len(os.Args) != 3 {
@@ -91,7 +102,7 @@ func main() {
 		}
 		spawnOrphanAndExit(d)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand: %q\n", os.Args[1]) //nolint:gosec // diagnostic echo of CLI arg
+		fmt.Fprintf(os.Stderr, "unknown subcommand: %q\n", os.Args[1]) //nolint:gosec // G705: diagnostic echo in test helper
 		os.Exit(2)
 	}
 }

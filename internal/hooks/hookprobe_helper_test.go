@@ -3,6 +3,7 @@ package hooks
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,8 @@ var (
 func hookprobePath(t testing.TB) string {
 	t.Helper()
 	hookprobeOnce.Do(func() {
+		// Not t.TempDir(): cleanup must outlive whichever test wins the sync.Once
+		// race; TestMain handles removal explicitly below.
 		dir, err := os.MkdirTemp("", "hookprobe-")
 		if err != nil {
 			hookprobeErr = err
@@ -33,7 +36,7 @@ func hookprobePath(t testing.TB) string {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
-			hookprobeErr = errors.New("go build ./hookprobe: " + err.Error() + ": " + stderr.String())
+			hookprobeErr = fmt.Errorf("go build ./hookprobe: %w: %s", err, stderr.String())
 			return
 		}
 		hookprobeBin = out
