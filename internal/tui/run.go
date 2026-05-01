@@ -29,18 +29,7 @@ func Run(ctx context.Context, opts Options) error {
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 		return errNotATTY
 	}
-	cwd, _ := os.Getwd()
-	endpoint, err := daemonclient.EnsureRunning(ctx)
-	if err != nil {
-		return err
-	}
-	hc, err := daemonclient.NewHTTPClient(ctx, endpoint,
-		daemonclient.Opts{Timeout: 5 * time.Second})
-	if err != nil {
-		return err
-	}
-	c := NewClient(endpoint, hc)
-	sc, err := bootResolveScope(ctx, c, opts.AllProjects, cwd)
+	c, sc, err := bootClient(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -58,11 +47,33 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.Stdout != nil {
 		progOpts = append(progOpts, tea.WithOutput(opts.Stdout))
 	}
-	p := tea.NewProgram(m, progOpts...)
-	if _, err := p.Run(); err != nil {
+	if _, err := tea.NewProgram(m, progOpts...).Run(); err != nil {
 		return err
 	}
 	return nil
+}
+
+// bootClient discovers the daemon, constructs the typed HTTP client, and
+// resolves the initial scope. Splitting this off Run keeps Run's
+// cyclomatic complexity inside the project's ≤8 hard limit and isolates
+// the network preflight from the Bubble Tea wiring.
+func bootClient(ctx context.Context, opts Options) (*Client, scope, error) {
+	endpoint, err := daemonclient.EnsureRunning(ctx)
+	if err != nil {
+		return nil, scope{}, err
+	}
+	hc, err := daemonclient.NewHTTPClient(ctx, endpoint,
+		daemonclient.Opts{Timeout: 5 * time.Second})
+	if err != nil {
+		return nil, scope{}, err
+	}
+	c := NewClient(endpoint, hc)
+	cwd, _ := os.Getwd()
+	sc, err := bootResolveScope(ctx, c, opts.AllProjects, cwd)
+	if err != nil {
+		return nil, scope{}, err
+	}
+	return c, sc, nil
 }
 
 // scope describes the issue-set the TUI is browsing. Exactly one of

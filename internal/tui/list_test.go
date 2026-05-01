@@ -9,49 +9,62 @@ import (
 	"github.com/charmbracelet/x/exp/teatest"
 )
 
-// twoIssueFixture is the on-screen seed for the list tests. Each test
-// feeds it via initialFetchMsg so the rendering layer is exercised
-// without booting a real daemon.
-func twoIssueFixture() []Issue {
-	open := "claude-4.7"
-	closed := "wesm"
+// ptrString is a test-only helper for taking the address of a string
+// literal inline. The production model exposes pointer fields (Owner,
+// DeletedAt) and Go forbids &"literal" so the fixtures need this.
+func ptrString(s string) *string { return &s }
+
+// listFixture is the on-screen seed for the list tests. Three rows cover
+// the open, closed, and soft-deleted statusChip branches without booting
+// a real daemon. The deleted row keeps statusChip's DeletedAt branch
+// under test even after the Task 4 fixture moved into this file.
+func listFixture() []Issue {
 	return []Issue{
-		{Number: 1, Title: "fix login bug on Safari", Status: "open", Owner: &open},
-		{Number: 2, Title: "rebuild search index", Status: "closed", Owner: &closed},
+		{
+			Number: 1, Title: "fix login bug on Safari",
+			Status: "open", Owner: ptrString("claude-4.7"),
+		},
+		{
+			Number: 2, Title: "rebuild search index",
+			Status: "closed", Owner: ptrString("wesm"),
+		},
+		{
+			Number: 3, Title: "purge stale tokens",
+			Status: "open", DeletedAt: ptrString("2026-04-30T12:00:00Z"),
+		},
 	}
 }
 
 // TestList_Render_Fixture confirms the seed reaches the screen so the
-// rendering layer can be reviewed independent of the network layer.
+// rendering layer can be reviewed independent of the network layer. The
+// [deleted] assertion guards statusChip's soft-delete branch.
 func TestList_Render_Fixture(t *testing.T) {
 	m := initialModel(Options{})
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
-	tm.Send(initialFetchMsg{issues: twoIssueFixture()})
+	tm.Send(initialFetchMsg{issues: listFixture()})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
-		return strings.Contains(string(b), "fix login bug on Safari")
+		s := string(b)
+		return strings.Contains(s, "fix login bug on Safari") &&
+			strings.Contains(s, "[deleted]")
 	}, teatest.WithDuration(2*time.Second))
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	tm.WaitFinished(t)
 }
 
-// TestList_Cursor_DownAndUp drives j/j/k against a three-row fixture and
-// asserts the marker glyph lands on the row containing #2. The third row
-// gives the down-clamp room to move; with two rows j/j/k would land on
-// index 0 because cursor never reaches 2. lipgloss/table pads between
+// TestList_Cursor_DownAndUp drives j/j/k against the three-row fixture
+// and asserts the marker glyph lands on the row containing #2. The third
+// row gives the down-clamp room to move; with two rows j/j/k would land
+// on index 0 because cursor never reaches 2. lipgloss/table pads between
 // columns, so we scan output line-by-line for one that contains both the
 // marker and the row's issue number.
 func TestList_Cursor_DownAndUp(t *testing.T) {
 	m := initialModel(Options{})
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
-	tm.Send(initialFetchMsg{issues: []Issue{
-		{Number: 1, Title: "fix login bug on Safari", Status: "open"},
-		{Number: 2, Title: "rebuild search index", Status: "closed"},
-		{Number: 3, Title: "third row", Status: "open"},
-	}})
+	tm.Send(initialFetchMsg{issues: listFixture()})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
-		return strings.Contains(string(b), "third row")
+		return strings.Contains(string(b), "purge stale tokens")
 	}, teatest.WithDuration(2*time.Second))
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})

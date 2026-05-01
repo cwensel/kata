@@ -8,7 +8,7 @@ import (
 // in effect, an optional active search prompt, and any boot/refetch
 // error to surface. filter and search.buffer are forward-declared for
 // Task 6 — read sites land then. The keymap lives on the parent Model
-// and is passed into Update/View; one instance keeps the help view in
+// and is passed into Update; one instance keeps the help view in
 // lockstep with what handlers actually do.
 type listModel struct {
 	issues  []Issue
