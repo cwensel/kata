@@ -161,6 +161,9 @@ func TestDetail_AddLabel_EscCancels(t *testing.T) {
 	if out.modal.active() {
 		t.Fatal("modal must close on Esc")
 	}
+	if out.modal.buffer != "" {
+		t.Fatalf("Esc must clear buffer, got %q", out.modal.buffer)
+	}
 	if api.addLabelCalls != 0 {
 		t.Fatalf("addLabelCalls = %d, want 0", api.addLabelCalls)
 	}

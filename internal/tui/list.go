@@ -343,8 +343,9 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 // applyMutation handles a mutationDoneMsg arriving at the list view.
 // "create", "close", "reopen" kinds all seed the status line and (on
 // success) dispatch a refetch so the row updates without waiting for
-// SSE invalidation (Task 11). Detail-driven mutations also bubble up
-// here via dispatchToView so the list cache gets the same refresh.
+// SSE invalidation (Task 11). Detail-driven mutations stay scoped to
+// the detail view; SSE-driven invalidation will keep the list cache
+// in sync once Task 11 lands.
 //
 // TODO(task-12): replace lm.status string with Model-level toast
 // machinery (messages.go::toastExpiredMsg + toast). The status line is
