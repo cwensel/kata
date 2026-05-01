@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"io"
 	"os"
 	"strings"
 
@@ -55,10 +56,17 @@ var (
 )
 
 // applyColorMode rebuilds all package-level styles. Called at TUI boot
-// so tests can swap modes without leaking state across tests.
-func applyColorMode(m colorMode) {
+// so tests can swap modes without leaking state across tests. The
+// renderer is bound to w so color-capability detection runs against the
+// actual output stream (not the package-default os.Stdout-bound
+// renderer, which is wrong when opts.Stdout is something else).
+func applyColorMode(m colorMode, w io.Writer) {
+	if w == nil {
+		w = os.Stdout
+	}
+	r := lipgloss.NewRenderer(w)
 	if m == colorNone {
-		base := lipgloss.NewStyle()
+		base := r.NewStyle()
 		titleStyle = base.Bold(true)
 		subtleStyle = base
 		statusStyle = base
@@ -86,23 +94,24 @@ func applyColorMode(m colorMode) {
 			return lipgloss.AdaptiveColor{Light: light, Dark: dark}
 		}
 	}
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(pick("125", "205"))
-	subtleStyle = lipgloss.NewStyle().Foreground(pick("242", "246"))
-	statusStyle = lipgloss.NewStyle().Foreground(pick("242", "246"))
-	selectedStyle = lipgloss.NewStyle().Background(pick("153", "24"))
-	openStyle = lipgloss.NewStyle().Foreground(pick("28", "46"))
-	closedStyle = lipgloss.NewStyle().Foreground(pick("30", "51"))
-	deletedStyle = lipgloss.NewStyle().Faint(true).Foreground(pick("243", "245"))
-	helpKeyStyle = lipgloss.NewStyle().Foreground(pick("242", "246"))
-	helpDescStyle = lipgloss.NewStyle().Foreground(pick("248", "240"))
-	errorStyle = lipgloss.NewStyle().Bold(true).Foreground(pick("124", "196"))
-	toastStyle = lipgloss.NewStyle().Bold(true).Foreground(pick("28", "46"))
-	chipStyle = lipgloss.NewStyle().Foreground(pick("242", "246"))
-	chipActive = lipgloss.NewStyle().Bold(true).Foreground(pick("125", "205"))
-	tabActive = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(pick("125", "205"))
-	tabInactive = lipgloss.NewStyle().Foreground(pick("242", "246"))
+	titleStyle = r.NewStyle().Bold(true).Foreground(pick("125", "205"))
+	subtleStyle = r.NewStyle().Foreground(pick("242", "246"))
+	statusStyle = r.NewStyle().Foreground(pick("242", "246"))
+	selectedStyle = r.NewStyle().Background(pick("153", "24"))
+	openStyle = r.NewStyle().Foreground(pick("28", "46"))
+	closedStyle = r.NewStyle().Foreground(pick("30", "51"))
+	deletedStyle = r.NewStyle().Faint(true).Foreground(pick("243", "245"))
+	helpKeyStyle = r.NewStyle().Foreground(pick("242", "246"))
+	helpDescStyle = r.NewStyle().Foreground(pick("248", "240"))
+	errorStyle = r.NewStyle().Bold(true).Foreground(pick("124", "196"))
+	toastStyle = r.NewStyle().Bold(true).Foreground(pick("28", "46"))
+	chipStyle = r.NewStyle().Foreground(pick("242", "246"))
+	chipActive = r.NewStyle().Bold(true).Foreground(pick("125", "205"))
+	tabActive = r.NewStyle().Bold(true).Underline(true).Foreground(pick("125", "205"))
+	tabInactive = r.NewStyle().Foreground(pick("242", "246"))
 }
 
-// applyDefaultColorMode is called from initialModel so style vars are
-// always populated, even in tests that bypass Run().
-func applyDefaultColorMode() { applyColorMode(resolveColorMode()) }
+// applyDefaultColorMode wires the resolved color mode to the active
+// output writer. Called from Run so style vars are always populated
+// against the real stream.
+func applyDefaultColorMode(w io.Writer) { applyColorMode(resolveColorMode(), w) }

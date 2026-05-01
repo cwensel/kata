@@ -160,3 +160,18 @@ func TestBoot_NonResolveErrorPropagates(t *testing.T) {
 		t.Fatal("expected error to propagate, got nil")
 	}
 }
+
+// TestInitialFilter_ThreadsIncludeDeleted asserts the boot-time filter
+// reflects opts.IncludeDeleted so client-side filtering in later tasks
+// has the bit available. The wire request itself does not include it
+// (the daemon's ListIssuesRequest does not accept it).
+func TestInitialFilter_ThreadsIncludeDeleted(t *testing.T) {
+	got := initialFilter(Options{IncludeDeleted: true})
+	if !got.IncludeDeleted {
+		t.Fatalf("expected IncludeDeleted=true on the filter, got %+v", got)
+	}
+	got = initialFilter(Options{})
+	if got.IncludeDeleted {
+		t.Fatalf("expected IncludeDeleted=false when unset, got %+v", got)
+	}
+}

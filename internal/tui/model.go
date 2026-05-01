@@ -29,8 +29,12 @@ type Model struct {
 	list   listModel
 }
 
+// initialModel constructs the root Bubble Tea model. Style vars are
+// populated against opts.Stdout (or os.Stdout when nil) so unit tests
+// that bypass Run still see live styles. Run re-runs applyDefaultColorMode
+// once it has the opts.Stdout to pin color detection to the real stream.
 func initialModel(opts Options) Model {
-	applyDefaultColorMode()
+	applyDefaultColorMode(opts.Stdout)
 	return Model{
 		opts:   opts,
 		view:   viewList,
@@ -55,7 +59,7 @@ func (m Model) Init() tea.Cmd {
 // scope drives whether this is single-project or cross-project. The
 // 5s ceiling matches the daemon's typical p95 list latency.
 func (m Model) fetchInitial() tea.Cmd {
-	api, sc := m.api, m.scope
+	api, sc, filter := m.api, m.scope, initialFilter(m.opts)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -64,12 +68,20 @@ func (m Model) fetchInitial() tea.Cmd {
 			err    error
 		)
 		if sc.allProjects {
-			issues, err = api.ListAllIssues(ctx, ListFilter{})
+			issues, err = api.ListAllIssues(ctx, filter)
 		} else {
-			issues, err = api.ListIssues(ctx, sc.projectID, ListFilter{})
+			issues, err = api.ListIssues(ctx, sc.projectID, filter)
 		}
 		return initialFetchMsg{issues: issues, err: err}
 	}
+}
+
+// initialFilter projects opts into the ListFilter the boot fetch uses.
+// IncludeDeleted is threaded through so client-side filtering in later
+// tasks can act on it; the wire request itself never sets
+// include_deleted because api.ListIssuesRequest does not accept it.
+func initialFilter(opts Options) ListFilter {
+	return ListFilter{IncludeDeleted: opts.IncludeDeleted}
 }
 
 // Update routes messages to the active sub-view, with quit handled at

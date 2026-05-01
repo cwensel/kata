@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 
 	"github.com/wesm/kata/internal/daemonclient"
 )
@@ -23,10 +24,11 @@ type Options struct {
 }
 
 // Run starts the TUI. Blocks until the user quits or ctx is cancelled.
-// Returns nil on clean exit. Returns errNotATTY when stdin/stdout are
-// not a terminal so callers can print a friendly message.
+// Returns nil on clean exit. Returns errNotATTY when stdin or the
+// active output stream is not a terminal so callers can print a
+// friendly message.
 func Run(ctx context.Context, opts Options) error {
-	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+	if !isTerminal(os.Stdin) || !outputIsTerminal(opts.Stdout) {
 		return errNotATTY
 	}
 	c, sc, err := bootClient(ctx, opts)
@@ -124,10 +126,25 @@ func bootResolveScope(
 // errNotATTY indicates the TUI was launched outside a terminal.
 var errNotATTY = errors.New("kata tui requires a terminal (stdin/stdout must be a tty)")
 
+// isTerminal reports whether f is connected to a real terminal. We use
+// golang.org/x/term so /dev/null and other character devices do not
+// pass (an os.ModeCharDevice check would let those through).
 func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	if err != nil {
+	if f == nil {
 		return false
 	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	return term.IsTerminal(int(f.Fd())) //nolint:gosec // G115: fd fits int on every supported OS.
+}
+
+// outputIsTerminal validates the writer the TUI will actually render to.
+// A nil opts.Stdout means "use os.Stdout"; a non-*os.File writer (e.g.
+// bytes.Buffer in tests) is accepted because there is no fd to check.
+func outputIsTerminal(w io.Writer) bool {
+	if w == nil {
+		return isTerminal(os.Stdout)
+	}
+	if f, ok := w.(*os.File); ok {
+		return isTerminal(f)
+	}
+	return true
 }
