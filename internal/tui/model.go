@@ -319,7 +319,10 @@ func (m Model) handleRefetchTick() (tea.Model, tea.Cmd) {
 // the user knows the view repopulated under their feet. We re-arm the
 // SSE bridge so subsequent frames are awaited, but the goroutine that
 // pushed this frame may itself have closed the stream — startSSE will
-// reconnect from the resetAfterID checkpoint via Last-Event-ID.
+// reconnect from the same checkpoint via Last-Event-ID. The daemon's
+// contract (internal/api/events.go EventReset.EventID == ResetAfterID)
+// makes the SSE id: line on this frame the authoritative resume
+// cursor, so resetRequiredMsg deliberately carries no payload.
 func (m Model) handleResetRequired(_ resetRequiredMsg) (tea.Model, tea.Cmd) {
 	m.cache.drop()
 	m.pendingRefetch = false

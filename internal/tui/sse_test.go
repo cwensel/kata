@@ -51,7 +51,9 @@ func TestSSEParser_MultipleFrames(t *testing.T) {
 }
 
 // TestSSEParser_ResetRequired: a sync.reset_required frame is classified
-// as frameReset and resetAfterID is lifted off the JSON body.
+// as frameReset. The id: line carries the resume cursor (== reset_after_id
+// per api.EventReset's contract); the JSON payload's reset_after_id is
+// intentionally not lifted onto the frame.
 func TestSSEParser_ResetRequired(t *testing.T) {
 	in := "id: 42\nevent: sync.reset_required\n" +
 		"data: {\"event_id\":42,\"reset_after_id\":42}\n\n"
@@ -65,8 +67,8 @@ func TestSSEParser_ResetRequired(t *testing.T) {
 	if frames[0].kind != frameReset {
 		t.Fatalf("kind = %d, want frameReset", frames[0].kind)
 	}
-	if frames[0].resetAfterID != 42 {
-		t.Fatalf("resetAfterID = %d, want 42", frames[0].resetAfterID)
+	if frames[0].id != 42 {
+		t.Fatalf("id = %d, want 42 (the resume cursor)", frames[0].id)
 	}
 }
 
@@ -146,8 +148,9 @@ func TestNextBackoff_Doubles_Caps(t *testing.T) {
 
 // TestSSE_StreamForwardsMessages drives readSSEStream against an
 // httptest.Server emitting two frames and asserts both arrive on the
-// channel as the matching tea.Msg variants. Last-Event-ID is omitted on
-// the first connect.
+// channel as the matching tea.Msg variants. The first message is the
+// sseConnected status (deferred until the first frame arrives); the two
+// frames follow. Last-Event-ID is omitted on the first connect.
 func TestSSE_StreamForwardsMessages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Last-Event-ID") != "" {
@@ -177,17 +180,51 @@ func TestSSE_StreamForwardsMessages(t *testing.T) {
 	if lastID != 2 {
 		t.Fatalf("lastID = %d, want 2", lastID)
 	}
+	gotStatus := drainOne(t, ch)
+	if st, ok := gotStatus.(sseStatusMsg); !ok {
+		t.Fatalf("first msg = %T, want sseStatusMsg", gotStatus)
+	} else if st.state != sseConnected {
+		t.Fatalf("sseStatusMsg.state = %v, want sseConnected", st.state)
+	}
 	gotEvent := drainOne(t, ch)
 	if ev, ok := gotEvent.(eventReceivedMsg); !ok {
-		t.Fatalf("first msg = %T, want eventReceivedMsg", gotEvent)
+		t.Fatalf("second msg = %T, want eventReceivedMsg", gotEvent)
 	} else if ev.projectID != 7 {
 		t.Fatalf("eventReceivedMsg.projectID = %d, want 7", ev.projectID)
 	}
 	gotReset := drainOne(t, ch)
-	if rr, ok := gotReset.(resetRequiredMsg); !ok {
-		t.Fatalf("second msg = %T, want resetRequiredMsg", gotReset)
-	} else if rr.resetAfterID != 2 {
-		t.Fatalf("resetAfterID = %d, want 2", rr.resetAfterID)
+	if _, ok := gotReset.(resetRequiredMsg); !ok {
+		t.Fatalf("third msg = %T, want resetRequiredMsg", gotReset)
+	}
+}
+
+// TestSSE_NoConnectedStatusBeforeFirstFrame drives readSSEStream against
+// a server that returns 200 OK and immediately closes with no frames.
+// Asserts that no sseConnected status is ever pushed — the only message
+// the channel sees on this connection is what the caller emits. This
+// regression-locks Fix I1: a flapping daemon must not flicker
+// connected ↔ reconnecting between frame-less retries.
+func TestSSE_NoConnectedStatusBeforeFirstFrame(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Return immediately — body closes with no frames.
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ch := make(chan tea.Msg, 4)
+	var lastID int64
+	connected, _ := readSSEStream(ctx, srv.Client(), srv.URL, nil, 0, ch, &lastID)
+	if connected {
+		t.Fatal("connected = true, want false (no frames arrived)")
+	}
+	select {
+	case msg := <-ch:
+		t.Fatalf("expected no message, got %T = %+v", msg, msg)
+	case <-time.After(50 * time.Millisecond):
+		// Expected: no message on the channel.
 	}
 }
 

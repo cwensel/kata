@@ -19,23 +19,21 @@ const (
 )
 
 // frame is the parsed shape of one SSE event block. id mirrors the
-// "id:" line so we can resume via Last-Event-ID. resetAfterID is
-// populated only when kind == frameReset.
+// "id:" line so we can resume via Last-Event-ID. The reset frame's
+// reset_after_id payload field is intentionally ignored: it is the
+// daemon's contract (api.EventReset.EventID == ResetAfterID) that the
+// frame's id: line is the authoritative resume cursor, and the consumer
+// already updates Last-Event-ID off id: on every frame.
 type frame struct {
-	kind         frameKind
-	id           int64
-	eventType    string
-	data         []byte
-	resetAfterID int64
+	kind      frameKind
+	id        int64
+	eventType string
+	data      []byte
 }
 
-// sseResetPayload mirrors api.EventReset; sseEventPayload mirrors the
-// fields of api.EventEnvelope the TUI inspects. Both live here so the
-// parser does not pull internal/api into the TUI tree.
-type sseResetPayload struct {
-	ResetAfterID int64 `json:"reset_after_id"`
-}
-
+// sseEventPayload mirrors the fields of api.EventEnvelope the TUI
+// inspects. Lives here so the parser does not pull internal/api into
+// the TUI tree.
 type sseEventPayload struct {
 	Type        string `json:"type"`
 	ProjectID   int64  `json:"project_id"`
@@ -113,13 +111,10 @@ func applySSEField(cur *frame, line string, hasEvent, hasData *bool) {
 	}
 }
 
-// finalizeFrame classifies the frame and lifts reset_after_id off the
-// JSON body for sync.reset_required so the consumer receives an int.
+// finalizeFrame classifies the frame. sync.reset_required becomes
+// frameReset; everything else is frameEvent.
 func finalizeFrame(f frame) frame {
 	if f.eventType == "sync.reset_required" {
-		var p sseResetPayload
-		_ = json.Unmarshal(f.data, &p)
-		f.resetAfterID = p.ResetAfterID
 		f.kind = frameReset
 		return f
 	}

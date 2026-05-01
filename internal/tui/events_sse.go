@@ -23,6 +23,13 @@ type sseClient interface {
 // readSSEStream, reconnects with exponential backoff (1s → 30s, capped),
 // and resumes via Last-Event-ID once at least one frame was emitted on
 // the prior connection.
+//
+// We deliberately do NOT push sseConnected before readSSEStream returns
+// its first frame — readSSEStream emits sseConnected itself once a frame
+// arrives. Pushing optimistically here would flicker connected ↔
+// reconnecting on a flapping daemon: the user would see "connected" the
+// moment we issue the request, "reconnecting" on the inevitable error,
+// and so on per loop turn even though no frame ever made it through.
 func startSSE(
 	ctx context.Context, hc sseClient, base string, projectID *int64, sseCh chan<- tea.Msg,
 ) {
@@ -33,7 +40,6 @@ func startSSE(
 		if ctx.Err() != nil {
 			return
 		}
-		notifyStatus(ctx, sseCh, sseConnected)
 		connected, err := readSSEStream(ctx, hc, base, projectID, lastID, sseCh, &lastID)
 		if err == nil || ctx.Err() != nil {
 			return
@@ -76,6 +82,11 @@ func notifyStatus(ctx context.Context, sseCh chan<- tea.Msg, st sseConnState) {
 // until disconnect. lastID rides Last-Event-ID for resume when >0.
 // connected is true once at least one frame was emitted so callers
 // reset their backoff only on a productive connection.
+//
+// sseConnected is pushed exactly once per connection, on the first
+// successful frame — never optimistically before a frame lands. A
+// connection that fails before any frame arrives produces no connected
+// status, only the reconnecting status the caller emits on disconnect.
 func readSSEStream(
 	ctx context.Context, hc sseClient, base string, projectID *int64,
 	lastID int64, sseCh chan<- tea.Msg, updateLastID *int64,
@@ -102,7 +113,10 @@ func readSSEStream(
 		if perr != nil {
 			return connected, perr
 		}
-		connected = true
+		if !connected {
+			notifyStatus(ctx, sseCh, sseConnected)
+			connected = true
+		}
 		*updateLastID = f.id
 		if !forwardFrame(ctx, sseCh, f) {
 			return connected, ctx.Err()
@@ -132,10 +146,15 @@ func buildSSERequest(
 
 // forwardFrame dispatches the parsed frame as the matching tea.Msg.
 // Returns false on ctx cancel so the caller exits the read loop.
+//
+// The reset_after_id payload field is not threaded onto resetRequiredMsg:
+// the daemon's contract (internal/api/events.go EventReset.EventID ==
+// ResetAfterID) makes the SSE id: line — which already feeds Last-Event-ID
+// — the authoritative resume checkpoint.
 func forwardFrame(ctx context.Context, sseCh chan<- tea.Msg, f frame) bool {
 	var msg tea.Msg
 	if f.kind == frameReset {
-		msg = resetRequiredMsg{resetAfterID: f.resetAfterID}
+		msg = resetRequiredMsg{}
 	} else {
 		msg = decodeEventReceived(f)
 	}

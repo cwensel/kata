@@ -105,7 +105,14 @@ type eventReceivedMsg struct {
 // resetRequiredMsg signals sync.reset_required: the daemon's purge
 // gap means the consumer's cursor is too old. The TEA loop drops the
 // cache and refetches from scratch.
-type resetRequiredMsg struct{ resetAfterID int64 }
+//
+// We deliberately don't carry reset_after_id on this message: the
+// daemon's contract (see internal/api/events.go EventReset) is that
+// EventID == ResetAfterID, so the SSE frame's id: line — which the
+// consumer already uses to update its Last-Event-ID resume cursor — is
+// the authoritative checkpoint. A second copy of the same value on the
+// envelope would invite drift if either path lagged.
+type resetRequiredMsg struct{}
 
 // sseStatusMsg carries connection-state transitions from the SSE
 // goroutine to the TEA loop so the status bar can render the
