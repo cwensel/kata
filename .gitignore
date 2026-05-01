@@ -12,6 +12,9 @@ coverage.out
 # Local data dir for manual testing
 /.kata/
 
+# Git worktrees
+/.worktrees/
+
 # IDE/editor
 .vscode/
 .idea/
