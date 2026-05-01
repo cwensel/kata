@@ -306,11 +306,14 @@ type Dispatcher struct {
 func (d *Dispatcher) worker() {
     defer d.wg.Done()
     for {
-        // Single select: done has priority via the explicit case-order
-        // tiebreak below. Two selects don't help — Go's case selection
-        // is uniformly random. The next iteration's first thing is to
-        // re-check done, so a worker can pop at most one job after a
-        // racing Shutdown.
+        // Go's select has no case priority — when both d.done and
+        // d.queue are ready, selection is uniformly random. Two
+        // stacked selects don't help because the second select faces
+        // the same race. Correctness comes from the post-pop re-check
+        // below: a worker that wins the queue race after Shutdown
+        // observes d.done on the second select and drops the job
+        // before runJob runs. At most one job per worker leaks past
+        // Shutdown, and it never starts execution.
         select {
         case <-d.done:
             return
