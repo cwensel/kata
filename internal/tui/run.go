@@ -127,12 +127,19 @@ func bootClient(ctx context.Context, opts Options) (*Client, *http.Client, scope
 
 // scope describes the issue-set the TUI is browsing. Exactly one of
 // projectID, allProjects, empty is set.
+//
+// homeProjectID/homeProjectName are immutable: they capture the project
+// bootResolveScope picked from the cwd so the R toggle (Task 12) can
+// switch back from all-projects mode without re-running scope resolution.
+// They are zero when boot landed in all-projects fallback or empty state.
 type scope struct {
-	projectID   int64
-	allProjects bool
-	empty       bool
-	projectName string
-	workspace   string
+	projectID       int64
+	allProjects     bool
+	empty           bool
+	projectName     string
+	workspace       string
+	homeProjectID   int64
+	homeProjectName string
 }
 
 // bootResolveScope implements §7.2 of the master spec. Order:
@@ -142,6 +149,10 @@ type scope struct {
 //     all-projects so the user has something to look at.
 //  4. project_not_initialized + zero registered projects → empty state.
 //  5. Any other resolve error → propagate so Run fails loudly.
+//
+// The home* fields are populated only on case 2 — the explicit
+// --all-projects flag and the unbound-cwd fallback both leave them zero
+// so the R toggle's "no default" branch fires.
 func bootResolveScope(
 	ctx context.Context, c *Client, allProjects bool, cwd string,
 ) (scope, error) {
@@ -151,9 +162,11 @@ func bootResolveScope(
 	rr, err := c.ResolveProject(ctx, cwd)
 	if err == nil {
 		return scope{
-			projectID:   rr.Project.ID,
-			projectName: rr.Project.Name,
-			workspace:   rr.WorkspaceRoot,
+			projectID:       rr.Project.ID,
+			projectName:     rr.Project.Name,
+			workspace:       rr.WorkspaceRoot,
+			homeProjectID:   rr.Project.ID,
+			homeProjectName: rr.Project.Name,
 		}, nil
 	}
 	var apiErr *APIError

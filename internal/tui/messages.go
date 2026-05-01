@@ -149,8 +149,7 @@ type toastLevel int
 
 const (
 	toastInfo toastLevel = iota
-	//nolint:unused // Task 12
+	//nolint:unused // reserved for mutation success toasts (deferred to Task 14)
 	toastSuccess
-	//nolint:unused // Task 12
 	toastError
 )

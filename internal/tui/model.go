@@ -38,6 +38,7 @@ type Model struct {
 	api            *Client
 	scope          scope
 	view           viewID
+	prevView       viewID
 	width          int
 	height         int
 	keymap         keymap
@@ -192,8 +193,8 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil, true
 	case tea.KeyMsg:
-		if m.canQuit() && m.keymap.Quit.matches(msg) {
-			return m, tea.Quit, true
+		if next, cmd, ok := m.routeGlobalKey(msg); ok {
+			return next, cmd, true
 		}
 	case openDetailMsg:
 		next, cmd := m.handleOpenDetail(msg)
@@ -203,6 +204,44 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 	return m, nil, false
+}
+
+// routeGlobalKey handles the global key family (quit, help, scope toggle)
+// gated by the prompt/modal input check so a buffer doesn't see them.
+// viewEmpty honors only quit; ?, R, and any other binding fall through
+// silently because the only meaningful action is `q` to exit.
+func (m Model) routeGlobalKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	if !m.canQuit() {
+		return m, nil, false
+	}
+	if m.keymap.Quit.matches(msg) {
+		return m, tea.Quit, true
+	}
+	if m.view == viewEmpty {
+		return m, nil, true
+	}
+	if m.keymap.Help.matches(msg) {
+		return m.toggleHelp(), nil, true
+	}
+	if m.keymap.ToggleScope.matches(msg) {
+		next, cmd := m.handleScopeToggle()
+		return next, cmd, true
+	}
+	return m, nil, false
+}
+
+// toggleHelp swaps between viewHelp and the previous view. Pressing ?
+// from list/detail enters viewHelp; pressing ? from viewHelp restores
+// whatever view the user came from. prevView is preserved so the round
+// trip is reversible — q from viewHelp still quits per routeGlobalKey.
+func (m Model) toggleHelp() Model {
+	if m.view == viewHelp {
+		m.view = m.prevView
+		return m
+	}
+	m.prevView = m.view
+	m.view = viewHelp
+	return m
 }
 
 // routeSSE handles the SSE-side message family. Splitting this off
@@ -360,6 +399,11 @@ const refetchDebounce = 150 * time.Millisecond
 // toastExpireCmd clears it. 2s matches the plan's spec.
 const toastResyncedTTL = 2 * time.Second
 
+// toastNoBindingTTL is how long the "no project bound" toast (R toggle
+// without a default project) sticks around. Slightly longer than the
+// resynced toast because the user has to act on the hint, not just notice.
+const toastNoBindingTTL = 3 * time.Second
+
 // debouncedRefetch returns a tea.Cmd that emits refetchTickMsg after d.
 // The TEA loop receives the message, checks the cache, and dispatches
 // the actual list refetch via lm.refetchCmd.
@@ -374,10 +418,10 @@ func toastExpireCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return toastExpiredMsg{} })
 }
 
-// canQuit reports whether a 'q' keystroke should be honored as Quit.
-// False while a list prompt is open (the buffer must absorb the rune)
-// or while a detail modal is open (same reason — the user is typing a
-// label/owner/link target, not asking to exit).
+// canQuit reports whether a global keystroke (q, ?, R) should be
+// honored. False while a list prompt is open (the buffer must absorb
+// the rune) or while a detail modal is open (same reason — the user is
+// typing a label/owner/link target, not asking to exit).
 func (m Model) canQuit() bool {
 	if m.list.search.inputting {
 		return false
@@ -467,6 +511,10 @@ func (m Model) View() string {
 // View keeps View's cyclomatic budget under the project limit.
 func (m Model) viewBody() string {
 	switch m.view {
+	case viewHelp:
+		return renderHelp(m.keymap, m.width, m.list.filter)
+	case viewEmpty:
+		return renderEmpty(m.width, m.height)
 	case viewList:
 		return m.list.View(m.width, m.height)
 	case viewDetail:

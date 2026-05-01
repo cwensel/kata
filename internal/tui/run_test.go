@@ -51,6 +51,9 @@ func TestBoot_ResolvesProject(t *testing.T) {
 	if sc.workspace != "/tmp/x" {
 		t.Fatalf("workspace = %q, want /tmp/x", sc.workspace)
 	}
+	if sc.homeProjectID != 7 || sc.homeProjectName != "kata" {
+		t.Fatalf("home* not seeded: id=%d name=%q", sc.homeProjectID, sc.homeProjectName)
+	}
 	if _, err := c.ListIssues(t.Context(), sc.projectID, ListFilter{}); err != nil {
 		t.Fatal(err)
 	}
