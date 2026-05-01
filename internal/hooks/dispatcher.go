@@ -39,20 +39,21 @@ type DispatcherDeps struct {
 // Enqueue/Reload/CurrentConfig/Shutdown; unexported state is held
 // by-value (no need for a separate state struct).
 type Dispatcher struct {
-	deps        DispatcherDeps
-	cfg         Config
-	queue       chan HookJob
-	done        chan struct{}
-	waited      chan struct{} // closed when wg.Wait returns; shared by all Shutdown callers
-	stopped     atomic.Bool
-	wg          sync.WaitGroup
-	snapshot    atomic.Pointer[Snapshot]
-	dropped     atomic.Int64
-	lastFullLog atomic.Int64 // unix nanos of last hook_queue_full log
-	appender    *runsAppender
-	pruner      *pruner
-	outputDir   string
-	inflight    atomic.Int32
+	deps                     DispatcherDeps
+	cfg                      Config
+	queue                    chan HookJob
+	done                     chan struct{}
+	waited                   chan struct{} // closed when wg.Wait returns; shared by all Shutdown callers
+	stopped                  atomic.Bool
+	wg                       sync.WaitGroup
+	snapshot                 atomic.Pointer[Snapshot]
+	dropped                  atomic.Int64
+	lastFullLog              atomic.Int64 // unix nanos of last hook_queue_full log
+	lastWorkingDirMissingLog atomic.Int64 // unix nanos of last working_dir_missing log
+	appender                 *runsAppender
+	pruner                   *pruner
+	outputDir                string
+	inflight                 atomic.Int32
 	// active maps groupKey -> struct{} for runs whose .out/.err are
 	// still being written. The pruner consults this via isActive so a
 	// finishing job's pruner.AddRun never unlinks a peer worker's
@@ -170,6 +171,22 @@ func (d *Dispatcher) maybeLogQueueFull() {
 	}
 	if d.lastFullLog.CompareAndSwap(last, now) {
 		d.deps.DaemonLog.Printf("hooks: hook_queue_full (dropped=%d)", d.dropped.Load())
+	}
+}
+
+// maybeLogWorkingDirMissing prints one rate-limited line when a hook's
+// working_dir is missing at fire time. Reuses QueueFullLogInterval as
+// the throttle so a single tunable governs every spammy hook warning.
+// The runRecord still captures every occurrence; this log is purely
+// for operator visibility (master spec §8.8).
+func (d *Dispatcher) maybeLogWorkingDirMissing(h ResolvedHook) {
+	now := d.deps.Now().UnixNano()
+	last := d.lastWorkingDirMissingLog.Load()
+	if now-last < int64(d.cfg.QueueFullLogInterval) {
+		return
+	}
+	if d.lastWorkingDirMissingLog.CompareAndSwap(last, now) {
+		d.deps.DaemonLog.Printf("hooks: working_dir_missing for hook[%d] %q", h.Index, h.WorkingDir)
 	}
 }
 
@@ -301,5 +318,6 @@ func (d *Dispatcher) runDeps() runDeps {
 			d.appender.Append(r)
 			d.pruner.AddRun(r.EventID, r.HookIndex, r.StdoutBytes, r.StderrBytes)
 		},
+		LogWorkingDirMissing: d.maybeLogWorkingDirMissing,
 	}
 }

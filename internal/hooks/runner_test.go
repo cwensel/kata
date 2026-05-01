@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wesm/kata/internal/db"
 )
 
 type runnerSetup struct {
@@ -115,6 +118,58 @@ func TestRunner_WorkingDirMissing(t *testing.T) {
 	runJob(context.Background(), make(chan struct{}), job, rs.deps)
 	if got.Result != "working_dir_missing" {
 		t.Fatalf("result = %q, want working_dir_missing", got.Result)
+	}
+}
+
+// TestRunner_AliasResolverInvokedOnce pins the spec §6.1 contract that
+// the alias resolver is called exactly once per hook fire — its result
+// is shared between the stdin payload (buildAliasBlock) and the env
+// vars (buildEnv). A naïve implementation calls it twice and doubles
+// DB load.
+func TestRunner_AliasResolverInvokedOnce(t *testing.T) {
+	rs := newRunnerSetup(t)
+	bin := hookprobePath(t)
+	var calls int32
+	rs.deps.Alias = func(_ context.Context, _ db.Event) (AliasSnapshot, bool, error) {
+		atomic.AddInt32(&calls, 1)
+		return AliasSnapshot{Identity: "github.com/wesm/kata", Kind: "git", RootPath: rs.dir}, true, nil
+	}
+	rs.deps.AppendRun = func(_ runRecord) {}
+	job := HookJob{
+		Event: sampleEvent("issue.created"),
+		Hook:  ResolvedHook{Index: 0, Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: rs.dir},
+	}
+	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("alias resolver invocations = %d, want 1", got)
+	}
+}
+
+// TestRunner_WorkingDirMissing_LogsViaCallback pins the master spec
+// §8.8 contract that working_dir_missing emits a daemonLog warning
+// (rate-limited by the dispatcher; the runner just calls the callback
+// once per occurrence).
+func TestRunner_WorkingDirMissing_LogsViaCallback(t *testing.T) {
+	rs := newRunnerSetup(t)
+	bin := hookprobePath(t)
+	var loggedHook ResolvedHook
+	var logged int32
+	rs.deps.LogWorkingDirMissing = func(h ResolvedHook) {
+		atomic.AddInt32(&logged, 1)
+		loggedHook = h
+	}
+	rs.deps.AppendRun = func(_ runRecord) {}
+	missing := filepath.Join(rs.dir, "absent")
+	job := HookJob{
+		Event: sampleEvent("issue.created"),
+		Hook:  ResolvedHook{Index: 7, Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: missing},
+	}
+	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	if atomic.LoadInt32(&logged) != 1 {
+		t.Fatalf("LogWorkingDirMissing should be called exactly once, got %d", logged)
+	}
+	if loggedHook.Index != 7 || loggedHook.WorkingDir != missing {
+		t.Fatalf("callback got hook=%+v, want index=7 dir=%q", loggedHook, missing)
 	}
 }
 

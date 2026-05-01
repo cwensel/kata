@@ -49,6 +49,21 @@ type runDeps struct {
 	Comment     commentResolver
 	Alias       aliasResolver
 	AppendRun   func(runRecord)
+	// LogWorkingDirMissing is called by runJob when a hook's working_dir
+	// is missing at fire time, so the dispatcher can rate-limit-log a
+	// single line per spam window (master spec §8.8). Optional —
+	// runJob no-ops if nil so unit tests don't have to wire it.
+	LogWorkingDirMissing func(ResolvedHook)
+}
+
+// frozenAliasResolver returns a resolver that always reports the given
+// snapshot/has/err triple. runJob hoists the real resolver call to one
+// site and uses this wrapper to feed the result into buildStdinJSON
+// without invoking the underlying resolver a second time.
+func frozenAliasResolver(snap AliasSnapshot, has bool, err error) aliasResolver {
+	return func(_ context.Context, _ db.Event) (AliasSnapshot, bool, error) {
+		return snap, has, err
+	}
 }
 
 // runContext holds the per-invocation state of one hook job. Methods on
@@ -201,16 +216,24 @@ func runJob(ctx context.Context, shutdown <-chan struct{}, job HookJob, deps run
 	defer rc.closeFiles()
 
 	if result, spawnErr := classifyWorkingDir(job.Hook.WorkingDir); result != "" {
+		if result == "working_dir_missing" && deps.LogWorkingDirMissing != nil {
+			deps.LogWorkingDirMissing(job.Hook)
+		}
 		rc.finalize(result, spawnErr, -1, false)
 		return
 	}
 
+	// Resolve the alias once and reuse for stdin payload AND env vars
+	// (spec §6.1). Doubling the resolver call would double DB load and
+	// risk inconsistent results if the underlying alias mutated.
+	asnap, hasAlias, aliasErr := deps.Alias(ctx, job.Event)
 	logf := func(format string, args ...any) { deps.DaemonLog.Printf(format, args...) }
-	stdinPayload, payloadTruncated := buildStdinJSON(ctx, job.Event, deps.Project, deps.Issue, deps.Comment, deps.Alias, logf)
+	stdinPayload, payloadTruncated := buildStdinJSON(ctx, job.Event, deps.Project, deps.Issue, deps.Comment,
+		frozenAliasResolver(asnap, hasAlias, aliasErr), logf)
 
 	cmd := exec.Command(job.Hook.Command, job.Hook.Args...) //nolint:gosec // G204: command validated at config load
 	cmd.Dir = job.Hook.WorkingDir
-	cmd.Env = buildEnv(ctx, job.Hook.UserEnv, job.Event, deps)
+	cmd.Env = buildEnv(job.Hook.UserEnv, job.Event, asnap, hasAlias)
 	cmd.Stdin = bytes.NewReader(stdinPayload)
 	cmd.Stdout = rc.outFile
 	cmd.Stderr = rc.errFile
@@ -236,7 +259,11 @@ func exitCodeOf(err error) int {
 	return -1
 }
 
-func buildEnv(ctx context.Context, userEnv []string, evt db.Event, deps runDeps) []string {
+// buildEnv composes the child process's environment from os.Environ ⊕
+// the hook's user-defined env ⊕ the KATA_* contract vars. Alias-related
+// env is fed by the caller (runJob) which resolved it once for both
+// the stdin payload and this env slice.
+func buildEnv(userEnv []string, evt db.Event, asnap AliasSnapshot, hasAlias bool) []string {
 	env := append([]string{}, os.Environ()...)
 	env = append(env, userEnv...)
 	env = append(env,
@@ -251,8 +278,7 @@ func buildEnv(ctx context.Context, userEnv []string, evt db.Event, deps runDeps)
 	if evt.IssueNumber != nil {
 		env = append(env, "KATA_ISSUE_NUMBER="+strconv.FormatInt(*evt.IssueNumber, 10))
 	}
-	// Errors degrade silently — alias env vars are best-effort and not part of the contract.
-	if asnap, has, err := deps.Alias(ctx, evt); err == nil && has {
+	if hasAlias {
 		env = append(env,
 			"KATA_ALIAS_IDENTITY="+asnap.Identity,
 			"KATA_ROOT_PATH="+asnap.RootPath,
