@@ -8,58 +8,83 @@ import (
 // renderCommentsTab formats the comments tab as: header line plus per-
 // comment "[author] timestamp" header (selected row inverse-styled),
 // body line-wrapped to width with a 2-space indent, blank separator.
-// The cursor highlights the row under dm.tabCursor.
+// The cursor highlights the row under dm.tabCursor and the rendered
+// lines are windowed so the cursor entry is always visible even when
+// the entries don't all fit in height.
 func renderCommentsTab(cs []CommentEntry, width, height, cursor int) string {
-	out := []string{titleStyle.Render(fmt.Sprintf("Comments (%d)", len(cs)))}
+	headers := []string{titleStyle.Render(fmt.Sprintf("Comments (%d)", len(cs)))}
 	if len(cs) == 0 {
-		out = append(out, statusStyle.Render("(no comments yet)"))
-		return clipTab(out, width, height)
+		return assembleTab(headers, []entryChunk{
+			{lines: []string{statusStyle.Render("(no comments yet)")}},
+		}, width, height, -1)
 	}
+	chunks := make([]entryChunk, 0, len(cs))
 	for i, c := range cs {
 		header := fmt.Sprintf("[%s] %s", c.Author, fmtTime(c.CreatedAt))
-		out = append(out, applyRowCursor(header, i == cursor))
+		lines := []string{applyRowCursor(header, i == cursor)}
 		for _, ln := range wrapBody(c.Body, max(1, width-2)) {
-			out = append(out, "  "+ln)
+			lines = append(lines, "  "+ln)
 		}
-		out = append(out, "")
+		lines = append(lines, "")
+		chunks = append(chunks, entryChunk{lines: lines})
 	}
-	return clipTab(out, width, height)
+	return assembleTab(headers, chunks, width, height, cursor)
 }
 
 // renderEventsTab formats one line per event:
 // "[type] timestamp actor — description". The description is type-
 // specific (e.g., "labeled bug", "linked #7"). Cursor highlights the
-// row under dm.tabCursor.
+// row under dm.tabCursor; the rendered lines are windowed around the
+// cursor so a tabCursor past the visible height still has its row on
+// screen.
 func renderEventsTab(es []EventLogEntry, width, height, cursor int) string {
-	out := []string{titleStyle.Render(fmt.Sprintf("Events (%d)", len(es)))}
+	headers := []string{titleStyle.Render(fmt.Sprintf("Events (%d)", len(es)))}
 	if len(es) == 0 {
-		out = append(out, statusStyle.Render("(no events yet)"))
-		return clipTab(out, width, height)
+		return assembleTab(headers, []entryChunk{
+			{lines: []string{statusStyle.Render("(no events yet)")}},
+		}, width, height, -1)
 	}
+	chunks := make([]entryChunk, 0, len(es))
 	for i, e := range es {
 		line := fmt.Sprintf("[%s] %s %s — %s",
 			e.Type, fmtTime(e.CreatedAt), e.Actor, eventDescription(e))
-		out = append(out, applyRowCursor(line, i == cursor))
+		chunks = append(chunks, entryChunk{lines: []string{
+			applyRowCursor(line, i == cursor),
+		}})
 	}
-	return clipTab(out, width, height)
+	return assembleTab(headers, chunks, width, height, cursor)
 }
 
 // renderLinksTab formats one line per link:
 // "[type] → #ToN ← #FromN  by author @ timestamp". The "(open|closed)"
 // status is not on the LinkEntry projection; pressing Enter on a link
 // jumps to the target so the user can see the title and status there.
+// Lines are windowed around the cursor for the same reason.
 func renderLinksTab(ls []LinkEntry, width, height, cursor int) string {
-	out := []string{titleStyle.Render(fmt.Sprintf("Links (%d)", len(ls)))}
+	headers := []string{titleStyle.Render(fmt.Sprintf("Links (%d)", len(ls)))}
 	if len(ls) == 0 {
-		out = append(out, statusStyle.Render("(no links)"))
-		return clipTab(out, width, height)
+		return assembleTab(headers, []entryChunk{
+			{lines: []string{statusStyle.Render("(no links)")}},
+		}, width, height, -1)
 	}
+	chunks := make([]entryChunk, 0, len(ls))
 	for i, l := range ls {
 		line := fmt.Sprintf("[%s] → #%d ← #%d  by %s @ %s",
 			l.Type, l.ToNumber, l.FromNumber, l.Author, fmtTime(l.CreatedAt))
-		out = append(out, applyRowCursor(line, i == cursor))
+		chunks = append(chunks, entryChunk{lines: []string{
+			applyRowCursor(line, i == cursor),
+		}})
 	}
-	return clipTab(out, width, height)
+	return assembleTab(headers, chunks, width, height, cursor)
+}
+
+// entryChunk groups the lines that belong to one tab entry. Comments
+// produce multi-line chunks (header + wrapped body + separator);
+// events and links produce one-line chunks. Windowing operates on
+// chunk granularity so a cursor at entry N never lands on a partial
+// row.
+type entryChunk struct {
+	lines []string
 }
 
 // applyRowCursor returns line wrapped in selectedStyle when isCursor.
@@ -70,6 +95,82 @@ func applyRowCursor(line string, isCursor bool) string {
 		return selectedStyle.Render(line)
 	}
 	return line
+}
+
+// assembleTab joins the header lines with the windowed entry chunks
+// and clips the result to width. cursor is the entry index of the
+// active row (or -1 for empty-tab placeholders).
+func assembleTab(
+	headers []string, chunks []entryChunk, width, height, cursor int,
+) string {
+	avail := height - len(headers)
+	if avail < 1 {
+		avail = 1
+	}
+	windowed := windowChunks(chunks, cursor, avail)
+	out := make([]string, 0, len(headers)+8)
+	out = append(out, headers...)
+	for _, ch := range windowed {
+		out = append(out, ch.lines...)
+	}
+	return clipTab(out, width, height)
+}
+
+// windowChunks returns the contiguous slice of chunks that includes
+// the cursor entry and fits within budget lines. When everything fits,
+// the input is returned unchanged. When it doesn't, the window slides
+// so the cursor's chunk is fully visible — preferring to anchor at
+// the top until the cursor crosses the budget, then scrolling so the
+// cursor sits near the bottom of the viewport.
+//
+// chunks with zero lines (defensive — empty placeholders) are still
+// kept so windowing arithmetic doesn't drift.
+func windowChunks(chunks []entryChunk, cursor, budget int) []entryChunk {
+	n := len(chunks)
+	if n == 0 || budget <= 0 {
+		return chunks
+	}
+	if totalLines(chunks) <= budget {
+		return chunks
+	}
+	c := cursor
+	if c < 0 || c >= n {
+		c = 0
+	}
+	// Walk backwards from the cursor, including chunks until the next
+	// addition would overflow. The cursor's own chunk is always included
+	// even if it alone exceeds the budget — preferable to hiding the
+	// cursor entirely.
+	//
+	// gosec G602 cannot see that c was clamped to [0, n) above.
+	used := len(chunks[c].lines) //nolint:gosec // c was clamped to [0,n)
+	start, end := c, c+1
+	for start > 0 {
+		add := len(chunks[start-1].lines)
+		if used+add > budget {
+			break
+		}
+		start--
+		used += add
+	}
+	for end < n {
+		add := len(chunks[end].lines)
+		if used+add > budget {
+			break
+		}
+		used += add
+		end++
+	}
+	return chunks[start:end]
+}
+
+// totalLines sums the line counts across every chunk.
+func totalLines(chunks []entryChunk) int {
+	n := 0
+	for _, ch := range chunks {
+		n += len(ch.lines)
+	}
+	return n
 }
 
 // clipTab truncates lines to width and caps the slice at height. Empty

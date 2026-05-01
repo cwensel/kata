@@ -144,10 +144,20 @@ func numberFromAny(v any) (int64, bool) {
 	return 0, false
 }
 
-// linkJumpTarget returns the link's ToNumber.
-func linkJumpTarget(links []LinkEntry, idx int) (int64, bool) {
+// linkJumpTarget returns the issue number to navigate to from the
+// link at idx. Outgoing links jump to ToNumber; incoming links (where
+// ToNumber == current) jump to FromNumber instead so Enter on an
+// "X blocks me" entry takes the user to X rather than re-opening the
+// current issue. self-loop links (rare) fall through to ToNumber and
+// re-open the current issue, which is harmless.
+func linkJumpTarget(links []LinkEntry, idx int, current int64) (int64, bool) {
 	if idx < 0 || idx >= len(links) {
 		return 0, false
 	}
-	return links[idx].ToNumber, true
+	l := links[idx]
+	target := l.ToNumber
+	if target == current && l.FromNumber != 0 {
+		target = l.FromNumber
+	}
+	return target, true
 }

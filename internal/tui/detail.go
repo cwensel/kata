@@ -256,13 +256,19 @@ func (dm detailModel) handleEnter(api detailAPI) (detailModel, tea.Cmd) {
 
 // jumpTarget returns the issue number to jump to from the active tab+
 // cursor. Comments tab never jumps. Events tab reads payload.to_number
-// or payload.issue_number; links tab reads the link's ToNumber.
+// or payload.issue_number; links tab reads the link's ToNumber, or
+// FromNumber when the link is incoming (ToNumber matches the current
+// issue) so Enter takes the user to the other end of the relation.
 func (dm detailModel) jumpTarget() (int64, bool) {
 	switch dm.activeTab {
 	case tabEvents:
 		return eventJumpTarget(dm.events, dm.tabCursor)
 	case tabLinks:
-		return linkJumpTarget(dm.links, dm.tabCursor)
+		current := int64(0)
+		if dm.issue != nil {
+			current = dm.issue.Number
+		}
+		return linkJumpTarget(dm.links, dm.tabCursor, current)
 	}
 	return 0, false
 }

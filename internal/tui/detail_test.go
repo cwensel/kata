@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -767,6 +768,147 @@ func TestDetail_EnterOnLinkEntry_JumpsToTarget(t *testing.T) {
 	runBatch(cmd)
 	if api.lastGetIssue != 7 {
 		t.Fatalf("api.lastGetIssue = %d, want 7", api.lastGetIssue)
+	}
+}
+
+// TestDetail_EnterOnIncomingLink_JumpsToFromNumber: when the cursor is
+// on a link whose ToNumber matches the current issue (i.e. an incoming
+// "X blocks me" entry), Enter must jump to FromNumber rather than
+// re-opening the current issue.
+func TestDetail_EnterOnIncomingLink_JumpsToFromNumber(t *testing.T) {
+	api := &fakeDetailAPI{
+		getIssueResult: &Issue{Number: 99, Title: "from"},
+	}
+	dm := detailModel{
+		issue:     &Issue{Number: 42, Title: "current"},
+		scopePID:  7,
+		activeTab: tabLinks,
+		tabCursor: 0,
+		links: []LinkEntry{
+			// Incoming: someone else (#99) blocks the current issue (#42).
+			{ID: 1, Type: "blocks", FromNumber: 99, ToNumber: 42},
+		},
+	}
+	km := newKeymap()
+	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
+	if cmd == nil {
+		t.Fatal("expected jump cmd from Enter on incoming link")
+	}
+	runBatch(cmd)
+	if api.lastGetIssue != 99 {
+		t.Fatalf("api.lastGetIssue = %d, want 99 (incoming → FromNumber)",
+			api.lastGetIssue)
+	}
+}
+
+// TestLinkJumpTarget_OutgoingPicksToNumber: when ToNumber differs from
+// the current issue, the helper returns ToNumber unchanged. Pure unit
+// test for the scoping logic.
+func TestLinkJumpTarget_OutgoingPicksToNumber(t *testing.T) {
+	links := []LinkEntry{{ID: 1, Type: "blocks", FromNumber: 42, ToNumber: 7}}
+	got, ok := linkJumpTarget(links, 0, 42)
+	if !ok || got != 7 {
+		t.Fatalf("linkJumpTarget = (%d, %v), want (7, true)", got, ok)
+	}
+}
+
+// TestLinkJumpTarget_IncomingPicksFromNumber: when ToNumber matches
+// the current issue, the helper picks FromNumber.
+func TestLinkJumpTarget_IncomingPicksFromNumber(t *testing.T) {
+	links := []LinkEntry{{ID: 1, Type: "blocks", FromNumber: 99, ToNumber: 42}}
+	got, ok := linkJumpTarget(links, 0, 42)
+	if !ok || got != 99 {
+		t.Fatalf("linkJumpTarget = (%d, %v), want (99, true)", got, ok)
+	}
+}
+
+// TestDetail_TabWindow_KeepsCursorVisible: a tabCursor past the visible
+// height must still produce output that contains the cursor entry. The
+// fixture has 10 events; a budget of 4 lines forces windowing.
+func TestDetail_TabWindow_KeepsCursorVisible(t *testing.T) {
+	events := make([]EventLogEntry, 10)
+	for i := range events {
+		events[i] = EventLogEntry{
+			Type: "issue.commented", Actor: fmt.Sprintf("user-%d", i),
+		}
+	}
+	out := renderEventsTab(events, 200, 5, 8) // header + 4 visible rows
+	if !strings.Contains(out, "user-8") {
+		t.Fatalf("cursor row (user-8) missing from windowed output:\n%s", out)
+	}
+	// Earlier behavior would have shown user-0..user-3; assert those are
+	// gone so the window actually slid.
+	if strings.Contains(out, "user-0 ") {
+		t.Fatalf("non-windowed: user-0 still present despite cursor=8:\n%s", out)
+	}
+}
+
+// TestDetail_TabWindow_NarrowFitsAll: a budget that fits every entry
+// renders them without windowing — defensive against the windowing
+// path firing when it shouldn't.
+func TestDetail_TabWindow_NarrowFitsAll(t *testing.T) {
+	events := []EventLogEntry{
+		{Type: "issue.commented", Actor: "alice"},
+		{Type: "issue.commented", Actor: "bob"},
+	}
+	out := renderEventsTab(events, 200, 10, 0)
+	if !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {
+		t.Fatalf("expected both rows, got:\n%s", out)
+	}
+}
+
+// TestDetail_CommentsTabWindow_KeepsCursorVisible: comments produce
+// multi-line chunks; the windower must still keep the cursor entry
+// visible by sliding entry-by-entry.
+func TestDetail_CommentsTabWindow_KeepsCursorVisible(t *testing.T) {
+	cs := make([]CommentEntry, 6)
+	for i := range cs {
+		cs[i] = CommentEntry{
+			ID: int64(i + 1), Author: fmt.Sprintf("user-%d", i),
+			Body: fmt.Sprintf("body-%d", i),
+		}
+	}
+	// Each comment chunk is ~3 lines (header, body, separator). Budget
+	// of 6 → header + ~5 rows visible. Cursor at 5 (last) should appear.
+	out := renderCommentsTab(cs, 200, 6, 5)
+	if !strings.Contains(out, "user-5") {
+		t.Fatalf("cursor entry user-5 missing from windowed output:\n%s", out)
+	}
+	if strings.Contains(out, "user-0]") {
+		t.Fatalf("non-windowed: user-0 still present despite cursor=5:\n%s", out)
+	}
+}
+
+// TestDetail_LinksTabWindow_KeepsCursorVisible mirrors the events test
+// for the links tab. Each link is one line, so the math is the same.
+func TestDetail_LinksTabWindow_KeepsCursorVisible(t *testing.T) {
+	ls := make([]LinkEntry, 10)
+	for i := range ls {
+		ls[i] = LinkEntry{
+			ID: int64(i + 1), Type: "blocks",
+			FromNumber: 42, ToNumber: int64(i + 1), Author: fmt.Sprintf("u%d", i),
+		}
+	}
+	out := renderLinksTab(ls, 200, 5, 8)
+	if !strings.Contains(out, "by u8") {
+		t.Fatalf("cursor link (u8) missing:\n%s", out)
+	}
+}
+
+// TestWindowChunks_AnchorsAtTopWhenCursorFits: cursor near 0 with a
+// budget that fits a few entries leaves the slice anchored at the
+// top — no spurious sliding.
+func TestWindowChunks_AnchorsAtTopWhenCursorFits(t *testing.T) {
+	chunks := []entryChunk{
+		{lines: []string{"a"}}, {lines: []string{"b"}},
+		{lines: []string{"c"}}, {lines: []string{"d"}},
+	}
+	got := windowChunks(chunks, 1, 2)
+	if len(got) != 2 {
+		t.Fatalf("got %d chunks, want 2", len(got))
+	}
+	if got[0].lines[0] != "a" || got[1].lines[0] != "b" {
+		t.Fatalf("expected [a b], got %+v", got)
 	}
 }
 
