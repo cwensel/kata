@@ -24,6 +24,12 @@ import (
 // centered form. When input.kind is a command bar, the chrome
 // renders the bar on the info line just above the footer (msgvault
 // pattern) and swaps the help row to the bar's keys.
+//
+// narrow signals the list pane is rendering in M6 split mode. The
+// list table drops the owner column when narrow=true so the title
+// column has more cells to flex into (owner is redundant with the
+// detail header's assignment row). Detail rendering ignores narrow
+// (the detail pane in split mode flexes the same as in stacked).
 type viewChrome struct {
 	scope     scope        // project / counts / version go in the title bar
 	sseStatus sseConnState // surfaces only as a flash when not connected
@@ -31,6 +37,7 @@ type viewChrome struct {
 	toast     *toast       // optional flash message (e.g. "resynced")
 	version   string       // build-time version string for the title bar; "" hides
 	input     inputState   // active input shell (M3a bar; M3b prompt; M4 form)
+	narrow    bool         // M6 split mode list pane: drop owner column
 }
 
 // View renders the list under the M3.5 chrome layer:
@@ -81,6 +88,22 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	return strings.Join([]string{title, stats, body, infoLine, footer}, "\n")
 }
 
+// ViewBody returns the body region for an M6 split-mode list pane:
+// table header + separator + windowed rows + fillScreen padding so
+// the pane reaches `bodyRows` lines tall. Pulls the narrow flag off
+// chrome so renderBody knows to drop the owner column. The chrome /
+// title-bar / info-line / footer are composed by renderSplit, not
+// here — this returns just the body region.
+func (lm listModel) ViewBody(width, bodyRows int, chrome viewChrome) string {
+	if lm.loading {
+		return statusStyle.Render("loading…")
+	}
+	if lm.err != nil {
+		return errorStyle.Render(lm.err.Error())
+	}
+	return lm.renderBodyArea(width, bodyRows, chrome)
+}
+
 // listMinHeight is the smallest terminal height the layout supports.
 // Below this we fall through to the bare fallback render.
 const listMinHeight = 10
@@ -94,7 +117,7 @@ const listBodyFloor = 5
 // minimum height. M5 will replace this with a proper "too narrow"
 // hint; for now it's just the table without chrome.
 func (lm listModel) renderTinyFallback(width int) string {
-	return lm.renderBody(width, listBodyFloor)
+	return lm.renderBody(width, listBodyFloor, false)
 }
 
 // renderBodyArea wraps renderBody with the fillScreen padding that
@@ -102,8 +125,12 @@ func (lm listModel) renderTinyFallback(width int) string {
 // the cursor to fit bodyRows; the remaining vertical slack is padded
 // with blank rows styled with normalRowStyle so terminals that retain
 // prior content overwrite cleanly.
-func (lm listModel) renderBodyArea(width, bodyRows int, _ viewChrome) string {
-	body := lm.renderBody(width, bodyRows-2 /* header + sep */)
+//
+// chrome.narrow is consulted by renderBody to drop the owner column
+// in M6 split-mode. The narrow flag stays scoped to renderBody +
+// helpers — chrome boilerplate (title/footer) is unaffected.
+func (lm listModel) renderBodyArea(width, bodyRows int, chrome viewChrome) string {
+	body := lm.renderBody(width, bodyRows-2 /* header + sep */, chrome.narrow)
 	rendered := strings.Split(body, "\n")
 	for len(rendered) < bodyRows {
 		rendered = append(rendered, normalRowStyle.Render(strings.Repeat(" ", width)))
@@ -427,11 +454,16 @@ func (lm listModel) issueCounts() issueCounts {
 // renderBody is the table body — header, separator, then up to height
 // data rows around the cursor. No top/bottom borders (msgvault
 // pattern); just one separator under the column header.
-func (lm listModel) renderBody(width, height int) string {
+//
+// narrow=true (M6 split-mode list pane) drops the owner column so
+// the title column flexes into the recovered cells. The owner is
+// redundant in split mode — the detail pane's assignment row carries
+// it on the right of the screen.
+func (lm listModel) renderBody(width, height int, narrow bool) string {
 	issues := filteredIssues(lm.issues, lm.filter)
 	if len(issues) == 0 {
 		hint := "no issues match. press c to clear filters or n to create one."
-		return tableHeaderRow(width) + "\n" +
+		return tableHeaderRow(width, narrow) + "\n" +
 			separatorRuleStyle.Render(strings.Repeat("─", width)) + "\n" +
 			normalRowStyle.Render(padToWidth("  "+hint, width))
 	}
@@ -443,8 +475,9 @@ func (lm listModel) renderBody(width, height int) string {
 		displayCursor = 0
 	}
 	visible, vCursor := windowIssues(issues, displayCursor, height)
-	cols := listColumnWidths(width)
-	rows := buildRows(visible, vCursor, cols.title)
+	cols := listColumnWidths(width, narrow)
+	rows := buildRows(visible, vCursor, cols.title, narrow)
+	headers := listTableHeaders(narrow)
 	t := table.New().
 		Border(lipgloss.HiddenBorder()).
 		BorderTop(false).
@@ -456,10 +489,10 @@ func (lm listModel) renderBody(width, height int) string {
 		BorderHeader(false).
 		Width(width).
 		Wrap(false).
-		Headers("", "#", "status", "title", "owner", "updated").
+		Headers(headers...).
 		Rows(rows...).
 		StyleFunc(func(row, col int) lipgloss.Style {
-			s := lipgloss.NewStyle().Width(cols.byIndex(col)).PaddingRight(1)
+			s := lipgloss.NewStyle().Width(cols.byIndex(col, narrow)).PaddingRight(1)
 			if row == table.HeaderRow {
 				return s.Inherit(tableHeaderStyle)
 			}
@@ -483,15 +516,26 @@ func (lm listModel) renderBody(width, height int) string {
 	return lines[0] + "\n" + rule + "\n" + lines[1]
 }
 
+// listTableHeaders returns the column-header label slice for the
+// list table. Wide (default) mode renders six columns including
+// owner; narrow (M6 split-mode list pane) drops owner.
+func listTableHeaders(narrow bool) []string {
+	if narrow {
+		return []string{"", "#", "status", "title", "updated"}
+	}
+	return []string{"", "#", "status", "title", "owner", "updated"}
+}
+
 // tableHeaderRow renders just the column-header line at the given
 // width, used by the empty-state branch where the lipgloss Table
-// isn't constructed. Mirrors the column widths and styling.
-func tableHeaderRow(width int) string {
-	cols := listColumnWidths(width)
-	headers := []string{"", "#", "status", "title", "owner", "updated"}
+// isn't constructed. Mirrors the column widths and styling. The
+// narrow flag drops the owner column to match renderBody.
+func tableHeaderRow(width int, narrow bool) string {
+	cols := listColumnWidths(width, narrow)
+	headers := listTableHeaders(narrow)
 	parts := make([]string, len(headers))
 	for i, h := range headers {
-		w := cols.byIndex(i)
+		w := cols.byIndex(i, narrow)
 		parts[i] = tableHeaderStyle.Render(padToWidth(h, w-1)) + " "
 	}
 	return strings.Join(parts, "")
@@ -505,8 +549,26 @@ type listColWidths struct {
 	cursor, num, status, title, owner, updated int
 }
 
-// byIndex maps a table column index to its width.
-func (c listColWidths) byIndex(col int) int {
+// byIndex maps a table column index to its width. The narrow flag
+// shifts the updated column from index 5 (wide) to index 4 (narrow,
+// owner dropped) so the table's per-column StyleFunc still picks
+// the right width.
+func (c listColWidths) byIndex(col int, narrow bool) int {
+	if narrow {
+		switch col {
+		case 0:
+			return c.cursor
+		case 1:
+			return c.num
+		case 2:
+			return c.status
+		case 3:
+			return c.title
+		case 4:
+			return c.updated
+		}
+		return 0
+	}
 	switch col {
 	case 0:
 		return c.cursor
@@ -527,7 +589,11 @@ func (c listColWidths) byIndex(col int) int {
 // listColumnWidths computes per-column cell widths for the list table.
 // Fixed-width columns sum to ~42 cells (with PaddingRight(1) per cell);
 // the title column flexes to fill the rest with a 20-cell floor.
-func listColumnWidths(termWidth int) listColWidths {
+//
+// narrow=true (M6 split-mode list pane) drops the owner column from
+// the fixed-width sum so the title flexes 14 cells wider — keeps
+// titles readable inside the 68-cell list pane.
+func listColumnWidths(termWidth int, narrow bool) listColWidths {
 	c := listColWidths{
 		cursor:  2,  // "▶" + padding
 		num:     6,  // "#9999"
@@ -535,7 +601,10 @@ func listColumnWidths(termWidth int) listColWidths {
 		owner:   14,
 		updated: 10, // "12w ago"
 	}
-	fixed := c.cursor + c.num + c.status + c.owner + c.updated
+	fixed := c.cursor + c.num + c.status + c.updated
+	if !narrow {
+		fixed += c.owner
+	}
 	c.title = termWidth - fixed
 	if c.title < 20 {
 		c.title = 20
@@ -765,29 +834,36 @@ func joinNonEmpty(parts []string) string {
 	return strings.Join(out, "\n")
 }
 
-// buildRows projects issues to the six-column shape the table renders.
-// titleW is the budget for the (flexed) title column — the renderer
-// truncates titles longer than that with an ellipsis. Owner is
-// truncated at 12 cells so the column never overflows its 14-cell
-// width. Title and owner are agent-authored so both run through
-// sanitizeForDisplay before truncation.
+// buildRows projects issues to the six-column shape the table renders
+// (five-column when narrow drops the owner). titleW is the budget for
+// the (flexed) title column — the renderer truncates titles longer
+// than that with an ellipsis. Owner is truncated at 12 cells so the
+// column never overflows its 14-cell width. Title and owner are
+// agent-authored so both run through sanitizeForDisplay before
+// truncation.
 //
 // Cursor glyph is `▶` (msgvault pattern) — more visible than `›` in
 // terminals that render fonts at low pixel density.
-func buildRows(issues []Issue, cursor, titleW int) [][]string {
+//
+// narrow=true (M6 split-mode list pane) drops the owner cell so the
+// row aligns with the five-header table.
+func buildRows(issues []Issue, cursor, titleW int, narrow bool) [][]string {
 	if titleW < 20 {
 		titleW = 20
 	}
 	rows := make([][]string, 0, len(issues))
 	for i, iss := range issues {
-		rows = append(rows, []string{
+		row := []string{
 			selMarker(i == cursor),
 			fmt.Sprintf("#%d", iss.Number),
 			statusChip(iss),
 			truncate(sanitizeForDisplay(iss.Title), titleW),
-			truncate(sanitizeForDisplay(ownerText(iss.Owner)), 12),
-			humanizeRelative(iss.UpdatedAt),
-		})
+		}
+		if !narrow {
+			row = append(row, truncate(sanitizeForDisplay(ownerText(iss.Owner)), 12))
+		}
+		row = append(row, humanizeRelative(iss.UpdatedAt))
+		rows = append(rows, row)
 	}
 	return rows
 }

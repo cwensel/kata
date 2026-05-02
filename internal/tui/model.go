@@ -96,6 +96,22 @@ type Model struct {
 	// it back, and handleLabelsFetched compares msg.gen >= entry.gen
 	// to decide whether to apply the result.
 	nextLabelsGen int64
+	// layout discriminates between the M1-M5 stacked single-view
+	// layout and the M6 split-pane layout (list + detail side-by-
+	// side). Re-evaluated on every WindowSizeMsg via pickLayout. See
+	// layout.go for the breakpoint thresholds and handleLayoutFlip.
+	layout layoutMode
+	// focus names which pane owns key dispatch in split layout. In
+	// stacked layout m.view is authoritative; m.focus is only
+	// consulted when m.layout == layoutSplit. Default focusList.
+	focus focusPane
+	// nextDetailFollowGen is the monotonic generation counter behind
+	// the M6 split-mode detail-follows-cursor debounce. Every cursor
+	// change in the list pane bumps this gen; the 75ms-debounced
+	// detailFollowTickMsg carries the gen at dispatch time so a
+	// stale tick (one whose gen < the current value) drops cleanly
+	// without firing a fetch the user no longer wants.
+	nextDetailFollowGen int64
 }
 
 // initialModel constructs the root Bubble Tea model. Style vars are
@@ -122,6 +138,8 @@ func initialModel(opts Options) Model {
 		cache:         newIssueCache(),
 		toastNow:      time.Now,
 		projectLabels: newLabelCache(),
+		layout:        layoutStacked,
+		focus:         focusList,
 	}
 }
 
@@ -302,13 +320,18 @@ func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 	if mut.origin == "form" {
 		return m.routeFormMutation(mut)
 	}
-	if mut.origin == "list" && m.view != viewList {
+	// listIsActive / detailIsActive abstract over stacked vs. split
+	// layout so the origin↔active-pane match is correct in both
+	// modes. In split layout both panes are visible, but only the
+	// focused pane owns key dispatch — so a mutation whose origin
+	// pane isn't the focused pane still applies directly (case 1/2).
+	if mut.origin == "list" && !m.listIsActive() {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.applyMutation(mut, m.api, m.scope)
 		return m, cmd
 	}
 	if mut.origin == "detail" {
-		if m.view != viewDetail {
+		if !m.detailIsActive() {
 			var cmd tea.Cmd
 			m.detail, cmd = m.detail.applyMutation(mut, m.api)
 			return m, cmd
@@ -329,7 +352,7 @@ func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	next, cmd := m.dispatchToView(mut)
+	next, cmd := m.routeMutationToActivePane(mut)
 	// Plan-8: label / create mutations may have changed the project's
 	// label aggregate. Refresh the cache so the next `+` open shows
 	// fresh counts. Doesn't wait on SSE — the user just took the
@@ -415,7 +438,12 @@ func projectIDFromMutation(m Model, mut mutationDoneMsg) int64 {
 func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		prevLayout := m.layout
 		m.width, m.height = msg.Width, msg.Height
+		m.layout = pickLayout(m.width, m.height)
+		if prevLayout != m.layout {
+			m = m.handleLayoutFlip(prevLayout)
+		}
 		return m, nil, true
 	case tea.KeyMsg:
 		// Modal owns input when active. Enter the modal-specific
@@ -708,8 +736,13 @@ func (m Model) handoffToEditor() (Model, tea.Cmd) {
 // The form needs Model-level state (m.input + nextFormGen counter),
 // so this can't live in detail.Update. Gated by view + the absence
 // of an open issue so an `e` press during loading is a no-op.
+//
+// In M6 split layout, the same gates apply but use focus instead of
+// view: the detail pane only owns `e` / `c` when m.focus ==
+// focusDetail. This keeps the list-pane `c` (clear filters) reachable
+// when focus is on the list.
 func (m Model) routeDetailFormKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
-	if m.view != viewDetail || m.detail.issue == nil {
+	if !m.detailIsActive() || m.detail.issue == nil {
 		return m, nil, false
 	}
 	switch {
@@ -719,6 +752,46 @@ func (m Model) routeDetailFormKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		return m.openCommentForm(), nil, true
 	}
 	return m, nil, false
+}
+
+// detailIsActive reports whether the detail pane currently owns key
+// dispatch. In stacked layout that's m.view == viewDetail; in split
+// layout it's m.focus == focusDetail. Used by routeDetailFormKey
+// and other Model-level handlers that need to act on "the user is
+// looking at detail right now."
+func (m Model) detailIsActive() bool {
+	if m.layout == layoutSplit {
+		return m.focus == focusDetail
+	}
+	return m.view == viewDetail
+}
+
+// listIsActive is the focusList counterpart of detailIsActive. In
+// stacked layout it's m.view == viewList; in split layout it's
+// m.focus == focusList.
+func (m Model) listIsActive() bool {
+	if m.layout == layoutSplit {
+		return m.focus == focusList
+	}
+	return m.view == viewList
+}
+
+// routeMutationToActivePane is the active-pane mutation dispatcher.
+// In stacked layout it forwards to the m.view-keyed pane (matching
+// the existing dispatchToView path); in split layout it forwards to
+// the focused pane regardless of m.view.
+func (m Model) routeMutationToActivePane(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
+	if m.layout == layoutSplit {
+		if mut.origin == "list" {
+			var cmd tea.Cmd
+			m.list, cmd = m.list.applyMutation(mut, m.api, m.scope)
+			return m, cmd
+		}
+		var cmd tea.Cmd
+		m.detail, cmd = m.detail.applyMutation(mut, m.api)
+		return m, cmd
+	}
+	return m.dispatchToView(mut)
 }
 
 // editorKindFor maps a form kind onto the editorReturnedMsg kind tag.
@@ -1120,6 +1193,11 @@ func (m Model) cancelInput() (Model, tea.Cmd) {
 //
 // `q` opens the quit-confirm modal (msgvault pattern); `ctrl+c`
 // remains the immediate-quit escape hatch for power users.
+//
+// M6: layout-aware focus moves (tab/enter from focusList →
+// focusDetail; esc from focusDetail → focusList) are checked AFTER
+// the global keys so `q` still opens the quit confirm and `?` still
+// toggles help in either focus state.
 func (m Model) routeGlobalKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	if !m.canQuit() {
 		return m, nil, false
@@ -1142,6 +1220,39 @@ func (m Model) routeGlobalKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		next, cmd := m.handleScopeToggle()
 		return next, cmd, true
 	}
+	if next, cmd, ok := m.routeLayoutFocusKey(msg); ok {
+		return next, cmd, true
+	}
+	return m, nil, false
+}
+
+// routeLayoutFocusKey handles M6 split-mode focus moves: tab from
+// focusList → focusDetail; esc from focusDetail → focusList.
+// Returns ok=true when the key was consumed by the focus layer so
+// the caller doesn't fall through to per-view dispatch (which would
+// also consume tab/esc).
+//
+// Enter on focusList is NOT consumed here so the list handler can
+// still dispatch openDetailMsg (which seeds dm.issue if needed).
+// The handleOpenDetail handler moves focus to focusDetail after
+// seeding the detail; that keeps the list handler's
+// openDetailMsg-dispatch flow intact while still honoring the spec
+// "enter from list → detail" — see handleOpenDetail.
+//
+// In stacked layout the function is a no-op (the layout has only
+// one pane; tab/esc retain their per-view meanings).
+func (m Model) routeLayoutFocusKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	if m.layout != layoutSplit {
+		return m, nil, false
+	}
+	if m.focus == focusList && msg.Type == tea.KeyTab && m.detail.issue != nil {
+		m.focus = focusDetail
+		return m, nil, true
+	}
+	if m.focus == focusDetail && msg.Type == tea.KeyEsc {
+		m.focus = focusList
+		return m, nil, true
+	}
 	return m, nil, false
 }
 
@@ -1162,6 +1273,10 @@ func (m Model) toggleHelp() Model {
 // routeSSE handles the SSE-side message family. Splitting this off
 // Update keeps both functions inside the project's ≤8 cyclomatic
 // budget. ok=true means the message was handled here.
+//
+// detailFollowTickMsg is the M6 split-mode cursor-debounce tick;
+// it isn't an SSE message but it shares the same "tick fires →
+// dispatch" shape and lives here for routing parity.
 func (m Model) routeSSE(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case eventReceivedMsg:
@@ -1178,6 +1293,9 @@ func (m Model) routeSSE(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		return next, cmd, true
 	case toastExpiredMsg:
 		next, cmd := m.handleToastExpired()
+		return next, cmd, true
+	case detailFollowTickMsg:
+		next, cmd := m.handleDetailFollowTick(msg)
 		return next, cmd, true
 	}
 	return m, nil, false
@@ -1334,7 +1452,14 @@ func (m Model) eventAffectsView(msg eventReceivedMsg) bool {
 // drops the result if the user navigates away before the response
 // lands.
 func (m Model) maybeRefetchOpenDetail(msg eventReceivedMsg) tea.Cmd {
-	if m.view != viewDetail || m.api == nil {
+	if m.api == nil {
+		return nil
+	}
+	// Detail is open if either the stacked view shows detail OR the
+	// split layout has a detail issue loaded (regardless of focus —
+	// the pane is visible either way and any SSE invalidation should
+	// keep it fresh).
+	if m.view != viewDetail && m.layout != layoutSplit {
 		return nil
 	}
 	if m.detail.issue == nil {
@@ -1406,8 +1531,15 @@ func (m Model) handleResetRequired(_ resetRequiredMsg) (tea.Model, tea.Cmd) {
 // looking at a detail pane. Used by reset_required and any other path
 // that needs to repopulate the open issue without an issue-targeted
 // SSE event to drive maybeRefetchOpenDetail.
+//
+// In M6 split layout the detail pane is always visible when an
+// issue is loaded (regardless of focus), so the same fetch fires
+// to keep it fresh even while focus is on the list.
 func (m Model) refetchOpenDetail() tea.Cmd {
-	if m.view != viewDetail || m.api == nil || m.detail.issue == nil {
+	if m.api == nil || m.detail.issue == nil {
+		return nil
+	}
+	if m.view != viewDetail && m.layout != layoutSplit {
 		return nil
 	}
 	pid := m.detail.scopePID
@@ -1537,6 +1669,13 @@ func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	m.detail.eventsLoading = true
 	m.detail.linksLoading = true
 	m.view = viewDetail
+	// In M6 split layout, "enter from list → detail" means focus
+	// moves to the detail pane on open. m.view also moves to
+	// viewDetail above so a subsequent split→stacked layout flip
+	// keeps the user on the detail pane.
+	if m.layout == layoutSplit {
+		m.focus = focusDetail
+	}
 	if m.api == nil {
 		return m, nil
 	}
@@ -1605,7 +1744,19 @@ func (m Model) handleJumpDetail(msg jumpDetailMsg) (tea.Model, tea.Cmd) {
 }
 
 // dispatchToView forwards msg to the active sub-view's Update.
+//
+// M6 split layout: dispatch follows m.focus (focusList → list,
+// focusDetail → detail) so the user's key reaches the pane they're
+// looking at. The view-vs-focus split ALSO ensures detail-only
+// fetched messages (commentsFetchedMsg etc.) reach dm.Update even
+// when m.view is viewList — necessary for the detail-follows-cursor
+// path because the list pane keeps focus while detail fetches land.
+//
+// In stacked layout the original m.view path is preserved.
 func (m Model) dispatchToView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.layout == layoutSplit {
+		return m.dispatchToSplitPane(msg)
+	}
 	switch m.view {
 	case viewList:
 		var cmd tea.Cmd
@@ -1617,6 +1768,147 @@ func (m Model) dispatchToView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// dispatchToSplitPane is the M6 split-mode dispatcher. Detail-only
+// fetched messages (issue/comments/events/links) ALWAYS reach
+// dm.Update so a fetched payload lands even while the list pane
+// owns focus. Other messages go to the focused pane. Keys land on
+// the focused pane only — never both panes.
+func (m Model) dispatchToSplitPane(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if isDetailFetchMsg(msg) {
+		var cmd tea.Cmd
+		m.detail, cmd = m.detail.Update(msg, m.keymap, m.api)
+		return m, cmd
+	}
+	if _, ok := msg.(tea.KeyMsg); ok && m.focus == focusList {
+		next, cmd := m.dispatchListKey(msg)
+		return next, cmd
+	}
+	if _, ok := msg.(tea.KeyMsg); ok && m.focus == focusDetail {
+		var cmd tea.Cmd
+		m.detail, cmd = m.detail.Update(msg, m.keymap, m.api)
+		return m, cmd
+	}
+	// Non-key, non-detail-fetch messages route to the focused pane so
+	// list mutations / list refetches land where the user is looking.
+	if m.focus == focusList {
+		var cmd tea.Cmd
+		m.list, cmd = m.list.Update(msg, m.keymap, m.api, m.scope)
+		return m, cmd
+	}
+	var cmd tea.Cmd
+	m.detail, cmd = m.detail.Update(msg, m.keymap, m.api)
+	return m, cmd
+}
+
+// dispatchListKey routes a key into the list pane and, when the
+// resulting cursor moved, retargets the detail pane onto the new
+// row + schedules a 75ms-debounced detail fetch. This is the
+// detail-follows-cursor mechanism that makes the split layout feel
+// responsive: the user moves up/down in the list and the detail
+// repaints synchronously with the highlighted issue's metadata,
+// then the debounced fetch fills in the four detail fetches.
+func (m Model) dispatchListKey(msg tea.Msg) (Model, tea.Cmd) {
+	prevSel := m.list.selectedNumber
+	var cmd tea.Cmd
+	m.list, cmd = m.list.Update(msg, m.keymap, m.api, m.scope)
+	if m.list.selectedNumber == prevSel {
+		return m, cmd
+	}
+	// Cursor moved (or selection initialized). Retarget detail
+	// immediately so the pane never lags the list.
+	m, followCmd := m.scheduleDetailFollow()
+	if followCmd == nil {
+		return m, cmd
+	}
+	if cmd == nil {
+		return m, followCmd
+	}
+	return m, tea.Batch(cmd, followCmd)
+}
+
+// isDetailFetchMsg reports whether msg is one of the four detail
+// per-tab fetched message kinds. Used by dispatchToSplitPane to
+// route fetched payloads to dm.Update regardless of focus so the
+// detail pane stays in sync as the user navigates the list.
+func isDetailFetchMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case detailFetchedMsg, commentsFetchedMsg, eventsFetchedMsg, linksFetchedMsg:
+		return true
+	}
+	return false
+}
+
+// scheduleDetailFollow retargets m.detail.issue at the currently-
+// highlighted list row and schedules a 75ms-debounced
+// detailFollowTickMsg that will dispatch the four detail fetches
+// when it fires. Bumps m.nextDetailFollowGen so a previously-pending
+// tick (whose gen is now stale) drops on arrival without firing a
+// fetch.
+//
+// When m.api is nil (unit tests that drive the model directly), the
+// debounce tick still fires but the fetch dispatch short-circuits;
+// the synchronous retarget of dm.issue still runs so tests can
+// observe the detail pane following the cursor without standing up
+// an http server.
+func (m Model) scheduleDetailFollow() (Model, tea.Cmd) {
+	iss, ok := pickHighlightedIssue(m.list)
+	if !ok {
+		return m, nil
+	}
+	pid := detailProjectID(iss, m.scope)
+	m.nextGen++
+	gen := m.nextGen
+	// Reset detail to a fresh shell pinned to the highlighted issue.
+	// per-tab loading flags drive the placeholders until the fetched
+	// payload arrives; pre-existing tab data from the previous row
+	// drops cleanly because the new gen invalidates older fetches.
+	m.detail = newDetailModel()
+	m.detail.gen = gen
+	issCopy := iss
+	m.detail.issue = &issCopy
+	m.detail.scopePID = pid
+	m.detail.allProjects = m.scope.allProjects
+	m.detail.actor = m.list.actor
+	m.detail.commentsLoading = true
+	m.detail.eventsLoading = true
+	m.detail.linksLoading = true
+	m.nextDetailFollowGen++
+	tickGen := m.nextDetailFollowGen
+	return m, tea.Tick(detailFollowDebounce, func(time.Time) tea.Msg {
+		return detailFollowTickMsg{gen: tickGen}
+	})
+}
+
+// detailFollowDebounce is the M6 split-mode cursor-debounce window.
+// 75ms is short enough to feel responsive (one keystroke barely
+// registers as a delay) and long enough to coalesce a burst of j/k
+// repeats into a single fetch when the user holds the key down.
+const detailFollowDebounce = 75 * time.Millisecond
+
+// handleDetailFollowTick fires when the 75ms debounce window
+// expires. Drops stale ticks (gen mismatch) so a coalesced burst
+// only fires one fetch. The fetch uses m.detail.gen — the current
+// detail-open generation — so an in-flight fetch from a still-newer
+// cursor change can drop this one's response too via applyFetched's
+// gen check.
+func (m Model) handleDetailFollowTick(msg detailFollowTickMsg) (Model, tea.Cmd) {
+	if msg.gen != m.nextDetailFollowGen {
+		return m, nil
+	}
+	if m.api == nil || m.detail.issue == nil {
+		return m, nil
+	}
+	pid := m.detail.scopePID
+	num := m.detail.issue.Number
+	gen := m.detail.gen
+	return m, tea.Batch(
+		fetchIssue(m.api, pid, num, gen),
+		fetchComments(m.api, pid, num, gen),
+		fetchEvents(m.api, pid, num, gen),
+		fetchLinks(m.api, pid, num, gen),
+	)
 }
 
 // View returns the rendered string for the active sub-view. The list
@@ -1661,8 +1953,10 @@ func (m Model) View() string {
 	// Plan-8: label-prompt autocomplete menu overlays the detail view
 	// above the info line. The detail layout reserves the menu's
 	// rendered height when computing the tab/body budget — see
-	// detail_render.go::renderInfoLine.
-	if m.view == viewDetail && isLabelPromptKind(m.input.kind) {
+	// detail_render.go::renderInfoLine. M6: in split layout the
+	// detail pane is always visible so the menu also fires when the
+	// user is on focusDetail regardless of m.view.
+	if m.detailIsActive() && isLabelPromptKind(m.input.kind) {
 		body = m.overlaySuggestMenu(body)
 	}
 	return body
@@ -1675,6 +1969,12 @@ func (m Model) View() string {
 // right edge of the panel. Returns body unchanged when the menu has
 // no rows to render (defensive — placeholderRows always returns at
 // least one).
+//
+// In M6 split layout, the detail pane occupies the right side of
+// the screen; the menu's anchor stays right-edged but clamps to the
+// detail-pane's column range so the menu floats over the detail
+// pane (where the prompt is) rather than spilling over the list
+// pane on the left.
 func (m Model) overlaySuggestMenu(body string) string {
 	suggestions := filterSuggestions(
 		m.suggestionsForPrompt(m.input),
@@ -1692,6 +1992,15 @@ func (m Model) overlaySuggestMenu(body string) string {
 	// (height - 2) - menuH.
 	anchorRow := m.height - 2 - menuH
 	anchorCol := m.width - menuW - 1
+	if m.layout == layoutSplit {
+		// Anchor inside the detail pane only: the detail pane starts
+		// at column splitListPaneWidth. The menu's left edge must
+		// not encroach into the list pane.
+		minCol := splitListPaneWidth + 1
+		if anchorCol < minCol {
+			anchorCol = minCol
+		}
+	}
 	return overlayAtCorner(body, menu, m.width, m.height, anchorRow, anchorCol)
 }
 
@@ -1718,12 +2027,22 @@ func (m Model) cacheEntryForPrompt(s inputState) labelCacheEntry {
 
 // viewBody returns the active sub-view rendering. Splitting it off
 // View keeps View's cyclomatic budget under the project limit.
+//
+// M6 split layout: list and detail render side-by-side when
+// m.layout == layoutSplit. viewHelp / viewEmpty short-circuit ahead
+// of the split path so the help overlay / onboarding hint always
+// take the full screen regardless of layout.
 func (m Model) viewBody() string {
 	switch m.view {
 	case viewHelp:
 		return renderHelp(m.keymap, m.width, m.list.filter)
 	case viewEmpty:
 		return renderEmpty(m.width, m.height)
+	}
+	if m.layout == layoutSplit {
+		return renderSplit(m)
+	}
+	switch m.view {
 	case viewList:
 		return m.list.View(m.width, m.height, m.chrome())
 	case viewDetail:

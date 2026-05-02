@@ -192,6 +192,16 @@ const (
 // fetch covers a burst of events.
 type refetchTickMsg struct{}
 
+// detailFollowTickMsg fires after the 75ms M6 split-mode debounce
+// window so a burst of cursor moves coalesces into one detail fetch.
+// gen is the dispatch-time Model.nextDetailFollowGen value;
+// handleDetailFollowTick drops a tick whose gen no longer matches
+// m.nextDetailFollowGen — meaning the user has moved the cursor
+// again and a fresher tick is in flight.
+type detailFollowTickMsg struct {
+	gen int64
+}
+
 // toastExpiredMsg fires after a toast's TTL so Update can clear it.
 type toastExpiredMsg struct{}
 

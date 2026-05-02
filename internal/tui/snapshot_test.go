@@ -484,6 +484,55 @@ func TestSnapshot_LabelPrompt_Scroll(t *testing.T) {
 	assertGolden(t, "label-prompt-scroll", got)
 }
 
+// snapSplitModel builds the M6 split-mode Model used by the split
+// snapshot tests: list fixture + open detail (snap fixture) + size
+// pinned to the test's terminal dimensions, layout already decided
+// by pickLayout. The caller picks the focus.
+func snapSplitModel(width, height int, focus focusPane) Model {
+	dm := snapDetailFixture()
+	m := initialModel(Options{})
+	m.scope = scope{projectID: 7, projectName: "kata"}
+	m.list.loading = false
+	m.list.issues = snapListFixture()
+	m.list.cursor = 1
+	m.list.selectedNumber = 2
+	m.detail = dm
+	m.width, m.height = width, height
+	m.layout = pickLayout(width, height)
+	m.focus = focus
+	m.sseStatus = sseConnected
+	return m
+}
+
+// TestSnapshot_Split_Wide locks the split rendering at 160x40 with
+// focus on the list pane.
+func TestSnapshot_Split_Wide(t *testing.T) {
+	defer snapshotInit(t)()
+	m := snapSplitModel(160, 40, focusList)
+	got := m.View()
+	assertGolden(t, "list-detail-split-wide", got)
+}
+
+// TestSnapshot_Split_FocusDetail locks the split rendering at 160x40
+// with focus on the detail pane (the borders should swap colors but
+// snapshots run under colorNone so we mainly assert the body shape).
+func TestSnapshot_Split_FocusDetail(t *testing.T) {
+	defer snapshotInit(t)()
+	m := snapSplitModel(160, 40, focusDetail)
+	got := m.View()
+	assertGolden(t, "list-detail-split-focus-detail", got)
+}
+
+// TestSnapshot_Split_AtBreakpoint locks the split rendering at the
+// minimum split-mode terminal size (140x36). This pin catches any
+// regression where the breakpoint thresholds shift unexpectedly.
+func TestSnapshot_Split_AtBreakpoint(t *testing.T) {
+	defer snapshotInit(t)()
+	m := snapSplitModel(140, 36, focusList)
+	got := m.View()
+	assertGolden(t, "list-detail-split-resize-collapse", got)
+}
+
 // snapLabelPromptModel builds the Model used by the label-prompt
 // snapshot tests: detail view with the snap fixture issue + a `+`
 // prompt open against project 7 / issue 42. width/height are pinned
