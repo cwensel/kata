@@ -57,12 +57,19 @@ func (f ListFilter) values() url.Values {
 
 // CreateIssueBody is the input to CreateIssue. IdempotencyKey rides the
 // Idempotency-Key header per spec §4.4 instead of the JSON body.
+//
+// Owner and Labels are populated by the new-issue form (Plan 8 commit 4)
+// when the user fills in the optional fields; they are omitted from the
+// payload when zero so an inline-row commit does not promise the daemon
+// fields it has no value for.
 type CreateIssueBody struct {
-	Title          string `json:"title"`
-	Body           string `json:"body,omitempty"`
-	Actor          string `json:"actor"`
-	ForceNew       bool   `json:"force_new,omitempty"`
-	IdempotencyKey string `json:"-"`
+	Title          string   `json:"title"`
+	Body           string   `json:"body,omitempty"`
+	Actor          string   `json:"actor"`
+	Owner          *string  `json:"owner,omitempty"`
+	Labels         []string `json:"labels,omitempty"`
+	ForceNew       bool     `json:"force_new,omitempty"`
+	IdempotencyKey string   `json:"-"`
 }
 
 // LinkBody is the request projection for POST /links.

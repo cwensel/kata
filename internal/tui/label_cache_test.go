@@ -184,22 +184,27 @@ func TestBatchLabelRefresh_DispatchesWhenEntryExists(t *testing.T) {
 	}
 }
 
-// TestMutAffectsLabelCounts_CreateDeferredToCommit4 pins I1: until
-// commit 4 wires the multi-field create form's Labels payload, plain
-// "create" mutations carry no label changes and must NOT trip the
-// label-cache invalidation. Without this gate every successful issue
-// create burns a ListLabels HTTP roundtrip against a project that
-// may not even have an open suggestion menu.
-func TestMutAffectsLabelCounts_CreateDeferredToCommit4(t *testing.T) {
-	if mutAffectsLabelCounts(mutationDoneMsg{kind: "create"}) {
-		t.Fatal("'create' must NOT trigger a label-aggregate refetch " +
-			"in commit 3 — labels payload is wired in commit 4")
+// TestMutAffectsLabelCounts_AllRelevantKinds pins which mutation
+// kinds invalidate the per-project label aggregate. Plan 8 commit 4
+// extended the set to include "create" because the multi-field
+// new-issue form can attach Labels at create time. The cache refresh
+// is still gated against per-project entry existence in
+// batchLabelRefresh, so a create against a project the user never
+// opened the menu for remains a zero-cost no-op.
+func TestMutAffectsLabelCounts_AllRelevantKinds(t *testing.T) {
+	if !mutAffectsLabelCounts(mutationDoneMsg{kind: "create"}) {
+		t.Fatal("'create' must trigger a label-aggregate refetch " +
+			"(commit 4 form may attach labels)")
 	}
 	if !mutAffectsLabelCounts(mutationDoneMsg{kind: "label.add"}) {
 		t.Fatal("'label.add' must trigger a label-aggregate refetch")
 	}
 	if !mutAffectsLabelCounts(mutationDoneMsg{kind: "label.remove"}) {
 		t.Fatal("'label.remove' must trigger a label-aggregate refetch")
+	}
+	// Errors short-circuit regardless of kind.
+	if mutAffectsLabelCounts(mutationDoneMsg{kind: "create", err: errStub("boom")}) {
+		t.Fatal("error must short-circuit refetch")
 	}
 }
 

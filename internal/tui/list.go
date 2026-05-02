@@ -334,14 +334,15 @@ func (lm listModel) applyFilterKey(
 }
 
 // applyPromptKey opens an input shell. `/` and `o` open the inline
-// command bar (M3a); `n` opens the inline new-issue row at the top
-// of the table (M3.5c). All three hand off via openInputMsg so
-// Model.openInput constructs the inputState centrally.
+// command bar (M3a); `n` opens the centered multi-field new-issue
+// form (Plan 8 commit 4 — replaces the M3.5c inline row). All three
+// hand off via openInputMsg so Model.openInput constructs the
+// inputState centrally.
 //
-// The new-issue row is gated to non-all-projects scopes because the
+// The new-issue form is gated to non-all-projects scopes because the
 // daemon's create endpoint is project-scoped; in all-projects mode
 // (which is itself gated until daemon support lands) we surface a
-// status hint instead of opening the row.
+// status hint instead of opening the form.
 func (lm listModel) applyPromptKey(
 	msg tea.KeyMsg, km keymap, sc scope,
 ) (listModel, tea.Cmd, bool) {
@@ -355,7 +356,7 @@ func (lm listModel) applyPromptKey(
 			lm.status = "cannot create from all-projects view; cd into a project"
 			return lm, nil, true
 		}
-		return lm, openInputCmd(inputNewIssueRow), true
+		return lm, openInputCmd(inputNewIssueForm), true
 	}
 	return lm, nil, false
 }
@@ -505,18 +506,18 @@ func listMutationSuccessText(m mutationDoneMsg) string {
 	return ""
 }
 
-// dispatchCreateIssue is the M3.5c commit path for the inline new-issue
-// row. Called from Model.commitInput when the user presses enter on
-// the new-issue title field. Empty/whitespace-only titles short-
-// circuit so accidental Enter in an empty row is a quiet no-op. The
-// untrimmed title reaches the wire so leading/trailing whitespace
-// the user deliberately typed survives.
-//
-// Body is left empty; M4 will chain a centered body form after the
-// successful create for optional refinement. For now, an immediate
-// create with body="" is the contract.
+// dispatchCreateIssue is the create-issue dispatch path, callable
+// from any caller that has the listModel in scope. Plan 8 commit 4
+// extended the signature with labels + owner so the multi-field
+// new-issue form can pass through normalized values; the title is
+// sent untrimmed so deliberate leading/trailing whitespace survives.
+// Empty/whitespace-only titles short-circuit so accidental Enter is
+// a quiet no-op (the form's own validation surfaces "title is
+// required" before this is reached, but the gate is kept for any
+// future caller that doesn't pre-validate).
 func (lm listModel) dispatchCreateIssue(
-	api listAPI, sc scope, title string,
+	api listAPI, sc scope,
+	title, body string, labels []string, owner *string,
 ) (listModel, tea.Cmd) {
 	if strings.TrimSpace(title) == "" {
 		return lm, nil
@@ -527,7 +528,7 @@ func (lm listModel) dispatchCreateIssue(
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		resp, err := api.CreateIssue(ctx, pid, CreateIssueBody{
-			Title: title, Body: "", Actor: actor,
+			Title: title, Body: body, Labels: labels, Owner: owner, Actor: actor,
 		})
 		return mutationDoneMsg{origin: "list", kind: "create", resp: resp, err: err}
 	}

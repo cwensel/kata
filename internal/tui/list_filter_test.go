@@ -3,8 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"strconv"
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -254,47 +252,6 @@ func TestList_ClearFilters_ZeroesEveryField(t *testing.T) {
 	}
 }
 
-// TestList_NewIssueRow_EmptyTitleDoesNotCallAPI: pressing `n` opens
-// the M3.5c inline new-issue row at the top of the table. Pressing
-// Enter on an empty buffer closes the row without calling
-// api.CreateIssue.
-func TestList_NewIssueRow_EmptyTitleDoesNotCallAPI(t *testing.T) {
-	api := &fakeListAPI{}
-	m := mFixtureForBar()
-	m = openBarFromCmd(t, m, 'n')
-	if m.input.kind != inputNewIssueRow {
-		t.Fatalf("expected inputNewIssueRow, got %v", m.input.kind)
-	}
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	nm := out.(Model)
-	if cmd != nil {
-		t.Fatalf("empty title must not dispatch a cmd, got %T", cmd)
-	}
-	if api.createCalls != 0 {
-		t.Fatalf("createCalls = %d, want 0", api.createCalls)
-	}
-	if nm.input.kind != inputNone {
-		t.Fatalf("row should close after empty Enter, got %v", nm.input.kind)
-	}
-}
-
-// TestList_NewIssueRow_WhitespaceTitleDoesNotCallAPI: a buffer of
-// only spaces/tabs trims to "" — same no-op path.
-func TestList_NewIssueRow_WhitespaceTitleDoesNotCallAPI(t *testing.T) {
-	api := &fakeListAPI{}
-	m := mFixtureForBar()
-	m.api = nil // force test path even though the empty branch returns nil cmd
-	_ = api
-	m = openBarFromCmd(t, m, 'n')
-	for _, r := range "   \t  " {
-		m, _ = stepModel(m, runeKey(r))
-	}
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatalf("whitespace-only title must not dispatch a cmd, got %T", cmd)
-	}
-}
-
 // TestList_Cursor_MovesInFilteredSpace: with a filter active, j/k
 // moves the cursor through filtered rows. Regression for finding 29:
 // previously j moved through all issues and the marker landed on the
@@ -329,97 +286,6 @@ func TestList_Cursor_MovesInFilteredSpace(t *testing.T) {
 	}
 }
 
-// TestList_NewIssueRow_TitleCreatesImmediately: typing a title and
-// pressing Enter dispatches CreateIssue with that title and an
-// empty body. M4 will chain a centered body form after success for
-// optional refinement; M3.5c's contract is "create now, refine later
-// or never."
-func TestList_NewIssueRow_TitleCreatesImmediately(t *testing.T) {
-	api := &fakeListAPI{
-		createResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	m := mFixtureForBar()
-	m.api = (*Client)(nil) // commitInput dispatches via m.list — needs scope only
-	m.scope = scope{projectID: 7}
-	m.list.actor = "tester"
-	m = openBarFromCmd(t, m, 'n')
-	for _, r := range "fix bug" {
-		m, _ = stepModel(m, runeKey(r))
-	}
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	nm := out.(Model)
-	if cmd == nil {
-		t.Fatal("expected create cmd from Enter on non-empty title")
-	}
-	if nm.input.kind != inputNone {
-		t.Fatalf("row should close after Enter, got %v", nm.input.kind)
-	}
-	// Drive the cmd against the fake API to confirm the wire shape.
-	// Model.list.dispatchCreateIssue captures the api param via
-	// closure; we drive lm.dispatchCreateIssue directly here for the
-	// API assertion since the Model.api is *Client (not detailAPI-
-	// fitable). The behavior under test is dispatchCreateIssue's
-	// title/body assembly.
-	_, dispatchCmd := nm.list.dispatchCreateIssue(api, nm.scope, "fix bug")
-	if dispatchCmd == nil {
-		t.Fatal("expected dispatch cmd from non-empty title")
-	}
-	dispatchCmd()
-	if api.createCalls != 1 {
-		t.Fatalf("createCalls = %d, want 1", api.createCalls)
-	}
-	if api.lastCreateBody.Title != "fix bug" {
-		t.Fatalf("title = %q, want %q", api.lastCreateBody.Title, "fix bug")
-	}
-	if api.lastCreateBody.Body != "" {
-		t.Fatalf("body = %q, want empty (M3.5c contract)", api.lastCreateBody.Body)
-	}
-	if api.lastCreateBody.Actor != "tester" {
-		t.Fatalf("actor = %q, want tester", api.lastCreateBody.Actor)
-	}
-}
-
-// TestList_NewIssueRow_PreservesTitleWhitespace: leading/trailing
-// whitespace the user typed reaches the wire untrimmed. dispatchCreateIssue
-// only TrimSpace's for the emptiness gate.
-func TestList_NewIssueRow_PreservesTitleWhitespace(t *testing.T) {
-	api := &fakeListAPI{
-		createResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	lm := listModel{actor: "tester"}
-	_, cmd := lm.dispatchCreateIssue(api, scope{projectID: 7}, "  spaced title  ")
-	if cmd == nil {
-		t.Fatal("expected create cmd")
-	}
-	cmd()
-	if api.lastCreateBody.Title != "  spaced title  " {
-		t.Fatalf("title = %q, want %q (whitespace preserved)",
-			api.lastCreateBody.Title, "  spaced title  ")
-	}
-}
-
-// TestList_NewIssueRow_EscCancels: pressing Esc closes the row with
-// no API call.
-func TestList_NewIssueRow_EscCancels(t *testing.T) {
-	api := &fakeListAPI{}
-	m := mFixtureForBar()
-	m = openBarFromCmd(t, m, 'n')
-	for _, r := range "fix bug" {
-		m, _ = stepModel(m, runeKey(r))
-	}
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	nm := out.(Model)
-	if cmd != nil {
-		t.Fatalf("Esc must not dispatch a cmd, got %T", cmd)
-	}
-	if nm.input.kind != inputNone {
-		t.Fatal("Esc should close the new-issue row")
-	}
-	if api.createCalls != 0 {
-		t.Fatalf("createCalls = %d, want 0", api.createCalls)
-	}
-}
-
 // TestList_NewIssue_AllProjectsModeIsNoOp: in cross-project view there
 // is no projectID to create against, so 'n' should not open the prompt
 // and should leave a status hint.
@@ -440,62 +306,14 @@ func TestList_NewIssue_AllProjectsModeIsNoOp(t *testing.T) {
 	}
 }
 
-// TestList_NewIssueRow_RendersFromTopOfList: opening the new-issue
-// row when the cursor is mid-list must still show the create row
-// above the freshest issues at index 0, not above an arbitrary middle
-// slice. Recency-sorted lists put the soon-to-be-created peer at the
-// top; the user expects to see what their new issue will sit next to.
-// Regression for roborev #113 finding 1.
-func TestList_NewIssueRow_RendersFromTopOfList(t *testing.T) {
-	issues := make([]Issue, 30)
-	for i := range issues {
-		issues[i] = Issue{
-			Number: int64(i + 1),
-			Title:  "issue " + strconv.Itoa(i+1),
-			Status: "open",
-		}
-	}
-	lm := listModel{issues: issues, cursor: 20}
-	in := newNewIssueRow()
-	out := lm.renderBodyWithNewIssueRow(120, 12, in)
-	// Top-of-list anchoring means issue #1 must appear in the rendered
-	// output even though cursor=20. If windowing still followed cursor,
-	// the slice would be issues 11..20-ish and #1 would be off-screen.
-	if !strings.Contains(out, "issue 1 ") {
-		t.Fatalf("expected 'issue 1' in rendered window when new-issue row is open; got:\n%s", out)
-	}
-}
-
-// TestList_NewIssueRow_ScrollIndicatorMatchesAnchoredWindow: the
-// info-line scroll indicator must use the same top-anchored window
-// as the rendered body when the inline new-issue row is open. With
-// cursor mid-list, the body anchors at index 0; the indicator must
-// report `[1-K of N]` (top slice) instead of a middle slice. The
-// budget shrinks by 1 to account for the synthetic row taking the
-// first data slot. Regression for roborev #121.
-func TestList_NewIssueRow_ScrollIndicatorMatchesAnchoredWindow(t *testing.T) {
-	issues := make([]Issue, 30)
-	for i := range issues {
-		issues[i] = Issue{Number: int64(i + 1), Title: "x", Status: "open"}
-	}
-	lm := listModel{issues: issues, cursor: 20}
-	chrome := viewChrome{
-		sseStatus: sseConnected,
-		input:     newNewIssueRow(),
-	}
-	info := renderListInfoLine(120, chrome, lm, 10)
-	// Anchored at top with budget 10-1=9 visible: window must be [1-9].
-	if !strings.Contains(info, "[1-9 of 30]") {
-		t.Fatalf("indicator mismatch; want [1-9 of 30], got %q", info)
-	}
-}
-
-// TestList_NewIssueRow_CommitSeedsSelectionToNewIssue: after a
-// successful create, the next refetch must land the cursor on the
-// newly-created issue (which lands at index 0 in a recency-sorted
-// list) instead of snapping back to whatever was selected before.
-// Regression for roborev #113 finding 2.
-func TestList_NewIssueRow_CommitSeedsSelectionToNewIssue(t *testing.T) {
+// TestList_NewIssueCreateSeedsSelectionToNewIssue: after a successful
+// create, the next refetch must land the cursor on the newly-created
+// issue (which lands at index 0 in a recency-sorted list) instead of
+// snapping back to whatever was selected before. Regression for
+// roborev #113 finding 2; preserved across the inline-row → centered-
+// form refactor because the seed lives in lm.applyMutation, not the
+// inline-row code path.
+func TestList_NewIssueCreateSeedsSelectionToNewIssue(t *testing.T) {
 	api := &fakeListAPI{}
 	lm := listModel{
 		issues:         []Issue{{Number: 5}, {Number: 4}, {Number: 3}},

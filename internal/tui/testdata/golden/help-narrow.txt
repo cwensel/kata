@@ -13,7 +13,7 @@ pgdown  page down
 g       first
 G       last
 enter   open detail
-n       new issue
+n       new issue (form)
 /       search
 s       cycle status filter
 o       filter by owner

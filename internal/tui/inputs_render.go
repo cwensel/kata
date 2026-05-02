@@ -52,11 +52,12 @@ func renderPanelPrompt(s inputState, width int) string {
 	return title + "\n" + rendered
 }
 
-// renderCenteredForm is the M4 centered modal panel: bordered title
-// strip, textarea body, footer hint inside the box. Sized to ~70%
-// of the terminal (capped to 100x24 lines so wide windows don't get
-// a stretched form). Composed inline by Model.View via overlayModal
-// so the form sits on top of the underlying view's background.
+// renderCenteredForm is the centered modal panel for any centered
+// form: bordered title strip, body, footer hint inside the box.
+// Sized to ~70% of the terminal (capped to 100x24 lines so wide
+// windows don't get a stretched form). Composed inline by Model.View
+// via overlayModal so the form sits on top of the underlying view's
+// background.
 //
 // Render-time sanitization is applied to the title and footer text
 // (trusted package strings, but cheap and consistent) and the
@@ -64,22 +65,36 @@ func renderPanelPrompt(s inputState, width int) string {
 // any pasted ANSI sequence is dropped before it reaches the buffer.
 // Mutation payloads read the field value untouched — only the
 // display layer applies sanitization.
+//
+// Dispatches on s.kind: the multi-field new-issue form has its own
+// renderer that lays out four labeled fields stacked vertically;
+// single-field forms (edit-body, comment) keep the M4 layout.
 func renderCenteredForm(s inputState, width, height int) string {
 	if width < formMinWidth || height < formMinHeight {
 		return renderTinyFormFallback(s)
 	}
 	innerW := formInnerWidth(width)
 	innerH := formInnerHeight(height)
+	if s.kind == inputNewIssueForm {
+		return renderNewIssueForm(s, innerW, innerH)
+	}
+	return renderSingleFieldForm(s, innerW, innerH)
+}
+
+// renderSingleFieldForm renders the M4 single-textarea forms
+// (inputBodyEditForm, inputCommentForm). Title strip on top, the
+// active textarea filling the interior, optional status line, footer
+// hint at the bottom.
+func renderSingleFieldForm(s inputState, innerW, innerH int) string {
 	f := s.activeField()
 	if f == nil {
 		return ""
 	}
-	// Resize the textarea to the form's interior.
 	f.area.SetWidth(innerW)
 	f.area.SetHeight(innerH - 2 /* title + footer */)
 	body := f.area.View()
-	footer := renderFormFooter(s, innerW)
-	statusLine := renderFormStatus(s, innerW)
+	footer := renderFormFooter(s, innerW, true /* allowEditor */)
+	statusLine := renderFormStatus(s)
 	parts := []string{
 		titleStyle.Render(s.title),
 		body,
@@ -88,18 +103,90 @@ func renderCenteredForm(s inputState, width, height int) string {
 		parts = append(parts, statusLine)
 	}
 	parts = append(parts, footer)
-	box := modalBoxStyle.Width(innerW).Padding(0, 1).Render(strings.Join(parts, "\n"))
-	return box
+	return modalBoxStyle.Width(innerW).Padding(0, 1).Render(strings.Join(parts, "\n"))
+}
+
+// renderNewIssueForm lays out the four fields of the multi-field
+// new-issue form: Title (single-line), Body (multi-line, gets the
+// remaining vertical slack), Labels (single-line), Owner (single-
+// line). Each field is preceded by a label cell; the active field's
+// label renders bold so the user can tell which field has focus.
+//
+// The footer hint flips ctrl+e to "(body only)" when a single-line
+// field has focus so the user understands the editor handoff is
+// gated to the body textarea.
+func renderNewIssueForm(s inputState, innerW, innerH int) string {
+	if len(s.fields) < 4 {
+		return ""
+	}
+	statusLine := renderFormStatus(s)
+	footer := renderFormFooter(s, innerW, s.active == newIssueFormBodyIndex)
+	// Reserve title (1) + footer (1) + status (0 or 1) + 4 field
+	// labels + 3 single-line field rows. Body gets whatever is left.
+	reserved := 1 + 1 + 4 + 3
+	if statusLine != "" {
+		reserved++
+	}
+	bodyRows := innerH - reserved
+	if bodyRows < 3 {
+		bodyRows = 3
+	}
+	// Single-line field width = innerW; resize the body textarea so
+	// it fills the available width and bodyRows.
+	body := &s.fields[1]
+	body.area.SetWidth(innerW)
+	body.area.SetHeight(bodyRows)
+	parts := []string{titleStyle.Render(s.title)}
+	parts = append(parts, renderNewIssueField(s, 0, innerW))
+	parts = append(parts, renderNewIssueField(s, 1, innerW))
+	parts = append(parts, renderNewIssueField(s, 2, innerW))
+	parts = append(parts, renderNewIssueField(s, 3, innerW))
+	if statusLine != "" {
+		parts = append(parts, statusLine)
+	}
+	parts = append(parts, footer)
+	return modalBoxStyle.Width(innerW).Padding(0, 1).Render(strings.Join(parts, "\n"))
+}
+
+// renderNewIssueField renders one labeled field row. The label is
+// bold when the field has focus; the field's bubbles view is
+// rendered beneath the label. Single-line fields render on a single
+// row; multi-line fields render with whatever height the textarea
+// was set to in renderNewIssueForm.
+func renderNewIssueField(s inputState, idx, innerW int) string {
+	f := &s.fields[idx]
+	label := f.label
+	if f.required {
+		label += " *"
+	}
+	if idx == s.active {
+		label = titleStyle.Render(label)
+	} else {
+		label = subtleStyle.Render(label)
+	}
+	var view string
+	if f.kind == fieldMultiLine {
+		view = f.area.View()
+	} else {
+		f.input.Width = innerW - 2
+		view = f.input.View()
+	}
+	return label + "\n" + view
 }
 
 // renderFormFooter is the footer-hint row inside the panel. While
 // saving=true the hint flips to a single "saving…" cell so the user
-// sees they should wait.
-func renderFormFooter(s inputState, innerW int) string {
+// sees they should wait. allowEditor=false suppresses the ctrl+e
+// hint with a "(body only)" parenthetical, used by the new-issue
+// form when a single-line field has focus.
+func renderFormFooter(s inputState, innerW int, allowEditor bool) string {
 	if s.saving {
 		return statusStyle.Render("saving…")
 	}
 	hint := "ctrl+s save · esc cancel · ctrl+e $EDITOR"
+	if !allowEditor {
+		hint = "ctrl+s save · esc cancel · tab next · ctrl+e (body only)"
+	}
 	if len(hint) > innerW {
 		hint = "ctrl+s save · esc cancel"
 	}
@@ -108,7 +195,7 @@ func renderFormFooter(s inputState, innerW int) string {
 
 // renderFormStatus surfaces in-form errors (editor cancel / error,
 // empty-comment block on commit). Empty when no status to show.
-func renderFormStatus(s inputState, _ int) string {
+func renderFormStatus(s inputState) string {
 	if s.err == "" {
 		return ""
 	}

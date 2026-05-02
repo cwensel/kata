@@ -330,18 +330,6 @@ func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	next, cmd := m.dispatchToView(mut)
-	// Post-create chain (M4): a successful inline-row create opens the
-	// post-create body editor for the newly-created issue. The list-
-	// side applyMutation has already seeded selectedNumber/cursor for
-	// the new row by the time we get here, so esc-out lands the user
-	// on the right list cursor.
-	if isCreateSuccess(mut) {
-		nm, ok := next.(Model)
-		if ok {
-			nm = nm.openBodyEditPostCreate(mut.resp.Issue.Number)
-			return nm, cmd
-		}
-	}
 	// Plan-8: label / create mutations may have changed the project's
 	// label aggregate. Refresh the cache so the next `+` open shows
 	// fresh counts. Doesn't wait on SSE — the user just took the
@@ -352,26 +340,19 @@ func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 	return next, cmd
 }
 
-// isCreateSuccess reports whether mut is a successful create-issue
-// mutation that should chain into the post-create body editor.
-func isCreateSuccess(mut mutationDoneMsg) bool {
-	return mut.origin == "list" && mut.kind == "create" &&
-		mut.err == nil && mut.resp != nil && mut.resp.Issue != nil
-}
-
 // mutAffectsLabelCounts reports whether a successful mutation could
-// have changed the project's label aggregate. Label add/remove are
-// the only commit-3 kinds that touch counts; "create" is deferred to
-// commit 4, which wires the multi-field create form's Labels payload
-// — until then "create" never carries labels, so refetching the
-// project's aggregate after a plain create burns a needless API call
-// against a project the user may never have opened the menu for.
+// have changed the project's label aggregate. Label add/remove and
+// create (which since Plan 8 commit 4 may carry labels via the
+// multi-field new-issue form) all qualify; the cache refresh is gated
+// against the per-project entry's existence so a plain-title create
+// against a project that never had a label menu opened remains a
+// zero-cost no-op.
 func mutAffectsLabelCounts(mut mutationDoneMsg) bool {
 	if mut.err != nil {
 		return false
 	}
 	switch mut.kind {
-	case "label.add", "label.remove":
+	case "label.add", "label.remove", "create":
 		return true
 	}
 	return false
@@ -480,12 +461,12 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 // panel-local prompts, the issue number lands in the prompt title
 // AND the formTarget rides on inputState.target so the autocomplete
 // dispatch (label suggestions) can scope to the right project. For
-// the inline new-issue row (M3.5c), the row state has no issue
-// context — Enter dispatches CreateIssue with the typed title. For
-// centered forms, openInput delegates to openBodyEditForm /
-// openCommentForm — they need extra context (current body, issue
-// target) so they're called directly from the detail key handler
-// instead of via openInputMsg.
+// the centered new-issue form (Plan 8 commit 4), the form has no
+// issue context — ctrl+s dispatches CreateIssue with the four-field
+// payload. For other centered forms (edit-body, comment), openInput
+// delegates to openBodyEditForm / openCommentForm — they need extra
+// context (current body, issue target) so they're called directly
+// from the detail key handler instead of via openInputMsg.
 //
 // inputLabelPrompt opens with a parallel dispatchLabelFetch so the
 // suggestion menu can render its first frame populated (or with a
@@ -499,8 +480,11 @@ func (m Model) openInput(kind inputKind) (Model, tea.Cmd) {
 		m.input = newSearchBar(m.list.filter)
 	case kind == inputOwnerBar:
 		m.input = newOwnerBar(m.list.filter)
-	case kind == inputNewIssueRow:
-		m.input = newNewIssueRow()
+	case kind == inputNewIssueForm:
+		m.nextFormGen++
+		s := newNewIssueForm()
+		s.formGen = m.nextFormGen
+		m.input = s
 	case kind.isPanelPrompt():
 		target := m.panelPromptTarget()
 		m.input = newPanelPrompt(kind, target)
@@ -558,24 +542,6 @@ func (m Model) openBodyEditForm() Model {
 	}
 	m.nextFormGen++
 	form := newBodyEditForm(target, m.detail.issue.Body)
-	form.formGen = m.nextFormGen
-	m.input = form
-	return m
-}
-
-// openBodyEditPostCreate opens the post-create body editor for a
-// freshly-created issue. Called from the create-mutation success
-// branch so the user can immediately add body content; esc keeps the
-// body empty (the issue exists either way) and lands the user on the
-// new issue's detail view.
-func (m Model) openBodyEditPostCreate(issueNumber int64) Model {
-	target := formTarget{
-		projectID:   m.scope.projectID,
-		issueNumber: issueNumber,
-		detailGen:   m.detail.gen,
-	}
-	m.nextFormGen++
-	form := newBodyEditPostCreate(target)
 	form.formGen = m.nextFormGen
 	m.input = form
 	return m
@@ -755,25 +721,39 @@ func (m Model) routeDetailFormKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 // editorKindFor maps a form kind onto the editorReturnedMsg kind tag.
 // The tag is informational only at the Model layer (the formGen is
 // what gates routing) but kept consistent with editor.go for future
-// reuse.
+// reuse. The new-issue form returns "create" so a future log/audit
+// path can attribute the editor session correctly.
 func editorKindFor(k inputKind) string {
 	switch k {
 	case inputCommentForm:
 		return "comment"
-	case inputBodyEditForm, inputBodyEditPostCreate:
+	case inputBodyEditForm:
 		return "edit"
+	case inputNewIssueForm:
+		return "create"
 	}
 	return ""
 }
 
 // routeFormMutation dispatches a form-originated mutationDoneMsg.
 // Success: close the form and let the rest of the app re-fetch what
-// it needs (the daemon's SSE push will invalidate caches, and an
-// open detail view's mutationDoneMsg path will reflect the change).
-// Failure: surface the error on the form's status line and clear
-// saving so the user can retry. A response that arrives after the
-// user already cancelled the form (or it was somehow cleared) is
+// it needs. Failure: surface the error on the form's status line and
+// clear saving so the user can retry. A response that arrives after
+// the user already cancelled the form (or it was somehow cleared) is
 // dropped.
+//
+// Two success paths:
+//
+//  1. inputNewIssueForm — route through list create handling so
+//     selectedNumber seeds with the new issue's number, the cursor
+//     lands on it after refetch, and the list status hint surfaces
+//     ("created #N"). The form does NOT auto-open the new issue's
+//     detail view; the user lands back on the list with the new row
+//     selected (Plan 8 commit 4 — replaces the M4 post-create chain).
+//
+//  2. inputBodyEditForm / inputCommentForm — re-classify as origin=
+//     detail so the existing detail applyMutation logic refreshes
+//     the body / comments list.
 func (m Model) routeFormMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 	if !m.input.kind.isCenteredForm() {
 		return m, nil
@@ -782,6 +762,14 @@ func (m Model) routeFormMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 		m.input.saving = false
 		m.input.err = mut.kind + " failed: " + mut.err.Error()
 		return m, nil
+	}
+	if m.input.kind == inputNewIssueForm {
+		m.input = inputState{}
+		var cmd tea.Cmd
+		m.list, cmd = m.list.applyMutation(mutationDoneMsg{
+			origin: "list", kind: "create", resp: mut.resp,
+		}, m.api, m.scope)
+		return m, cmd
 	}
 	m.input = inputState{}
 	// Hand off to the existing per-view mutation routing so the
@@ -847,16 +835,15 @@ func (m Model) applyLiveBarFilter() Model {
 // commitInput closes the input shell. For command bars, the live-
 // mirrored filter stays applied. For panel-local prompts, the
 // trimmed buffer dispatches the corresponding detail-side mutation
-// via dispatchPanelPromptCommit before the input clears. For the
-// inline new-issue row, the title (untrimmed — preserves intentional
-// whitespace) dispatches CreateIssue via lm.dispatchCreateIssue.
+// via dispatchPanelPromptCommit before the input clears.
 //
 // For centered forms, commitInput keeps the form open with
 // saving=true while the mutation is in flight (so a duplicate
 // ctrl+s is absorbed by the form's updateForm gate). The form is
-// closed by routeMutation when the response arrives. Empty comment
-// content surfaces an in-form error and leaves the form open;
-// empty body content is allowed (clearing a body is legitimate).
+// closed by routeFormMutation when the response arrives. Per-form
+// gates: comments require non-empty content; body edits allow empty
+// (clearing a body is legitimate); the new-issue form requires a
+// non-blank Title and normalizes Labels/Owner.
 func (m Model) commitInput() (Model, tea.Cmd) {
 	kind := m.input.kind
 	rawBuf := ""
@@ -864,18 +851,13 @@ func (m Model) commitInput() (Model, tea.Cmd) {
 		rawBuf = f.value()
 	}
 	if kind.isCenteredForm() {
-		return m.commitFormInput(kind, rawBuf)
+		return m.commitFormInput(kind)
 	}
 	trimmed := strings.TrimSpace(rawBuf)
 	m.input = inputState{}
-	switch {
-	case kind.isPanelPrompt() && trimmed != "":
+	if kind.isPanelPrompt() && trimmed != "" {
 		var cmd tea.Cmd
 		m.detail, cmd = m.detail.dispatchPanelPromptCommit(m.api, kind, trimmed)
-		return m, cmd
-	case kind == inputNewIssueRow:
-		var cmd tea.Cmd
-		m.list, cmd = m.list.dispatchCreateIssue(m.api, m.scope, rawBuf)
 		return m, cmd
 	}
 	return m, nil
@@ -884,14 +866,18 @@ func (m Model) commitInput() (Model, tea.Cmd) {
 // commitFormInput handles ctrl+s on a centered form. The form stays
 // open with saving=true while the daemon round-trip runs; the
 // arriving mutationDoneMsg closes it (success: clear and update
-// detail; error: surface on the form's status line and leave open).
-//
-// Comments require non-empty content (an empty comment carries no
-// information); body edits accept empty content (clearing a body is
-// legitimate). Render-side sanitization elsewhere handles display
-// safety; mutation payloads go to the wire untouched so the user's
-// content is preserved exactly.
-func (m Model) commitFormInput(kind inputKind, rawBuf string) (Model, tea.Cmd) {
+// detail / list; error: surface on the form's status line and leave
+// open). Render-side sanitization elsewhere handles display safety;
+// mutation payloads go to the wire untouched so the user's content
+// is preserved exactly.
+func (m Model) commitFormInput(kind inputKind) (Model, tea.Cmd) {
+	if kind == inputNewIssueForm {
+		return m.commitNewIssueForm()
+	}
+	rawBuf := ""
+	if f := m.input.activeField(); f != nil {
+		rawBuf = f.value()
+	}
 	if kind == inputCommentForm && strings.TrimSpace(rawBuf) == "" {
 		m.input.err = "comment cannot be empty"
 		return m, nil
@@ -902,10 +888,87 @@ func (m Model) commitFormInput(kind inputKind, rawBuf string) (Model, tea.Cmd) {
 	switch kind {
 	case inputCommentForm:
 		return m, dispatchFormAddComment(m.api, target, rawBuf, m.list.actor)
-	case inputBodyEditForm, inputBodyEditPostCreate:
+	case inputBodyEditForm:
 		return m, dispatchFormEditBody(m.api, target, rawBuf, m.list.actor)
 	}
 	return m, nil
+}
+
+// commitNewIssueForm reads the four fields, normalizes Labels and
+// Owner, gates on a non-blank Title, and dispatches CreateIssue.
+// Title is sent untrimmed so deliberate leading/trailing whitespace
+// survives (mirrors the legacy inline-row contract). Labels are
+// comma-split with per-token TrimSpace; empty tokens drop. Owner is
+// nil-on-wire when blank after trim, otherwise the trimmed value.
+func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
+	if len(m.input.fields) < 4 {
+		return m, nil
+	}
+	title := m.input.fields[0].input.Value()
+	body := m.input.fields[1].area.Value()
+	labelsBuf := m.input.fields[2].input.Value()
+	ownerBuf := m.input.fields[3].input.Value()
+	if strings.TrimSpace(title) == "" {
+		m.input.err = "title is required"
+		return m, nil
+	}
+	labels := normalizeLabels(labelsBuf)
+	owner := normalizeOwner(ownerBuf)
+	m.input.saving = true
+	m.input.err = ""
+	return m, dispatchFormCreateIssue(
+		m.api, m.scope.projectID, title, body, labels, owner, m.list.actor,
+	)
+}
+
+// normalizeLabels splits buf on commas, trims whitespace per token,
+// and drops empty tokens. Returns nil for an all-empty buffer so the
+// JSON omitempty tag elides Labels from the wire.
+func normalizeLabels(buf string) []string {
+	parts := strings.Split(buf, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizeOwner trims buf and returns nil when blank, else &trimmed.
+// nil omits Owner from the wire (the daemon treats omission as "no
+// owner change") rather than sending an empty string that would set
+// the owner to the literal "".
+func normalizeOwner(buf string) *string {
+	t := strings.TrimSpace(buf)
+	if t == "" {
+		return nil
+	}
+	return &t
+}
+
+// dispatchFormCreateIssue is the form-side CreateIssue dispatch.
+// Tagged with origin="form" so routeFormMutation matches the response
+// to the still-open new-issue form. Title is sent untrimmed; Labels
+// and Owner have already been normalized by commitNewIssueForm.
+func dispatchFormCreateIssue(
+	api *Client, pid int64, title, body string,
+	labels []string, owner *string, actor string,
+) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := api.CreateIssue(ctx, pid, CreateIssueBody{
+			Title: title, Body: body, Labels: labels, Owner: owner, Actor: actor,
+		})
+		return mutationDoneMsg{
+			origin: "form", kind: "create", resp: resp, err: err,
+		}
+	}
 }
 
 // dispatchFormAddComment is the form-side AddComment dispatch. Tagged
@@ -943,38 +1006,15 @@ func dispatchFormEditBody(
 
 // cancelInput restores any pre-open filter snapshot (bars only) and
 // closes the input — undoing every live keystroke the user typed.
-// Panel-local prompts have no live mirror, so cancel is just close.
-//
-// Special case: esc on the post-create body form opens the new
-// issue's detail view. The issue exists with an empty body — esc is
-// "I don't want to add a body right now," not "discard the issue."
-// The user lands on the detail view they would have eventually
-// reached anyway; the list refetch the create dispatched will have
-// the new issue at the top.
+// Panel-local prompts and centered forms have no live mirror, so
+// cancel is just close.
 func (m Model) cancelInput() (Model, tea.Cmd) {
 	if m.input.kind.isCommandBar() {
 		m.list.filter = m.input.preFilter
 		m.list = m.list.clampCursorToFilter()
 	}
-	postCreate := m.input.kind == inputBodyEditPostCreate
-	target := m.input.target
 	m.input = inputState{}
-	if postCreate {
-		return m, openDetailFromTarget(target)
-	}
 	return m, nil
-}
-
-// openDetailFromTarget emits an openDetailMsg for the post-create
-// chain's esc path, seeding a minimal Issue (the create response
-// already has number + project; the rest fills in via the detail
-// fetch the open kicks off).
-func openDetailFromTarget(t formTarget) tea.Cmd {
-	return func() tea.Msg {
-		return openDetailMsg{issue: Issue{
-			Number: t.issueNumber, ProjectID: t.projectID,
-		}}
-	}
 }
 
 // routeGlobalKey handles the global key family (quit, help, scope

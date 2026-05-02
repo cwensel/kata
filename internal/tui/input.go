@@ -21,16 +21,15 @@ const (
 	inputNone inputKind = iota
 	inputSearchBar
 	inputOwnerBar
-	inputLabelPrompt        // detail `+` — add label
-	inputRemoveLabelPrompt  // detail `-` — remove label
-	inputOwnerPrompt        // detail `a` — assign owner
-	inputParentPrompt       // detail `p` — set parent
-	inputBlockerPrompt      // detail `b` — add blocker
-	inputLinkPrompt         // detail `L` — add link "kind number"
-	inputNewIssueRow        // list `n` — inline title row at top of table
-	inputBodyEditForm       // detail `e` — centered multi-line body editor
-	inputBodyEditPostCreate // post-create chain — body editor for newly-created issue
-	inputCommentForm        // detail `c` — centered multi-line comment editor
+	inputLabelPrompt       // detail `+` — add label
+	inputRemoveLabelPrompt // detail `-` — remove label
+	inputOwnerPrompt       // detail `a` — assign owner
+	inputParentPrompt      // detail `p` — set parent
+	inputBlockerPrompt     // detail `b` — add blocker
+	inputLinkPrompt        // detail `L` — add link "kind number"
+	inputNewIssueForm      // list `n` — multi-field modal: Title/Body/Labels/Owner
+	inputBodyEditForm      // detail `e` — centered multi-line body editor
+	inputCommentForm       // detail `c` — centered multi-line comment editor
 )
 
 // isPanelPrompt reports whether a kind is one of the M3b panel-local
@@ -50,12 +49,13 @@ func (k inputKind) isCommandBar() bool {
 	return k == inputSearchBar || k == inputOwnerBar
 }
 
-// isCenteredForm reports whether a kind is one of the M4 centered
-// form kinds (multi-line textarea, ctrl+s commit, esc cancel,
-// ctrl+e $EDITOR escape hatch).
+// isCenteredForm reports whether a kind is one of the centered form
+// kinds (multi-line textarea, ctrl+s commit, esc cancel, ctrl+e
+// $EDITOR escape hatch). M4 introduced edit-body and comment;
+// Plan 8 commit 4 added the multi-field new-issue form.
 func (k inputKind) isCenteredForm() bool {
 	switch k {
-	case inputBodyEditForm, inputBodyEditPostCreate, inputCommentForm:
+	case inputBodyEditForm, inputCommentForm, inputNewIssueForm:
 		return true
 	}
 	return false
@@ -73,16 +73,16 @@ const (
 // a single field; centered forms have two or more. The bubbles models
 // are populated based on kind — never both at once.
 //
-// label and required are reserved for M4's centered-form rendering
-// (label appears above each field; required gates the form's commit).
-// The unused linter complains because M3a only needs kind+input. The
-// nolint annotations document the milestone the fields land for.
+// label appears above each field in the multi-field new-issue form;
+// required gates whether commit can proceed when the field is blank
+// (Title is the only required field today). Bars and prompts that
+// only ever show one field leave both empty.
 type inputField struct {
-	label    string //nolint:unused // reserved for M4 centered-form labels
+	label    string
 	kind     fieldKind
 	input    textinput.Model // populated when kind == fieldSingleLine
 	area     textarea.Model  // populated when kind == fieldMultiLine
-	required bool            //nolint:unused // reserved for M4 form validation
+	required bool
 }
 
 // value returns the current text from whichever bubbles model backs f.
@@ -106,10 +106,8 @@ func (f *inputField) setValue(s string) {
 
 // focus / blur delegate to the bubbles model so cursor visibility +
 // key dispatch flip correctly when the active field changes. Used by
-// M4's multi-field forms when tab cycles fields. The nolint silences
-// the M3a-vs-M4 dead-code lint until M4 wires it up.
-//
-//nolint:unused // reserved for M4 form field-cycling
+// the new-issue form when tab cycles fields between Title, Body,
+// Labels, and Owner.
 func (f *inputField) focus() tea.Cmd {
 	if f.kind == fieldMultiLine {
 		return f.area.Focus()
@@ -117,7 +115,6 @@ func (f *inputField) focus() tea.Cmd {
 	return f.input.Focus()
 }
 
-//nolint:unused // reserved for M4 form field-cycling
 func (f *inputField) blur() {
 	if f.kind == fieldMultiLine {
 		f.area.Blur()
@@ -279,10 +276,17 @@ func (s inputState) handleSuggestKey(msg tea.KeyMsg) (inputState, bool) {
 
 // updateForm is the Update path for centered forms. ctrl+s commits
 // (Model-level handler validates kind-specific empty rules); esc
-// cancels; ctrl+e hands off to $EDITOR; everything else (including
-// Enter for newline insertion and tea.PasteMsg blobs from bracketed
-// paste) delegates to the textarea so paste, cursor moves, and
-// editing all work natively.
+// cancels; ctrl+e hands off to $EDITOR (gated to the body field on
+// multi-field forms so the user does not get $EDITOR for a one-line
+// owner string); tab/shift+tab cycle fields with wrap on multi-field
+// forms; enter on a single-line field advances to the next field
+// rather than committing (commit is ctrl+s only).
+//
+// On single-field forms (edit-body, comment) tab and shift+tab fall
+// through to the textarea so the user can still indent. The Body
+// field on the multi-field form does the same — multi-line content
+// can use tab natively. The cycling only triggers for the single-line
+// fields on a multi-field form.
 //
 // While saving=true, ctrl+s is absorbed (no duplicate dispatches).
 func (s inputState) updateForm(msg tea.KeyMsg) (inputState, inputAction) {
@@ -295,9 +299,69 @@ func (s inputState) updateForm(msg tea.KeyMsg) (inputState, inputAction) {
 	case tea.KeyEsc:
 		return s, actionCancel
 	case tea.KeyCtrlE:
+		if !s.ctrlEAllowed() {
+			return s, actionNone
+		}
 		return s, actionEditorHandoff
+	case tea.KeyTab:
+		if s.shouldCycleFields() {
+			return s.advanceField(1), actionNone
+		}
+	case tea.KeyShiftTab:
+		if s.shouldCycleFields() {
+			return s.advanceField(-1), actionNone
+		}
+	case tea.KeyEnter:
+		if s.shouldAdvanceOnEnter() {
+			return s.advanceField(1), actionNone
+		}
 	}
 	return s.delegateToField(msg)
+}
+
+// ctrlEAllowed reports whether the current form should treat ctrl+e
+// as an $EDITOR handoff. Single-field forms (edit-body, comment) are
+// always allowed; the multi-field new-issue form only honors ctrl+e
+// when the body textarea owns focus.
+func (s inputState) ctrlEAllowed() bool {
+	if s.kind != inputNewIssueForm {
+		return true
+	}
+	return s.active == newIssueFormBodyIndex
+}
+
+// shouldCycleFields reports whether tab/shift+tab on this form should
+// advance to the next field rather than insert a literal tab. Today
+// only the multi-field new-issue form cycles; single-field forms let
+// tab fall through to the textarea so users can indent body text.
+func (s inputState) shouldCycleFields() bool {
+	return s.kind == inputNewIssueForm && len(s.fields) > 1
+}
+
+// shouldAdvanceOnEnter reports whether enter on the active single-
+// line field should advance to the next field. The body field stays
+// as a newline-insert (textarea native behavior); other fields treat
+// enter as "next field." Commit is reserved for ctrl+s.
+func (s inputState) shouldAdvanceOnEnter() bool {
+	if s.kind != inputNewIssueForm || len(s.fields) <= 1 {
+		return false
+	}
+	return s.active != newIssueFormBodyIndex
+}
+
+// advanceField cycles s.active by delta with wrap. Blurs the
+// previously-focused field and focuses the new one so the bubbles
+// cursor renders on the active field only. The Focus() tea.Cmd is
+// discarded — we don't drive cursor blink from the form.
+func (s inputState) advanceField(delta int) inputState {
+	if len(s.fields) == 0 {
+		return s
+	}
+	s.fields[s.active].blur()
+	n := len(s.fields)
+	s.active = ((s.active+delta)%n + n) % n
+	_ = s.fields[s.active].focus()
+	return s
 }
 
 // delegateToField forwards a key into the active field's bubbles
@@ -349,22 +413,6 @@ func newOwnerBar(current ListFilter) inputState {
 		title:     "owner",
 		fields:    []inputField{{kind: fieldSingleLine, input: ti}},
 		preFilter: current,
-	}
-}
-
-// newNewIssueRow constructs the M3.5c inline new-issue row that
-// renders at the top of the list table. Single textinput field for
-// the title; commits to api.CreateIssue with empty body. M4 will
-// chain the centered body form after create for optional
-// refinement.
-func newNewIssueRow() inputState {
-	ti := textinput.New()
-	ti.Focus()
-	ti.Prompt = ""
-	return inputState{
-		kind:   inputNewIssueRow,
-		title:  "new issue",
-		fields: []inputField{{kind: fieldSingleLine, input: ti}},
 	}
 }
 
@@ -430,19 +478,6 @@ func newBodyEditForm(target formTarget, current string) inputState {
 	}
 }
 
-// newBodyEditPostCreate is opened automatically after a successful
-// inline-row create commits. The textarea starts empty (the issue
-// already exists with no body); esc keeps it that way and returns
-// to the new issue's detail view; ctrl+s dispatches EditBody.
-func newBodyEditPostCreate(target formTarget) inputState {
-	return inputState{
-		kind:   inputBodyEditPostCreate,
-		title:  fmt.Sprintf("add body to #%d", target.issueNumber),
-		fields: []inputField{newFormTextarea("")},
-		target: target,
-	}
-}
-
 // newCommentForm is the centered multi-line comment editor opened
 // by `c` on the detail view. esc cancels (no comment posted);
 // ctrl+s dispatches AddComment; empty content blocks commit per the
@@ -468,4 +503,42 @@ func newFormTextarea(current string) inputField {
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	return inputField{kind: fieldMultiLine, area: ta}
+}
+
+// newIssueFormBodyIndex names the field index of the multi-line Body
+// textarea inside newNewIssueForm. ctrl+e is allowed only on this
+// field (the others are single-line textinputs); enter on any other
+// field advances to the next field rather than inserting a newline.
+const newIssueFormBodyIndex = 1
+
+// newNewIssueForm constructs the multi-field modal opened by `n` on
+// the list view. Title is required and focused on open; Body is the
+// only multi-line field (so ctrl+e for $EDITOR escape only fires when
+// it owns focus); Labels accepts a comma-separated string normalized
+// at commit time; Owner is a single-line textinput, nil-on-wire when
+// blank. tab cycles fields with wrap; ctrl+s commits; esc cancels.
+func newNewIssueForm() inputState {
+	ti := textinput.New()
+	ti.Prompt = ""
+	body := textarea.New()
+	body.ShowLineNumbers = false
+	body.Prompt = ""
+	body.Blur()
+	labels := textinput.New()
+	labels.Prompt = ""
+	labels.Blur()
+	owner := textinput.New()
+	owner.Prompt = ""
+	owner.Blur()
+	ti.Focus()
+	return inputState{
+		kind:  inputNewIssueForm,
+		title: "new issue",
+		fields: []inputField{
+			{kind: fieldSingleLine, input: ti, label: "Title", required: true},
+			{kind: fieldMultiLine, area: body, label: "Body"},
+			{kind: fieldSingleLine, input: labels, label: "Labels"},
+			{kind: fieldSingleLine, input: owner, label: "Owner"},
+		},
+	}
 }

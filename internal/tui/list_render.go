@@ -102,11 +102,8 @@ func (lm listModel) renderTinyFallback(width int) string {
 // the cursor to fit bodyRows; the remaining vertical slack is padded
 // with blank rows styled with normalRowStyle so terminals that retain
 // prior content overwrite cleanly.
-//
-// When chrome.input.kind == inputNewIssueRow, a synthetic title-input
-// row is prepended to the body — see renderBodyWithNewIssueRow.
-func (lm listModel) renderBodyArea(width, bodyRows int, chrome viewChrome) string {
-	body := lm.renderBodyWithChrome(width, bodyRows-2 /* header + sep */, chrome)
+func (lm listModel) renderBodyArea(width, bodyRows int, _ viewChrome) string {
+	body := lm.renderBody(width, bodyRows-2 /* header + sep */)
 	rendered := strings.Split(body, "\n")
 	for len(rendered) < bodyRows {
 		rendered = append(rendered, normalRowStyle.Render(strings.Repeat(" ", width)))
@@ -115,101 +112,6 @@ func (lm listModel) renderBodyArea(width, bodyRows int, chrome viewChrome) strin
 		rendered = rendered[:bodyRows]
 	}
 	return strings.Join(rendered, "\n")
-}
-
-// renderBodyWithChrome dispatches to either the standard renderBody
-// or the new-issue-row variant based on chrome.input.kind.
-func (lm listModel) renderBodyWithChrome(width, height int, chrome viewChrome) string {
-	if chrome.input.kind == inputNewIssueRow {
-		return lm.renderBodyWithNewIssueRow(width, height, chrome.input)
-	}
-	return lm.renderBody(width, height)
-}
-
-// renderBodyWithNewIssueRow renders the table with the inline new-
-// issue row injected at index 0. The row hosts the title textinput;
-// other columns render placeholders ("new", "—", etc.). Existing
-// issues shift down by one within the data window.
-//
-// Cursor highlighting always lands on the new-issue row (it owns
-// focus while the row is open); the underlying lm.cursor is not
-// changed.
-//
-// The data window is forced to start at index 0 of the filtered list
-// while the new-issue row is open, so users who pressed `n` while
-// scrolled mid-list see the create row above the freshest issues
-// (recency-sorted lists put the soon-to-be-created peer at the top)
-// rather than above an arbitrary middle slice — roborev #113
-// finding 1.
-func (lm listModel) renderBodyWithNewIssueRow(width, height int, in inputState) string {
-	cols := listColumnWidths(width)
-	issues := filteredIssues(lm.issues, lm.filter)
-	// Build the new-issue row from the textinput's view. The view
-	// carries bubbles' own ANSI escape sequences for the cursor —
-	// don't re-sanitize (would strip the cursor and leave the user
-	// with no typing indication) and use ansi.Truncate so the cursor
-	// escapes survive width-clipping intact.
-	titleView := in.activeField().input.View()
-	newRow := []string{
-		"▶",
-		"new",
-		statusChipText("draft", "open"),
-		ansi.Truncate(titleView, cols.title, "…"),
-		"—",
-		"—",
-	}
-	// Build the standard data rows; one fewer to make room for the
-	// new row.
-	dataBudget := height - 1
-	if dataBudget < 1 {
-		dataBudget = 1
-	}
-	visible, _ := windowIssues(issues, 0, dataBudget)
-	// vCursor for issues is meaningless because the new row owns
-	// the cursor highlight; pass -1 so no issue row gets cursorRowStyle.
-	dataRows := buildRows(visible, -1, cols.title)
-	allRows := append([][]string{newRow}, dataRows...)
-	t := table.New().
-		Border(lipgloss.HiddenBorder()).
-		BorderTop(false).
-		BorderBottom(false).
-		BorderLeft(false).
-		BorderRight(false).
-		BorderColumn(false).
-		BorderRow(false).
-		BorderHeader(false).
-		Width(width).
-		Wrap(false).
-		Headers("", "#", "status", "title", "owner", "updated").
-		Rows(allRows...).
-		StyleFunc(func(row, col int) lipgloss.Style {
-			s := lipgloss.NewStyle().Width(cols.byIndex(col)).PaddingRight(1)
-			if row == table.HeaderRow {
-				return s.Inherit(tableHeaderStyle)
-			}
-			if row == 0 {
-				return s.Inherit(cursorRowStyle)
-			}
-			if row > 0 && row%2 == 1 {
-				return s.Inherit(altRowStyle)
-			}
-			return s.Inherit(normalRowStyle)
-		})
-	rendered := t.Render()
-	lines := strings.SplitN(rendered, "\n", 2)
-	if len(lines) < 2 {
-		return rendered
-	}
-	rule := separatorRuleStyle.Render(strings.Repeat("─", width))
-	return lines[0] + "\n" + rule + "\n" + lines[1]
-}
-
-// statusChipText is a non-styled fallback for the status column when
-// the row is synthetic (e.g. the inline new-issue row). Returns the
-// label text without lipgloss styling so it sits consistently inside
-// the table cell.
-func statusChipText(label, _ string) string {
-	return label
 }
 
 // listFooterItems is the persistent footer help row for the list view.
@@ -233,20 +135,16 @@ func listFooterItems() []helpRow {
 }
 
 // listFooterItemsFor returns the footer items for the list view given
-// the active input. Bars and the inline new-issue row get focused
-// commit/cancel hints; otherwise the default list keys render.
+// the active input. Bars get focused commit/cancel hints; the
+// centered new-issue form overlays the list and renders its own
+// footer hint (see renderNewIssueForm), so the list footer falls back
+// to the default key set under it. Anything else uses the default.
 func listFooterItemsFor(input inputState) []helpRow {
 	if input.kind.isCommandBar() {
 		return []helpRow{
 			{key: "enter", desc: "commit"},
 			{key: "esc", desc: "cancel"},
 			{key: "ctrl+u", desc: "clear"},
-		}
-	}
-	if input.kind == inputNewIssueRow {
-		return []helpRow{
-			{key: "enter", desc: "create"},
-			{key: "esc", desc: "cancel"},
 		}
 	}
 	return listFooterItems()
@@ -359,19 +257,8 @@ func renderListInfoLine(width int, chrome viewChrome, lm listModel, dataBudget i
 		body = chrome.toast.text
 	default:
 		visible := filteredIssues(lm.issues, lm.filter)
-		// While the inline new-issue row is open, the body anchors
-		// at index 0 and gives up one data row to the synthetic row
-		// (renderBodyWithNewIssueRow). Mirror both adjustments here
-		// so the indicator matches the rendered window — roborev
-		// #121 follow-up to #113.
-		cursor := lm.cursor
-		budget := dataBudget
-		if chrome.input.kind == inputNewIssueRow {
-			cursor = 0
-			budget--
-		}
-		if n := len(visible); n > 0 && budget > 0 && n > budget {
-			start, end := windowBounds(n, cursor, budget)
+		if n := len(visible); n > 0 && dataBudget > 0 && n > dataBudget {
+			start, end := windowBounds(n, lm.cursor, dataBudget)
 			body = rightAlignInside(
 				fmt.Sprintf("[%d-%d of %d]", start+1, end, n),
 				titleBarInnerWidth(width),

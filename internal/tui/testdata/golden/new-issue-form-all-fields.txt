@@ -1,0 +1,23 @@
+╭────────────────────────────────────────────────────────────────────────────────────╮
+│ new issue                                                                          │
+│ Title *                                                                            │
+│ fix login bug on Safari                                                            │
+│ Body                                                                               │
+│ Reproduces in Safari 17 only.                                                      │
+│ Click login twice.                                                                 │
+│                                                                                    │
+│                                                                                    │
+│                                                                                    │
+│                                                                                    │
+│                                                                                    │
+│                                                                                    │
+│                                                                                    │
+│                                                                                    │
+│                                                                                    │
+│                                                                                    │
+│ Labels                                                                             │
+│ bug, prio-1                                                                        │
+│ Owner                                                                              │
+│ alice                                                                              │
+│ ctrl+s save · esc cancel · ctrl+e $EDITOR                                          │
+╰────────────────────────────────────────────────────────────────────────────────────╯

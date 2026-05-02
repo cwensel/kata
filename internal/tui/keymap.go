@@ -37,7 +37,7 @@ func newKeymap() keymap {
 		Home:         key{Keys: []string{"g"}, Help: "first"},
 		End:          key{Keys: []string{"G"}, Help: "last"},
 		Open:         key{Keys: []string{"enter"}, Help: "open detail"},
-		NewIssue:     key{Keys: []string{"n"}, Help: "new issue"},
+		NewIssue:     key{Keys: []string{"n"}, Help: "new issue (form)"},
 		Search:       key{Keys: []string{"/"}, Help: "search"},
 		FilterStatus: key{Keys: []string{"s"}, Help: "cycle status filter"},
 		FilterOwner:  key{Keys: []string{"o"}, Help: "filter by owner"},

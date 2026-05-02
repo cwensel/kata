@@ -62,88 +62,6 @@ func TestDetail_FormKeys_NoIssue_NoOp(t *testing.T) {
 	}
 }
 
-// TestPostCreate_SuccessChainsIntoBodyEditor: a successful
-// inline-row create dispatches AND opens the post-create body
-// editor for the newly-created issue. The editor's target carries
-// the new issue's number so esc lands on its detail.
-func TestPostCreate_SuccessChainsIntoBodyEditor(t *testing.T) {
-	m := formFixture()
-	mut := mutationDoneMsg{
-		origin: "list", kind: "create",
-		resp: &MutationResp{Issue: &Issue{Number: 99}},
-	}
-	out, _ := m.Update(mut)
-	nm := out.(Model)
-	if nm.input.kind != inputBodyEditPostCreate {
-		t.Fatalf("create success did not chain into post-create form; kind = %v",
-			nm.input.kind)
-	}
-	if nm.input.target.issueNumber != 99 {
-		t.Fatalf("post-create form target = %d, want 99",
-			nm.input.target.issueNumber)
-	}
-}
-
-// TestPostCreate_FailureDoesNotChain: a failed create does NOT open
-// the post-create form (no issue exists to add a body to).
-func TestPostCreate_FailureDoesNotChain(t *testing.T) {
-	m := formFixture()
-	mut := mutationDoneMsg{
-		origin: "list", kind: "create", err: errStub("boom"),
-	}
-	out, _ := m.Update(mut)
-	nm := out.(Model)
-	if nm.input.kind != inputNone {
-		t.Fatalf("failed create chained into form: %v", nm.input.kind)
-	}
-}
-
-// TestPostCreate_Esc_OpensDetailOfNewIssue: esc on the post-create
-// body editor lands the user on the new issue's detail view (the
-// issue exists with empty body — esc means "no body for now," not
-// "discard issue"). The cancelInput path emits openDetailMsg with
-// the form target.
-func TestPostCreate_Esc_OpensDetailOfNewIssue(t *testing.T) {
-	m := formFixture()
-	m = m.openBodyEditPostCreate(99)
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	nm := out.(Model)
-	if nm.input.kind != inputNone {
-		t.Fatalf("esc did not close post-create form; kind = %v", nm.input.kind)
-	}
-	if cmd == nil {
-		t.Fatal("esc on post-create form must dispatch openDetailMsg cmd")
-	}
-	msg := cmd()
-	od, ok := msg.(openDetailMsg)
-	if !ok {
-		t.Fatalf("cancel cmd produced %T, want openDetailMsg", msg)
-	}
-	if od.issue.Number != 99 {
-		t.Fatalf("openDetailMsg issue.Number = %d, want 99", od.issue.Number)
-	}
-}
-
-// TestPostCreate_Esc_NonPostCreateForm_NoCmd: esc on a regular
-// edit-body or comment form does NOT emit openDetailMsg — only the
-// post-create chain has the auto-open behavior.
-func TestPostCreate_Esc_NonPostCreateForm_NoCmd(t *testing.T) {
-	for _, opener := range []func(Model) Model{
-		func(m Model) Model { return m.openBodyEditForm() },
-		func(m Model) Model { return m.openCommentForm() },
-	} {
-		m := opener(formFixture())
-		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-		if cmd != nil {
-			if msg := cmd(); msg != nil {
-				if _, isOpen := msg.(openDetailMsg); isOpen {
-					t.Fatal("esc on non-post-create form emitted openDetailMsg")
-				}
-			}
-		}
-	}
-}
-
 // TestRouteFormMutation_Success_ClosesFormAndDispatchesToDetail: a
 // successful form-side mutationDoneMsg closes the form (input clears)
 // and re-classifies as origin=detail so the existing detail
@@ -246,24 +164,6 @@ func TestForm_OpenCommentForm_StartsEmpty(t *testing.T) {
 	}
 	if m1.input.target.issueNumber != 42 {
 		t.Fatalf("target issueNumber = %d, want 42", m1.input.target.issueNumber)
-	}
-}
-
-// TestForm_OpenBodyEditPostCreate_HasTargetButNoBody: the post-create
-// chain opens a body editor with an empty textarea (the issue exists
-// with no body yet) and a target pinned to the new issue's number.
-func TestForm_OpenBodyEditPostCreate_HasTargetButNoBody(t *testing.T) {
-	m := formFixture()
-	m1 := m.openBodyEditPostCreate(99)
-	if m1.input.kind != inputBodyEditPostCreate {
-		t.Fatalf("kind = %v, want inputBodyEditPostCreate", m1.input.kind)
-	}
-	if m1.input.target.issueNumber != 99 {
-		t.Fatalf("target = %d, want 99 (the newly-created issue)",
-			m1.input.target.issueNumber)
-	}
-	if got := m1.input.activeField().value(); got != "" {
-		t.Fatalf("textarea = %q, want empty", got)
 	}
 }
 
