@@ -166,6 +166,20 @@ func (c *Client) ResolveProject(ctx context.Context, startPath string) (*Resolve
 	return &resp, nil
 }
 
+// ListLabels returns the per-label aggregate counts for projectID. The
+// daemon's GET /api/v1/projects/{id}/labels endpoint backs the +
+// suggestion menu; counts drive the "most-used first" sort.
+func (c *Client) ListLabels(ctx context.Context, projectID int64) ([]LabelCount, error) {
+	path := fmt.Sprintf("/api/v1/projects/%d/labels", projectID)
+	var resp struct {
+		Labels []LabelCount `json:"labels"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Labels, nil
+}
+
 // ListProjects returns the daemon's known projects.
 func (c *Client) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 	var resp struct {

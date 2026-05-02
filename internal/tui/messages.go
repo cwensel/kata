@@ -140,6 +140,18 @@ type eventReceivedMsg struct {
 	projectID, issueNumber int64
 }
 
+// labelsFetchedMsg carries the result of an api.ListLabels call. pid
+// names which project the labels are for; gen is the dispatch-time
+// generation so handleLabelsFetched can drop stale responses (a
+// later dispatch under the same pid bumps the cache's gen, and any
+// older response arriving after must NOT overwrite the newer state).
+type labelsFetchedMsg struct {
+	pid    int64
+	gen    int64
+	labels []LabelCount
+	err    error
+}
+
 // resetRequiredMsg signals sync.reset_required: the daemon's purge
 // gap means the consumer's cursor is too old. The TEA loop drops the
 // cache and refetches from scratch.

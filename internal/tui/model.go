@@ -3,10 +3,13 @@ package tui
 import (
 	"context"
 	"os"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type viewID int
@@ -78,6 +81,21 @@ type Model struct {
 	// is rejected before its content can land in a different form's
 	// textarea.
 	nextFormGen int64
+	// projectLabels caches per-project label aggregates feeding the
+	// `+` suggestion menu. Each entry carries its own dispatch
+	// generation so a slow ListLabels response can't clobber a newer
+	// dispatch's state — see label_cache.go for the gen-stamping
+	// rationale. SSE issue.labeled / issue.unlabeled events
+	// invalidate per-project entries so the menu re-fetches when the
+	// daemon writes new label rows.
+	projectLabels *labelCache
+	// nextLabelsGen is the monotonic counter behind projectLabels.
+	// Bumped at dispatch time (NOT at response time) so the cache's
+	// entry.gen is the load-bearing identifier for staleness — the
+	// HTTP request reads the just-bumped value, the response carries
+	// it back, and handleLabelsFetched compares msg.gen >= entry.gen
+	// to decide whether to apply the result.
+	nextLabelsGen int64
 }
 
 // initialModel constructs the root Bubble Tea model. Style vars are
@@ -94,15 +112,16 @@ func initialModel(opts Options) Model {
 	lm := newListModel()
 	lm.actor = resolveTUIActor()
 	return Model{
-		opts:      opts,
-		view:      viewList,
-		keymap:    newKeymap(),
-		list:      lm,
-		detail:    newDetailModel(),
-		sseCh:     make(chan tea.Msg, 16),
-		sseStatus: sseConnected,
-		cache:     newIssueCache(),
-		toastNow:  time.Now,
+		opts:          opts,
+		view:          viewList,
+		keymap:        newKeymap(),
+		list:          lm,
+		detail:        newDetailModel(),
+		sseCh:         make(chan tea.Msg, 16),
+		sseStatus:     sseConnected,
+		cache:         newIssueCache(),
+		toastNow:      time.Now,
+		projectLabels: newLabelCache(),
 	}
 }
 
@@ -235,6 +254,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.routeEditorReturn(er)
 		return next, cmd
 	}
+	// Label-cache responses route back into the cache before any view
+	// gets a shot at them. The handler is pure state — no command —
+	// so we fall through to dispatchToView for any unhandled message
+	// shape after.
+	if lf, ok := msg.(labelsFetchedMsg); ok {
+		m = m.handleLabelsFetched(lf)
+		return m, nil
+	}
 	return m.dispatchToView(msg)
 }
 
@@ -315,6 +342,13 @@ func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 			return nm, cmd
 		}
 	}
+	// Plan-8: label / create mutations may have changed the project's
+	// label aggregate. Refresh the cache so the next `+` open shows
+	// fresh counts. Doesn't wait on SSE — the user just took the
+	// action; the menu should reflect it immediately.
+	if mutAffectsLabelCounts(mut) {
+		next, cmd = batchLabelRefresh(next, cmd, mut)
+	}
 	return next, cmd
 }
 
@@ -323,6 +357,61 @@ func (m Model) routeMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 func isCreateSuccess(mut mutationDoneMsg) bool {
 	return mut.origin == "list" && mut.kind == "create" &&
 		mut.err == nil && mut.resp != nil && mut.resp.Issue != nil
+}
+
+// mutAffectsLabelCounts reports whether a successful mutation could
+// have changed the project's label aggregate. Label add/remove
+// always do; create may include initial labels (commit 4 wires that
+// path; commit 3's create has no labels payload but the kind hits
+// the same branch since downstream commits will need it).
+func mutAffectsLabelCounts(mut mutationDoneMsg) bool {
+	if mut.err != nil {
+		return false
+	}
+	switch mut.kind {
+	case "label.add", "label.remove", "create":
+		return true
+	}
+	return false
+}
+
+// batchLabelRefresh dispatches a project-label cache refresh for the
+// project the mutation touched, batching the resulting cmd with any
+// existing cmd from the per-view dispatch. Returns the new model and
+// the combined cmd so the caller can return both atomically.
+func batchLabelRefresh(
+	next tea.Model, prior tea.Cmd, mut mutationDoneMsg,
+) (tea.Model, tea.Cmd) {
+	nm, ok := next.(Model)
+	if !ok {
+		return next, prior
+	}
+	pid := projectIDFromMutation(nm, mut)
+	if pid == 0 {
+		return next, prior
+	}
+	nm, refresh := nm.dispatchLabelFetch(pid)
+	if refresh == nil {
+		return nm, prior
+	}
+	if prior == nil {
+		return nm, refresh
+	}
+	return nm, tea.Batch(prior, refresh)
+}
+
+// projectIDFromMutation picks the project id the mutation acted on.
+// Detail-side mutations carry it via dm.scopePID; list-side via the
+// response's Issue.ProjectID; falls back to the active scope's
+// projectID for shapes that omit it.
+func projectIDFromMutation(m Model, mut mutationDoneMsg) int64 {
+	if mut.resp != nil && mut.resp.Issue != nil && mut.resp.Issue.ProjectID != 0 {
+		return mut.resp.Issue.ProjectID
+	}
+	if m.view == viewDetail && m.detail.scopePID != 0 {
+		return m.detail.scopePID
+	}
+	return m.scope.projectID
 }
 
 // routeTopLevel handles non-SSE messages that the parent Model owns:
@@ -354,8 +443,8 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			return next, cmd, true
 		}
 	case openInputMsg:
-		next := m.openInput(msg.kind)
-		return next, nil, true
+		next, cmd := m.openInput(msg.kind)
+		return next, cmd, true
 	case openDetailMsg:
 		next, cmd := m.handleOpenDetail(msg)
 		return next, cmd, true
@@ -374,14 +463,23 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 // for bars; issue context for panel prompts). For inline command
 // bars, the search/owner buffer pre-fills from the existing filter
 // so the user can refine an active filter without retyping. For
-// panel-local prompts, the issue number lands in the prompt title.
-// For the inline new-issue row (M3.5c), the row state has no issue
+// panel-local prompts, the issue number lands in the prompt title
+// AND the formTarget rides on inputState.target so the autocomplete
+// dispatch (label suggestions) can scope to the right project. For
+// the inline new-issue row (M3.5c), the row state has no issue
 // context — Enter dispatches CreateIssue with the typed title. For
 // centered forms, openInput delegates to openBodyEditForm /
 // openCommentForm — they need extra context (current body, issue
 // target) so they're called directly from the detail key handler
 // instead of via openInputMsg.
-func (m Model) openInput(kind inputKind) Model {
+//
+// inputLabelPrompt opens with a parallel dispatchLabelFetch so the
+// suggestion menu can render its first frame populated (or with a
+// "loading…" placeholder for the round trip's duration). Other
+// panel-prompt kinds don't need a fetch — the `-` prompt sources
+// from dm.issue.Labels (already loaded), and the others (owner /
+// parent / blocker / link) have no autocomplete in this commit.
+func (m Model) openInput(kind inputKind) (Model, tea.Cmd) {
 	switch {
 	case kind == inputSearchBar:
 		m.input = newSearchBar(m.list.filter)
@@ -390,13 +488,45 @@ func (m Model) openInput(kind inputKind) Model {
 	case kind == inputNewIssueRow:
 		m.input = newNewIssueRow()
 	case kind.isPanelPrompt():
-		num := int64(0)
-		if m.detail.issue != nil {
-			num = m.detail.issue.Number
+		target := m.panelPromptTarget()
+		m.input = newPanelPrompt(kind, target)
+		if kind == inputLabelPrompt {
+			return m.dispatchLabelFetchIfNeeded(target.projectID)
 		}
-		m.input = newPanelPrompt(kind, num)
 	}
-	return m
+	return m, nil
+}
+
+// panelPromptTarget builds the formTarget for a detail-side panel
+// prompt: scopePID is authoritative (works for both single-project
+// and all-projects scope), issueNumber + detailGen come from the
+// open detail's identity. Zero values when no detail is open
+// (defensive — shouldn't happen via the normal key path).
+func (m Model) panelPromptTarget() formTarget {
+	if m.detail.issue == nil {
+		return formTarget{}
+	}
+	return formTarget{
+		projectID:   m.detail.scopePID,
+		issueNumber: m.detail.issue.Number,
+		detailGen:   m.detail.gen,
+	}
+}
+
+// dispatchLabelFetchIfNeeded triggers a label fetch only when the
+// cache has no entry for pid. Re-opening the prompt against a project
+// we already cached must NOT churn a redundant request — the cache's
+// existing entry (and any in-flight fetch flagged on it) is the
+// authoritative source. Returns the model and either the dispatch
+// cmd or nil.
+func (m Model) dispatchLabelFetchIfNeeded(pid int64) (Model, tea.Cmd) {
+	if pid == 0 || m.projectLabels == nil {
+		return m, nil
+	}
+	if _, ok := m.projectLabels.byProject[pid]; ok {
+		return m, nil
+	}
+	return m.dispatchLabelFetch(pid)
 }
 
 // openBodyEditForm opens the centered body editor for the currently-
@@ -461,7 +591,14 @@ func (m Model) openCommentForm() Model {
 // Panel prompts (M3b) commit on action only — no live mirror; they
 // dispatch the mutation via dispatchPanelPromptCommit. Commit closes
 // the input; cancel restores any pre-open snapshot (bars only).
+//
+// Label prompts (`+` / `-`) post-process the input: ↑/↓ already
+// adjusted suggestHighlight in inputState.Update; we wrap it modulo
+// the visible-suggestion count here. Tab completes the buffer to the
+// highlighted suggestion's label (suggestion source is computed at
+// the Model level — see suggestionsForPrompt).
 func (m Model) routeInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	prevKind := m.input.kind
 	next, action := m.input.Update(msg)
 	m.input = next
 	switch action {
@@ -475,7 +612,92 @@ func (m Model) routeInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.input.kind.isCommandBar() {
 		m = m.applyLiveBarFilter()
 	}
+	if isLabelPromptKind(prevKind) {
+		m = m.applyLabelPromptKey(msg)
+	}
 	return m, nil
+}
+
+// applyLabelPromptKey post-processes a key into a label prompt:
+// wraps suggestHighlight modulo the suggestion count and (on Tab)
+// completes the buffer to the highlighted suggestion's label. The
+// input layer signals "handled" for ↑/↓/⇥ but doesn't have the
+// suggestion list in scope; this is where the wrap + completion run.
+func (m Model) applyLabelPromptKey(msg tea.KeyMsg) Model {
+	all := m.suggestionsForPrompt(m.input)
+	buf := ""
+	if f := m.input.activeField(); f != nil {
+		buf = f.value()
+	}
+	visible := filterSuggestions(all, buf)
+	n := len(visible)
+	if n > 0 {
+		m.input.suggestHighlight = ((m.input.suggestHighlight % n) + n) % n
+	} else {
+		m.input.suggestHighlight = 0
+	}
+	if msg.Type == tea.KeyTab && n > 0 {
+		picked := visible[m.input.suggestHighlight].Label
+		if f := m.input.activeField(); f != nil {
+			f.setValue(picked)
+			// SetCursor takes a rune index (clamped against the
+			// bubbles textinput's internal []rune buffer); use
+			// utf8.RuneCountInString so multi-byte labels position
+			// the cursor at the end visually rather than past it.
+			f.input.SetCursor(utf8.RuneCountInString(picked))
+			m.input.fields[m.input.active] = *f
+		}
+	}
+	return m
+}
+
+// suggestionsForPrompt returns the suggestion source for an open
+// label prompt. `+` reads from the per-project label cache; `-` from
+// the open detail's currently-attached labels (no separate fetch
+// needed — dm.issue.Labels is authoritative). Returns nil for any
+// other kind so callers can use the empty slice as a "no menu" gate.
+func (m Model) suggestionsForPrompt(s inputState) []LabelCount {
+	switch s.kind {
+	case inputLabelPrompt:
+		if m.projectLabels == nil {
+			return nil
+		}
+		return m.projectLabels.byProject[s.target.projectID].labels
+	case inputRemoveLabelPrompt:
+		var attached []string
+		if m.detail.issue != nil {
+			attached = m.detail.issue.Labels
+		}
+		out := make([]LabelCount, len(attached))
+		for i, l := range attached {
+			// Count is irrelevant for `-` — the renderer omits the
+			// count column when every entry has count==0.
+			out[i] = LabelCount{Label: l, Count: 0}
+		}
+		return out
+	}
+	return nil
+}
+
+// filterSuggestions returns a copy of all sorted by count desc, then
+// label asc, with a case-insensitive prefix filter applied. For `-`
+// where counts are 0, the count tie reduces the order to label asc
+// — the secondary sort is the effective one.
+func filterSuggestions(all []LabelCount, prefix string) []LabelCount {
+	out := make([]LabelCount, 0, len(all))
+	pfx := strings.ToLower(strings.TrimSpace(prefix))
+	for _, lc := range all {
+		if pfx == "" || strings.HasPrefix(strings.ToLower(lc.Label), pfx) {
+			out = append(out, lc)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Label < out[j].Label
+	})
+	return out
 }
 
 // handoffToEditor launches editorCmd on the current form's buffer,
@@ -887,6 +1109,12 @@ func cacheKeysEqual(a, b cacheKey) bool {
 // when it carries our projectID; in all-projects scope every event is
 // interesting. Cross-project (projectID == 0) events fall through as
 // "ignore" so an unscoped daemon push cannot churn an unrelated view.
+//
+// Label-cache invalidation runs alongside the list/detail refetch
+// path: a label add/remove on the daemon side may have changed the
+// project's label aggregate, so any cached entry for the event's
+// project gets a fresh dispatch. This is a SECOND, additional cmd —
+// it doesn't replace or short-circuit the list/detail refetch above.
 func (m Model) handleEventReceived(msg eventReceivedMsg) (tea.Model, tea.Cmd) {
 	cmds := []tea.Cmd{m.waitForSSE()}
 	if m.eventAffectsView(msg) {
@@ -899,7 +1127,31 @@ func (m Model) handleEventReceived(msg eventReceivedMsg) (tea.Model, tea.Cmd) {
 	if cmd := m.maybeRefetchOpenDetail(msg); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
+	if next, cmd := m.maybeRefetchLabels(msg); cmd != nil {
+		m = next
+		cmds = append(cmds, cmd)
+	}
 	return m, tea.Batch(cmds...)
+}
+
+// maybeRefetchLabels invalidates the project-label cache when an SSE
+// label event names a project we have a cached entry for. The
+// suggestion menu reads the cache on render, so a fresh dispatch
+// keeps the `+` autocomplete in sync with the daemon's authoritative
+// counts. No-op when the event isn't a label event, the cache has no
+// entry for the project, or projectLabels was never initialized
+// (defensive — the field is set by initialModel).
+func (m Model) maybeRefetchLabels(msg eventReceivedMsg) (Model, tea.Cmd) {
+	if msg.eventType != "issue.labeled" && msg.eventType != "issue.unlabeled" {
+		return m, nil
+	}
+	if m.projectLabels == nil {
+		return m, nil
+	}
+	if _, ok := m.projectLabels.byProject[msg.projectID]; !ok {
+		return m, nil
+	}
+	return m.dispatchLabelFetch(msg.projectID)
 }
 
 // eventAffectsView is the per-message gate for invalidation. Returns
@@ -1246,7 +1498,62 @@ func (m Model) View() string {
 		form := renderCenteredForm(m.input, m.width, m.height)
 		return overlayModal(body, form, m.width, m.height)
 	}
+	// Plan-8: label-prompt autocomplete menu overlays the detail view
+	// above the info line. The detail layout reserves the menu's
+	// rendered height when computing the tab/body budget — see
+	// detail_render.go::renderInfoLine.
+	if m.view == viewDetail && isLabelPromptKind(m.input.kind) {
+		body = m.overlaySuggestMenu(body)
+	}
 	return body
+}
+
+// overlaySuggestMenu places the suggestion menu above the info line
+// (info row = height-2; menu's bottom row = info-line row - 1, so
+// the menu sits with its last bordered row one cell above the info
+// line). Right-anchored: the menu's right edge meets the inner
+// right edge of the panel. Returns body unchanged when the menu has
+// no rows to render (defensive — placeholderRows always returns at
+// least one).
+func (m Model) overlaySuggestMenu(body string) string {
+	suggestions := filterSuggestions(
+		m.suggestionsForPrompt(m.input),
+		m.activeBuffer(),
+	)
+	entry := m.cacheEntryForPrompt(m.input)
+	menu := renderSuggestMenu(m.input, suggestions, entry)
+	if menu == "" {
+		return body
+	}
+	menuW := lipgloss.Width(menu)
+	menuH := lipgloss.Height(menu)
+	// Info line is at height-2 (footer is height-1). Menu's bottom
+	// border lives one row above the info line, so the top row is
+	// (height - 2) - menuH.
+	anchorRow := m.height - 2 - menuH
+	anchorCol := m.width - menuW - 1
+	return overlayAtCorner(body, menu, m.width, m.height, anchorRow, anchorCol)
+}
+
+// activeBuffer returns the current text in the active input field, or
+// "" if no field is active. Used to project filterSuggestions's
+// prefix so the suggestion menu narrows as the user types.
+func (m Model) activeBuffer() string {
+	if f := m.input.activeField(); f != nil {
+		return f.value()
+	}
+	return ""
+}
+
+// cacheEntryForPrompt returns the labelCacheEntry the menu should
+// reflect for s.kind == inputLabelPrompt. For inputRemoveLabelPrompt
+// the entry's placeholder fields aren't consulted (suggestions come
+// from dm.issue.Labels) so a zero entry is fine.
+func (m Model) cacheEntryForPrompt(s inputState) labelCacheEntry {
+	if s.kind != inputLabelPrompt || m.projectLabels == nil {
+		return labelCacheEntry{}
+	}
+	return m.projectLabels.byProject[s.target.projectID]
 }
 
 // viewBody returns the active sub-view rendering. Splitting it off
@@ -1270,8 +1577,12 @@ func (m Model) viewBody() string {
 // pending invalidation flag, the active toast (if any), the
 // build-time version string, and the active input shell. Centralising
 // this keeps the sub-views free of Model coupling.
+//
+// suggestions / suggestEntry are populated when a label prompt is
+// active so the detail layout can reserve the menu's rendered
+// height. Empty otherwise.
 func (m Model) chrome() viewChrome {
-	return viewChrome{
+	c := viewChrome{
 		scope:     m.scope,
 		sseStatus: m.sseStatus,
 		pending:   m.pendingRefetch,
@@ -1279,4 +1590,13 @@ func (m Model) chrome() viewChrome {
 		version:   kataVersion,
 		input:     m.input,
 	}
+	if isLabelPromptKind(m.input.kind) {
+		c.suggestions = filterSuggestions(
+			m.suggestionsForPrompt(m.input),
+			m.activeBuffer(),
+		)
+		c.suggestEntry = m.cacheEntryForPrompt(m.input)
+		c.suggestActive = true
+	}
+	return c
 }

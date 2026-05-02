@@ -1,0 +1,29 @@
+ Project: kata                                                                                          kata かた · dev 
+#42 · open · wesm
+Owner: —                                                                                                     (no labels)
+fix login bug on Safari
+── body ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Reproduces in Safari 17 only.
+Click the login button twice.
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+── activity ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[ Comments (2) ]  Events (2)  Links (1)
+[alice] 2026-04-30 10:00
+  I can repro on macOS.
+
+                                                                                                                        
+                                                                                                                        
+ add label to #42:                                                                                     ┌──────────────┐ 
+ enter commit │ esc cancel                                                                             │lbl-5 (16)    │ 
+                                                                                                       │lbl-6 (15)    │
+                                                                                                       │lbl-7 (14)    │
+                                                                                                       │lbl-8 (13)    │
+                                                                                                       │lbl-9 (12)    │
+                                                                                                       │lbl-10 (11)   │
+                                                                                                       └──────────────┘
+

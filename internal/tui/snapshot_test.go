@@ -319,7 +319,9 @@ func TestSnapshot_Detail_WithLabelPrompt(t *testing.T) {
 	defer snapshotInit(t)()
 	dm := snapDetailFixture()
 	chrome := viewChrome{
-		input: newPanelPrompt(inputLabelPrompt, dm.issue.Number),
+		input: newPanelPrompt(inputLabelPrompt, formTarget{
+			projectID: dm.scopePID, issueNumber: dm.issue.Number,
+		}),
 	}
 	got := dm.View(120, 30, chrome)
 	assertGolden(t, "detail-with-label-prompt", got)
@@ -432,4 +434,102 @@ func TestSnapshot_Empty(t *testing.T) {
 	defer snapshotInit(t)()
 	got := renderEmpty(80, 24)
 	assertGolden(t, "empty-state", got)
+}
+
+// TestSnapshot_LabelPrompt_MenuOpen renders the autocomplete menu
+// for a `+` label prompt with 5 suggestions and the highlight on
+// the first row. Pinned to 120x30 like the other detail snapshots.
+func TestSnapshot_LabelPrompt_MenuOpen(t *testing.T) {
+	defer snapshotInit(t)()
+	m := snapLabelPromptModel()
+	m.projectLabels.byProject[7] = labelCacheEntry{
+		pid: 7, gen: 1,
+		labels: []LabelCount{
+			{Label: "alpha", Count: 5},
+			{Label: "beta", Count: 4},
+			{Label: "gamma", Count: 3},
+			{Label: "delta", Count: 2},
+			{Label: "epsilon", Count: 1},
+		},
+	}
+	got := m.View()
+	assertGolden(t, "label-prompt-menu-open", got)
+}
+
+// TestSnapshot_LabelPrompt_Loading renders the loading-placeholder
+// menu state — the cache is fetching but has no entries yet.
+func TestSnapshot_LabelPrompt_Loading(t *testing.T) {
+	defer snapshotInit(t)()
+	m := snapLabelPromptModel()
+	m.projectLabels.byProject[7] = labelCacheEntry{
+		pid: 7, gen: 1, fetching: true,
+	}
+	got := m.View()
+	assertGolden(t, "label-prompt-loading", got)
+}
+
+// TestSnapshot_LabelPrompt_Error renders the error-placeholder menu
+// state — the cache has an err and no labels.
+func TestSnapshot_LabelPrompt_Error(t *testing.T) {
+	defer snapshotInit(t)()
+	m := snapLabelPromptModel()
+	m.projectLabels.byProject[7] = labelCacheEntry{
+		pid: 7, gen: 1, err: errStub("daemon 500"),
+	}
+	got := m.View()
+	assertGolden(t, "label-prompt-error", got)
+}
+
+// TestSnapshot_LabelPrompt_Empty renders the empty-placeholder menu
+// state — the cache fetched, has no entries, no error.
+func TestSnapshot_LabelPrompt_Empty(t *testing.T) {
+	defer snapshotInit(t)()
+	m := snapLabelPromptModel()
+	m.projectLabels.byProject[7] = labelCacheEntry{
+		pid: 7, gen: 1, fetching: false,
+	}
+	got := m.View()
+	assertGolden(t, "label-prompt-empty", got)
+}
+
+// TestSnapshot_LabelPrompt_Scroll renders the menu with 12
+// suggestions and the highlight at index 9 — the visible window
+// scrolls past the first entries.
+func TestSnapshot_LabelPrompt_Scroll(t *testing.T) {
+	defer snapshotInit(t)()
+	m := snapLabelPromptModel()
+	suggestions := make([]LabelCount, 12)
+	for i := range suggestions {
+		suggestions[i] = LabelCount{
+			Label: "lbl-" + ptrFormat(int64(i+1)),
+			Count: int64(20 - i),
+		}
+	}
+	m.projectLabels.byProject[7] = labelCacheEntry{
+		pid: 7, gen: 1, labels: suggestions,
+	}
+	m.input.suggestHighlight = 9
+	got := m.View()
+	assertGolden(t, "label-prompt-scroll", got)
+}
+
+// snapLabelPromptModel builds the Model used by the label-prompt
+// snapshot tests: detail view with the snap fixture issue + a `+`
+// prompt open against project 7 / issue 42. width/height are pinned
+// at 120x30.
+func snapLabelPromptModel() Model {
+	dm := snapDetailFixture()
+	m := Model{
+		view:          viewDetail,
+		scope:         scope{projectID: 7, projectName: "kata"},
+		width:         120,
+		height:        30,
+		sseStatus:     sseConnected,
+		projectLabels: newLabelCache(),
+		detail:        dm,
+	}
+	m.input = newPanelPrompt(inputLabelPrompt, formTarget{
+		projectID: 7, issueNumber: dm.issue.Number, detailGen: dm.gen,
+	})
+	return m
 }

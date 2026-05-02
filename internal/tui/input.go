@@ -136,22 +136,30 @@ func (f *inputField) blur() {
 // command bar opened, so a cancel can revert any live-applied changes.
 // Empty filter for non-bar inputs.
 //
-// target / err / saving / formGen are populated only for the M4
-// centered-form kinds. target carries the issue context so a stale
-// editor return cannot land on the wrong issue; formGen is the
-// per-form monotonic ID (assigned by Model.openInput at form-open
-// time) used to reject stale editorReturnedMsg whose form has since
-// closed or re-opened.
+// target / err / saving / formGen are populated for centered-form and
+// panel-prompt kinds. target carries the issue context so a stale
+// editor return / label-suggestion fetch cannot land on the wrong
+// issue; formGen is the per-form monotonic ID (assigned by
+// Model.openInput at form-open time) used to reject stale
+// editorReturnedMsg whose form has since closed or re-opened.
+//
+// suggestHighlight / suggestScroll back the autocomplete menu on the
+// `+` and `-` panel prompts. highlight is the index of the selected
+// suggestion (cycles 0..N-1 with wrap on ↑↓); scroll is the first
+// visible row in the menu when the entry list overflows the menu's
+// height. Both are zero on every non-suggesting input kind.
 type inputState struct {
-	kind      inputKind
-	title     string
-	fields    []inputField
-	active    int
-	err       string
-	saving    bool
-	preFilter ListFilter
-	target    formTarget
-	formGen   int64
+	kind             inputKind
+	title            string
+	fields           []inputField
+	active           int
+	err              string
+	saving           bool
+	preFilter        ListFilter
+	target           formTarget
+	formGen          int64
+	suggestHighlight int
+	suggestScroll    int
 }
 
 // formTarget carries the issue identity a centered form is acting
@@ -200,6 +208,15 @@ func (s *inputState) activeField() *inputField {
 // and prompts: ctrl+s commits (Enter inserts a newline into the
 // textarea); ctrl+e requests the $EDITOR escape hatch; saving=true
 // blocks duplicate commits while a mutation is in flight.
+//
+// Label-prompt kinds (`+` / `-`) intercept ↑/↓/⇥ BEFORE delegating to
+// the textinput so the autocomplete menu's highlight cursor moves
+// (and ⇥ completes) without the keys reaching bubbles' own input
+// handler — bubbles would otherwise interpret arrow keys as intra-
+// buffer cursor motion, which makes no sense for a single-line cell.
+// The Update path returns actionNone for those keys; the caller's
+// suggestion source (m.suggestionsForPrompt) is consulted at render
+// time to project the new highlight.
 func (s inputState) Update(msg tea.KeyMsg) (inputState, inputAction) {
 	if s.kind.isCenteredForm() {
 		return s.updateForm(msg)
@@ -213,7 +230,51 @@ func (s inputState) Update(msg tea.KeyMsg) (inputState, inputAction) {
 		s.activeField().setValue("")
 		return s, actionNone
 	}
+	if isLabelPromptKind(s.kind) {
+		if next, handled := s.handleSuggestKey(msg); handled {
+			return next, actionNone
+		}
+	}
 	return s.delegateToField(msg)
+}
+
+// isLabelPromptKind reports whether kind is one of the autocomplete-
+// backed panel-prompt kinds (`+` add label, `-` remove label).
+func isLabelPromptKind(k inputKind) bool {
+	return k == inputLabelPrompt || k == inputRemoveLabelPrompt
+}
+
+// handleSuggestKey dispatches the navigation keys that the suggestion
+// menu owns: ↑/↓ move the highlight (with wrap), ⇥ completes the
+// active buffer to the highlighted suggestion's label. Returns
+// handled=true when the key was consumed by the menu so the caller
+// knows not to forward it to the textinput (which would otherwise
+// move the buffer cursor or insert a tab character).
+//
+// The actual suggestion list isn't on inputState — it's recomputed at
+// render time from m.suggestionsForPrompt — so handleSuggestKey only
+// adjusts the highlight index. Callers wrap the index modulo the
+// projected list length when they read it; we don't need to know the
+// length here. ⇥ is a no-op when the buffer is empty (no completion
+// target candidate yet); the renderer surfaces the suggestion list
+// either way.
+func (s inputState) handleSuggestKey(msg tea.KeyMsg) (inputState, bool) {
+	switch msg.Type {
+	case tea.KeyUp:
+		s.suggestHighlight--
+		return s, true
+	case tea.KeyDown:
+		s.suggestHighlight++
+		return s, true
+	case tea.KeyTab:
+		// Tab completion of the buffer happens at the Model layer
+		// where the suggestion list (LabelCount slice) is in scope.
+		// Here we just signal "handled" so the textinput doesn't
+		// receive the tab keystroke. The completion itself lives in
+		// Model.completeFromSuggestion (called from routeInputKey).
+		return s, true
+	}
+	return s, false
 }
 
 // updateForm is the Update path for centered forms. ctrl+s commits
@@ -309,15 +370,19 @@ func newNewIssueRow() inputState {
 
 // newPanelPrompt constructs an M3b panel-local prompt for kind. The
 // title carries the issue context so the user sees "add label to #42"
-// in the prompt's border.
-func newPanelPrompt(kind inputKind, issueNumber int64) inputState {
+// in the prompt's border. target carries projectID + issueNumber +
+// detailGen so the autocomplete dispatch (label suggestions) and any
+// future stale-response checks can scope themselves to the right
+// issue.
+func newPanelPrompt(kind inputKind, target formTarget) inputState {
 	ti := textinput.New()
 	ti.Focus()
 	ti.Prompt = ""
 	return inputState{
 		kind:   kind,
-		title:  panelPromptTitle(kind, issueNumber),
+		title:  panelPromptTitle(kind, target.issueNumber),
 		fields: []inputField{{kind: fieldSingleLine, input: ti}},
+		target: target,
 	}
 }
 

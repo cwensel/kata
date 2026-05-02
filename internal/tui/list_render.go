@@ -31,6 +31,15 @@ type viewChrome struct {
 	toast     *toast       // optional flash message (e.g. "resynced")
 	version   string       // build-time version string for the title bar; "" hides
 	input     inputState   // active input shell (M3a bar; M3b prompt; M4 form)
+	// suggestions / suggestEntry feed the label-prompt autocomplete
+	// menu. Threaded through chrome so the detail-view layout can
+	// reserve the menu's rendered height when computing tab/body
+	// budgets without reaching back into Model state. Zero value is
+	// a no-menu signal (renderInfoLine treats len(suggestions)==0
+	// AND zero entry as "no menu visible," same as no input open).
+	suggestions   []LabelCount
+	suggestEntry  labelCacheEntry
+	suggestActive bool
 }
 
 // View renders the list under the M3.5 chrome layer:

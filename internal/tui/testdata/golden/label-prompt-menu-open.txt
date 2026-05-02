@@ -1,0 +1,29 @@
+ Project: kata                                                                                          kata かた · dev 
+#42 · open · wesm
+Owner: —                                                                                                     (no labels)
+fix login bug on Safari
+── body ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Reproduces in Safari 17 only.
+Click the login button twice.
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+── activity ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[ Comments (2) ]  Events (2)  Links (1)
+[alice] 2026-04-30 10:00
+  I can repro on macOS.
+
+                                                                                                                        
+                                                                                                                        
+ add label to #42:                                                                                     ┌──────────────┐ 
+ enter commit │ esc cancel                                                                             │alpha (5)     │ 
+                                                                                                       │beta (4)      │
+                                                                                                       │gamma (3)     │
+                                                                                                       │delta (2)     │
+                                                                                                       │epsilon (1)   │
+                                                                                                       └──────────────┘
+

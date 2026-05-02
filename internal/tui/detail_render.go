@@ -50,7 +50,17 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	// (variable: body content + tab content split 2/3 / 1/3 of slack)
 	// No separate "tab rule" — the activity rule above the tab strip
 	// is the only horizontal divider in the activity panel.
-	avail := height - 9
+	//
+	// Plan-8: when a label prompt is open, the suggestion menu
+	// floats above the info line. Subtract the actual rendered menu
+	// height so the tab/body budget shrinks by the menu's footprint
+	// — without this the menu overlays the tab content and the
+	// scroll indicator under-counts the visible rows. Use the
+	// rendered height (top border + body rows + bottom border), NOT
+	// just the entry count, so placeholder states (loading/error)
+	// reserve the same vertical footprint.
+	menuH := suggestMenuOverlayHeight(chrome)
+	avail := height - 9 - menuH
 	if avail < detailMinSplit {
 		avail = detailMinSplit
 	}
