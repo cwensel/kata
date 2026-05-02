@@ -101,10 +101,15 @@ func fetchLabelsCmd(api labelLister, pid, gen int64) tea.Cmd {
 
 // handleLabelsFetched routes a labelsFetchedMsg into the cache.
 // Messages whose gen lags behind the entry's gen are dropped — a
-// later dispatch supersedes the in-flight one. Messages whose pid
-// no longer matches the current target are also dropped so a slow
-// fetch from a previously-bound project can't pollute the active
-// project's cache after a switch.
+// later dispatch supersedes the in-flight one.
+//
+// Pid mismatch (msg.pid != current target) is NOT a drop: the cache
+// is keyed by pid, so a response carrying pid=X always belongs in
+// the pid=X slot regardless of which project the user is currently
+// viewing. Dropping inactive-project responses left entry.fetching=
+// true forever, so dispatchLabelFetchIfNeeded would later see "entry
+// exists" and skip the re-fetch — leaving the suggestion menu stuck
+// in "loading…" when the user returned to that project (jobs 240/241).
 func (m Model) handleLabelsFetched(msg labelsFetchedMsg) Model {
 	if m.projectLabels == nil {
 		return m
@@ -113,24 +118,9 @@ func (m Model) handleLabelsFetched(msg labelsFetchedMsg) Model {
 	if !exists || msg.gen < entry.gen {
 		return m
 	}
-	if msg.pid != m.targetPID() {
-		return m
-	}
 	entry.labels = msg.labels
 	entry.err = msg.err
 	entry.fetching = false
 	m.projectLabels.byProject[msg.pid] = entry
 	return m
-}
-
-// targetPID is the project id the active view is currently bound to.
-// In detail view the open issue's scopePID wins (an issue is always
-// scoped to a project, even cross-project); otherwise the list
-// scope's projectID. Used by handleLabelsFetched to gate writes
-// against the in-focus project.
-func (m Model) targetPID() int64 {
-	if m.view == viewDetail {
-		return m.detail.scopePID
-	}
-	return m.scope.projectID
 }

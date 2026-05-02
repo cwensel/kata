@@ -393,7 +393,8 @@ func TestNewIssueForm_MutationFailureLeavesFormOpenWithErr(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
 	m.input.saving = true
 	out, _ := m.Update(mutationDoneMsg{
-		origin: "form", kind: "create", err: errStub("daemon 500"),
+		origin: "form", kind: "create", formGen: m.input.formGen,
+		err: errStub("daemon 500"),
 	})
 	nm := out.(Model)
 	if nm.input.kind != inputNewIssueForm {
@@ -442,7 +443,7 @@ func TestNewIssueForm_MutationSuccessRoutesToList(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
 	m.input.saving = true
 	mut := mutationDoneMsg{
-		origin: "form", kind: "create",
+		origin: "form", kind: "create", formGen: m.input.formGen,
 		resp: &MutationResp{Issue: &Issue{Number: 99}},
 	}
 	out, _ := m.Update(mut)
@@ -506,7 +507,7 @@ func TestNewIssueForm_MutationSuccessRefreshesLabelCache(t *testing.T) {
 	}
 	m.nextLabelsGen = 1
 	mut := mutationDoneMsg{
-		origin: "form", kind: "create",
+		origin: "form", kind: "create", formGen: m.input.formGen,
 		resp: &MutationResp{Issue: &Issue{Number: 99, ProjectID: 7}},
 	}
 	out, _ := m.Update(mut)
@@ -523,6 +524,86 @@ func TestNewIssueForm_MutationSuccessRefreshesLabelCache(t *testing.T) {
 	if entry.gen <= 1 {
 		t.Fatalf("label cache gen for pid=7 = %d, want > 1 "+
 			"(dispatchLabelFetch must stamp a fresh gen)", entry.gen)
+	}
+}
+
+// TestNewIssueForm_StaleResponseFromPriorFormDropped pins the
+// formGen-mismatch guard added by jobs 242/244: if the user submits
+// form A (formGen=N), Esc, then opens a NEW form B (formGen=N+1)
+// before form A's response returns, the stale response carrying
+// formGen=N MUST be dropped without touching form B's state.
+//
+// Without the guard, the stale "create" response would be re-classified
+// as origin=detail by routeFormMutation and the new form (form B)
+// would be cleared mid-typing, or the stale response would
+// trigger an unrelated batchLabelRefresh (form A's project may differ
+// from form B's), or the body-edit / comment "form A" response could
+// land on form B's still-open new-issue draft.
+func TestNewIssueForm_StaleResponseFromPriorFormDropped(t *testing.T) {
+	m := openNewIssueForm(t, newIssueFormFixture())
+	staleGen := m.input.formGen
+	// Type something into the original form so we have observable state.
+	for _, r := range "draft A" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	// User presses esc, closing form A.
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = out.(Model)
+	if m.input.kind != inputNone {
+		t.Fatalf("setup: esc did not close form A: kind=%v", m.input.kind)
+	}
+	// User opens form B — fresh formGen should be staleGen+1 (or larger).
+	m = openNewIssueForm(t, m)
+	freshGen := m.input.formGen
+	if freshGen <= staleGen {
+		t.Fatalf("setup: form B's formGen=%d must be > form A's formGen=%d",
+			freshGen, staleGen)
+	}
+	// Type something into form B so we can confirm it survives untouched.
+	for _, r := range "draft B" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	bBeforeBuf := m.input.fields[0].input.Value()
+	// Prime the label cache so a hypothetical stray batchLabelRefresh
+	// would visibly bump entry.gen — that lets the assertion catch the
+	// "stale response sneaks through and refreshes labels for the
+	// inactive project" failure mode too.
+	m.projectLabels = newLabelCache()
+	m.projectLabels.byProject[7] = labelCacheEntry{
+		pid: 7, gen: 5,
+		labels: []LabelCount{{Label: "old", Count: 1}},
+	}
+	m.nextLabelsGen = 5
+	// Stale response from form A finally lands.
+	stale := mutationDoneMsg{
+		origin: "form", kind: "create", formGen: staleGen,
+		resp: &MutationResp{Issue: &Issue{Number: 11, ProjectID: 7}},
+	}
+	out, _ = m.Update(stale)
+	nm := out.(Model)
+	// Form B must remain open and untouched.
+	if nm.input.kind != inputNewIssueForm {
+		t.Fatalf("form B closed by stale form-A response: kind=%v", nm.input.kind)
+	}
+	if nm.input.formGen != freshGen {
+		t.Fatalf("form B formGen mutated: got %d, want %d",
+			nm.input.formGen, freshGen)
+	}
+	if got := nm.input.fields[0].input.Value(); got != bBeforeBuf {
+		t.Fatalf("form B's Title buffer mutated: got %q, want %q",
+			got, bBeforeBuf)
+	}
+	// No label-cache refresh should have fired (stale response dropped
+	// before reaching batchLabelRefresh).
+	if nm.projectLabels.byProject[7].gen != 5 {
+		t.Fatalf("label cache for pid=7 refreshed by stale response: "+
+			"gen=%d, want 5 (unchanged)",
+			nm.projectLabels.byProject[7].gen)
+	}
+	if nm.projectLabels.byProject[7].fetching {
+		t.Fatal("label cache for pid=7 entered fetching=true on stale " +
+			"response; the formGen guard must drop the message before " +
+			"batchLabelRefresh runs")
 	}
 }
 

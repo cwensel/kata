@@ -72,7 +72,7 @@ func TestRouteFormMutation_Success_ClosesFormAndDispatchesToDetail(t *testing.T)
 	m = m.openBodyEditForm()
 	m.input.saving = true // simulate in-flight
 	mut := mutationDoneMsg{
-		origin: "form", kind: "form.body.edit",
+		origin: "form", kind: "form.body.edit", formGen: m.input.formGen,
 		resp: &MutationResp{Issue: &Issue{Number: 42, Body: "new body"}},
 	}
 	out, _ := m.Update(mut)
@@ -91,7 +91,8 @@ func TestRouteFormMutation_Error_KeepsFormAndShowsError(t *testing.T) {
 	m = m.openBodyEditForm()
 	m.input.saving = true
 	mut := mutationDoneMsg{
-		origin: "form", kind: "form.body.edit", err: errStub("daemon 500"),
+		origin: "form", kind: "form.body.edit", formGen: m.input.formGen,
+		err: errStub("daemon 500"),
 	}
 	out, _ := m.Update(mut)
 	nm := out.(Model)

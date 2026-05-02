@@ -95,21 +95,31 @@ type jumpDetailMsg struct {
 //
 // origin discriminates which view dispatched the mutation: "list"
 // mutations land in listModel.applyMutation, "detail" mutations land in
-// detailModel.applyMutation. Without this tag, a list-side close
-// completing after the user opened detail (or a detail close that
-// arrives after Esc) would route the response to the wrong view, churn
-// the wrong status line, and (for detail) trigger an unwanted refetch.
+// detailModel.applyMutation, "form" mutations land in routeFormMutation.
+// Without this tag, a list-side close completing after the user opened
+// detail (or a detail close that arrives after Esc) would route the
+// response to the wrong view, churn the wrong status line, and (for
+// detail) trigger an unwanted refetch.
 //
 // gen is the detail-open generation that dispatched the mutation, set
 // only when origin == "detail". The detail Update path drops responses
 // whose gen does not match dm.gen so a mutation in flight when the user
 // jumps or pops cannot apply to the new view.
+//
+// formGen is the centered-form generation captured at dispatch time
+// (set only when origin == "form"). routeFormMutation drops responses
+// whose formGen does not match m.input.formGen — guards against a
+// stale form-A response landing on a different form-B that the user
+// opened in the meantime. Without this guard, the stale response could
+// close form B, misroute as origin=detail, or fire an unrelated
+// batchLabelRefresh against form A's project. Jobs 242/244.
 type mutationDoneMsg struct {
-	origin string
-	gen    int64
-	kind   string
-	resp   *MutationResp
-	err    error
+	origin  string
+	gen     int64
+	formGen int64
+	kind    string
+	resp    *MutationResp
+	err     error
 }
 
 // editorReturnedMsg carries the result of a $EDITOR suspend/resume

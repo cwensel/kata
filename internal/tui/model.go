@@ -757,8 +757,20 @@ func editorKindFor(k inputKind) string {
 //  2. inputBodyEditForm / inputCommentForm — re-classify as origin=
 //     detail so the existing detail applyMutation logic refreshes
 //     the body / comments list.
+//
+// formGen guard (jobs 242/244): a response whose formGen does not
+// match m.input.formGen is dropped before any branching. This catches
+// the stale-handoff race where the user submits form A, esc's, opens
+// form B before A's response returns; without the guard the stale
+// response could close form B (isCenteredForm() match), misroute the
+// payload as origin=detail, or fire batchLabelRefresh against form
+// A's project. Filter form is in isCenteredForm() too — the guard
+// keeps it open whenever a stray non-filter form mutation arrives.
 func (m Model) routeFormMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 	if !m.input.kind.isCenteredForm() {
+		return m, nil
+	}
+	if mut.formGen != m.input.formGen {
 		return m, nil
 	}
 	if mut.err != nil {
@@ -931,6 +943,10 @@ func (m Model) commitFilterForm(form inputState) (Model, tea.Cmd) {
 // open). Render-side sanitization elsewhere handles display safety;
 // mutation payloads go to the wire untouched so the user's content
 // is preserved exactly.
+//
+// formGen is captured before dispatch and threaded into the response
+// so routeFormMutation can drop a stale response that arrives after
+// the user closed this form and opened a different one (jobs 242/244).
 func (m Model) commitFormInput(kind inputKind) (Model, tea.Cmd) {
 	if kind == inputNewIssueForm {
 		return m.commitNewIssueForm()
@@ -946,11 +962,12 @@ func (m Model) commitFormInput(kind inputKind) (Model, tea.Cmd) {
 	m.input.saving = true
 	m.input.err = ""
 	target := m.input.target
+	formGen := m.input.formGen
 	switch kind {
 	case inputCommentForm:
-		return m, dispatchFormAddComment(m.api, target, rawBuf, m.list.actor)
+		return m, dispatchFormAddComment(m.api, target, rawBuf, m.list.actor, formGen)
 	case inputBodyEditForm:
-		return m, dispatchFormEditBody(m.api, target, rawBuf, m.list.actor)
+		return m, dispatchFormEditBody(m.api, target, rawBuf, m.list.actor, formGen)
 	}
 	return m, nil
 }
@@ -961,6 +978,10 @@ func (m Model) commitFormInput(kind inputKind) (Model, tea.Cmd) {
 // survives (mirrors the legacy inline-row contract). Labels are
 // comma-split with per-token TrimSpace; empty tokens drop. Owner is
 // nil-on-wire when blank after trim, otherwise the trimmed value.
+//
+// formGen is captured before dispatch and rides on the response so
+// routeFormMutation can drop a stale response that lands after the
+// user closed this form and opened another (jobs 242/244).
 func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
 	if len(m.input.fields) < 4 {
 		return m, nil
@@ -978,7 +999,8 @@ func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
 	m.input.saving = true
 	m.input.err = ""
 	return m, dispatchFormCreateIssue(
-		m.api, m.scope.projectID, title, body, labels, owner, m.list.actor,
+		m.api, m.scope.projectID, title, body, labels, owner,
+		m.list.actor, m.input.formGen,
 	)
 }
 
@@ -1013,12 +1035,14 @@ func normalizeOwner(buf string) *string {
 }
 
 // dispatchFormCreateIssue is the form-side CreateIssue dispatch.
-// Tagged with origin="form" so routeFormMutation matches the response
-// to the still-open new-issue form. Title is sent untrimmed; Labels
-// and Owner have already been normalized by commitNewIssueForm.
+// Tagged with origin="form" + the captured formGen so
+// routeFormMutation can match the response to the still-open form
+// (and drop it cleanly if the user opened a different form first).
+// Title is sent untrimmed; Labels and Owner have already been
+// normalized by commitNewIssueForm.
 func dispatchFormCreateIssue(
 	api *Client, pid int64, title, body string,
-	labels []string, owner *string, actor string,
+	labels []string, owner *string, actor string, formGen int64,
 ) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1027,16 +1051,17 @@ func dispatchFormCreateIssue(
 			Title: title, Body: body, Labels: labels, Owner: owner, Actor: actor,
 		})
 		return mutationDoneMsg{
-			origin: "form", kind: "create", resp: resp, err: err,
+			origin: "form", kind: "create", formGen: formGen,
+			resp: resp, err: err,
 		}
 	}
 }
 
 // dispatchFormAddComment is the form-side AddComment dispatch. Tagged
-// with origin="form" + the form's formGen so routeMutation can match
-// the response to the still-open form.
+// with origin="form" + the captured formGen so routeFormMutation can
+// match the response to the still-open form.
 func dispatchFormAddComment(
-	api *Client, target formTarget, body, actor string,
+	api *Client, target formTarget, body, actor string, formGen int64,
 ) tea.Cmd {
 	pid, num := target.projectID, target.issueNumber
 	return func() tea.Msg {
@@ -1044,7 +1069,8 @@ func dispatchFormAddComment(
 		defer cancel()
 		resp, err := api.AddComment(ctx, pid, num, body, actor)
 		return mutationDoneMsg{
-			origin: "form", kind: "form.comment.add", resp: resp, err: err,
+			origin: "form", kind: "form.comment.add", formGen: formGen,
+			resp: resp, err: err,
 		}
 	}
 }
@@ -1052,7 +1078,7 @@ func dispatchFormAddComment(
 // dispatchFormEditBody is the form-side EditBody dispatch. Same
 // shape as dispatchFormAddComment.
 func dispatchFormEditBody(
-	api *Client, target formTarget, body, actor string,
+	api *Client, target formTarget, body, actor string, formGen int64,
 ) tea.Cmd {
 	pid, num := target.projectID, target.issueNumber
 	return func() tea.Msg {
@@ -1060,7 +1086,8 @@ func dispatchFormEditBody(
 		defer cancel()
 		resp, err := api.EditBody(ctx, pid, num, body, actor)
 		return mutationDoneMsg{
-			origin: "form", kind: "form.body.edit", resp: resp, err: err,
+			origin: "form", kind: "form.body.edit", formGen: formGen,
+			resp: resp, err: err,
 		}
 	}
 }

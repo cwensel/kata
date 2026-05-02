@@ -299,43 +299,43 @@ func TestFilterForm_CtrlSCommitsViaCommitInputBranch_NotCommitFormInput(
 	}
 }
 
-// TestFilterForm_NoBranchInRouteFormMutation: a stray mutationDoneMsg
-// arriving while the filter form is open MUST NOT be silently absorbed
-// by a safety-net "case inputFilterForm:" branch in routeFormMutation.
-// Filter form has no daemon mutation — if a mutation message ever
-// reaches it, that is a bug we want surfaced, not hidden.
+// TestFilterForm_NoBranchInRouteFormMutation: a stray form mutation
+// arriving while the filter form is open MUST be dropped without
+// touching the filter form's state. The filter form has its own
+// formGen (allocated by openInput); a stray mutationDoneMsg whose
+// formGen does not match is dropped harmlessly by routeFormMutation's
+// formGen guard (jobs 242/244 fix).
 //
-// The documented (and tested) behavior is that
-// routeFormMutation falls through to the default detail-routing path:
-// the filter form is cleared (m.input = inputState{}), the message is
-// re-classified as origin=detail, and routeMutation handles it. This
-// is loud — if the form ever does receive a stray mutation, the user
-// sees the modal disappear, which is much more discoverable than a
-// silent no-op.
-//
-// This test pins the load-bearing contract: there is NO per-kind
-// inputFilterForm branch in routeFormMutation. The assertion
-// distinguishes "filter form is silently kept open + nil cmd"
-// (a hypothetical safety net we are pinning AGAINST) from "filter
-// form is cleared and the message is routed onward" (current loud
-// behavior). Either is technically a bug, but the loud one is the
-// less-broken of the two; the test asserts we have not added a
-// safety-net branch.
+// Pre-fix behavior: routeFormMutation fell through to the default
+// detail-routing path, clearing the filter form (m.input = inputState{})
+// and re-classifying the message as origin=detail — which silently
+// closed the open filter modal whenever any unrelated form's response
+// landed late. The new contract: stale form responses are dropped
+// before they can touch a different form's state.
 func TestFilterForm_NoBranchInRouteFormMutation(t *testing.T) {
 	m := openFilterForm(t, filterFormFixture())
-	mut := mutationDoneMsg{origin: "form", kind: "form.bogus"}
+	preInput := m.input
+	// formGen that cannot match the filter form's freshly-allocated one.
+	mut := mutationDoneMsg{
+		origin: "form", kind: "form.bogus",
+		formGen: m.input.formGen + 999,
+	}
 	out, _ := m.routeFormMutation(mut)
 	nm := out.(Model)
-	// The documented behavior is that the form is CLEARED, not kept
-	// open by a safety-net branch. If a future change adds
-	// `case inputFilterForm: return m, nil` inside routeFormMutation,
-	// the test below would start passing the "still open" case — and
-	// this assertion would catch it.
-	if nm.input.kind == inputFilterForm {
-		t.Fatal("filter form still open after stray mutation — " +
-			"a silent safety-net branch was added in routeFormMutation; " +
-			"filter form has no daemon mutation, stray messages should " +
-			"NOT be absorbed silently")
+	// The new contract: filter form stays OPEN with state unchanged.
+	if nm.input.kind != inputFilterForm {
+		t.Fatalf("filter form was closed by stale form mutation; "+
+			"the formGen guard must drop the message before the "+
+			"isCenteredForm() fall-through clears it (kind=%v)",
+			nm.input.kind)
+	}
+	if nm.input.formGen != preInput.formGen {
+		t.Fatalf("filter form formGen mutated: got %d, want %d",
+			nm.input.formGen, preInput.formGen)
+	}
+	if nm.input.saving != preInput.saving {
+		t.Fatalf("filter form saving flag flipped: got %v, want %v",
+			nm.input.saving, preInput.saving)
 	}
 }
 

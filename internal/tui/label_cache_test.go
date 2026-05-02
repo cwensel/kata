@@ -101,34 +101,44 @@ func TestLabelCache_StaleGenResponseDropped(t *testing.T) {
 	}
 }
 
-// TestLabelCache_MismatchedPidResponseDropped: a response carrying a
-// pid that doesn't match the current target's pid must be dropped.
-// A user can switch projects between dispatch and response — the
-// no-longer-active project's cache entry must NOT be silently
-// repopulated by a slow ListLabels call.
+// TestLabelCache_InactiveProjectResponseStillPopulatesCache:
+// a response for an inactive project (msg.pid != targetPID()) MUST
+// still populate the per-project cache entry. The cache is keyed by
+// pid, so populating an inactive project's entry is harmless — and
+// dropping the response (the prior contract) left entry.fetching=true
+// forever, so when the user later returned to the original project
+// dispatchLabelFetchIfNeeded would see "entry exists" and skip the
+// re-fetch, leaving the suggestion menu stuck in "loading…" forever
+// (jobs 240/241).
 //
-// We dispatch for pid=7 first so the cache entry EXISTS (defeats
-// handleLabelsFetched's `!exists` short-circuit), then switch scope
-// to pid=8, then send the stale pid=7 response. The response must
-// be dropped specifically because msg.pid != targetPID(), not just
-// because no entry was there to populate.
-func TestLabelCache_MismatchedPidResponseDropped(t *testing.T) {
+// Setup: dispatch for pid=7 (creates entry, fetching=true), switch
+// scope to pid=8, then send the pid=7 response. Assert the pid=7
+// entry IS populated AND fetching=false — that's the new contract.
+func TestLabelCache_InactiveProjectResponseStillPopulatesCache(t *testing.T) {
 	m := buildModelWithLabelCache(t)
 	m.scope = scope{projectID: 7} // active project is 7
 	// Dispatch creates the entry for pid=7 with gen=1, fetching=true.
 	m, _ = m.dispatchLabelFetch(7)
 	// User switches project to pid=8 BEFORE the response lands.
 	m.scope = scope{projectID: 8}
-	// Stale response for pid=7 arrives from the now-superseded fetch.
+	// Response for pid=7 arrives from the now-inactive fetch. The
+	// per-project cache must accept it — the entry's pid matches the
+	// message's pid, so the data goes in the right slot.
 	out, _ := m.Update(labelsFetchedMsg{
 		pid: 7, gen: 1,
 		labels: []LabelCount{{Label: "from7", Count: 1}},
 	})
 	entry := out.(Model).projectLabels.byProject[7]
-	if len(entry.labels) != 0 {
-		t.Fatalf("response for pid=7 must drop when target is pid=8 "+
-			"(pid-mismatch branch), even with a live entry; "+
+	if len(entry.labels) != 1 || entry.labels[0].Label != "from7" {
+		t.Fatalf("response for pid=7 must populate the pid=7 cache "+
+			"entry even when target is pid=8 (cache is per-project); "+
 			"got labels=%v", entry.labels)
+	}
+	if entry.fetching {
+		t.Fatal("entry.fetching must be false after the response is " +
+			"accepted; otherwise dispatchLabelFetchIfNeeded skips a " +
+			"future re-fetch and the suggestion menu stays stuck in " +
+			"loading… forever (jobs 240/241)")
 	}
 }
 
