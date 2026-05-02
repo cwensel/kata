@@ -69,14 +69,23 @@ func openNewIssueForm(t *testing.T, m Model) Model {
 	return m
 }
 
+func focusNewIssueField(s inputState, idx int) inputState {
+	for i := range s.fields {
+		s.fields[i].blur()
+	}
+	s.active = idx
+	_ = s.fields[idx].focus()
+	return s
+}
+
 // TestNewIssueForm_OpensOnNKey_ListView: pressing n on the list view
 // opens the centered multi-field form (replaces the M3.5c inline row).
 func TestNewIssueForm_OpensOnNKey_ListView(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
-	if len(m.input.fields) != 4 {
-		t.Fatalf("form fields = %d, want 4 (Title/Body/Labels/Owner)", len(m.input.fields))
+	if len(m.input.fields) != 5 {
+		t.Fatalf("form fields = %d, want 5 (Title/Body/Labels/Owner/Parent)", len(m.input.fields))
 	}
-	wantLabels := []string{"Title", "Body", "Labels", "Owner"}
+	wantLabels := []string{"Title", "Body", "Labels", "Owner", "Parent"}
 	for i, f := range m.input.fields {
 		if f.label != wantLabels[i] {
 			t.Fatalf("field[%d].label = %q, want %q", i, f.label, wantLabels[i])
@@ -126,13 +135,16 @@ func TestNewIssueForm_ConstructorBlursAllFieldsFocusesField0(t *testing.T) {
 	if s.fields[3].input.Focused() {
 		t.Fatal("field[3] (Owner) must be blurred")
 	}
+	if s.fields[4].input.Focused() {
+		t.Fatal("field[4] (Parent) must be blurred")
+	}
 }
 
-// TestNewIssueForm_TabCyclesFieldsWithWrap: tab cycles 0→1→2→3→0 and
+// TestNewIssueForm_TabCyclesFieldsWithWrap: tab cycles 0→1→2→3→4→0 and
 // blurs/focuses the right fields each step.
 func TestNewIssueForm_TabCyclesFieldsWithWrap(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
-	wants := []int{1, 2, 3, 0}
+	wants := []int{1, 2, 3, 4, 0}
 	for i, want := range wants {
 		out, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 		m = out.(Model)
@@ -143,10 +155,10 @@ func TestNewIssueForm_TabCyclesFieldsWithWrap(t *testing.T) {
 }
 
 // TestNewIssueForm_ShiftTabReverseCyclesWithWrap: shift+tab cycles
-// 0→3→2→1→0 with wrap.
+// 0→4→3→2→1→0 with wrap.
 func TestNewIssueForm_ShiftTabReverseCyclesWithWrap(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
-	wants := []int{3, 2, 1, 0}
+	wants := []int{4, 3, 2, 1, 0}
 	for i, want := range wants {
 		out, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 		m = out.(Model)
@@ -158,7 +170,7 @@ func TestNewIssueForm_ShiftTabReverseCyclesWithWrap(t *testing.T) {
 
 // TestNewIssueForm_EnterInSingleLineAdvancesField: enter on a single-
 // line field advances to the next field instead of committing. Title
-// → Body, Labels → Owner, Owner → Title (wrap).
+// → Body, Labels → Owner, Owner → Parent, Parent → Title (wrap).
 func TestNewIssueForm_EnterInSingleLineAdvancesField(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
 	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -180,11 +192,16 @@ func TestNewIssueForm_EnterInSingleLineAdvancesField(t *testing.T) {
 	if m.input.active != 3 {
 		t.Fatalf("after enter on Labels: active = %d, want 3 (Owner)", m.input.active)
 	}
-	// Enter on Owner wraps to Title.
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = out.(Model)
+	if m.input.active != 4 {
+		t.Fatalf("after enter on Owner: active = %d, want 4 (Parent)", m.input.active)
+	}
+	// Enter on Parent wraps to Title.
 	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = out.(Model)
 	if m.input.active != 0 {
-		t.Fatalf("after enter on Owner: active = %d, want 0 (wrap to Title)", m.input.active)
+		t.Fatalf("after enter on Parent: active = %d, want 0 (wrap to Title)", m.input.active)
 	}
 }
 
@@ -353,8 +370,8 @@ func TestNewIssueForm_CtrlEOnlyWhenBodyFocused(t *testing.T) {
 	if m.input.kind != inputNewIssueForm {
 		t.Fatalf("ctrl+e on Body closed the form: kind=%v", m.input.kind)
 	}
-	// Tab through Labels and Owner — ctrl+e is a no-op for both.
-	for _, want := range []int{2, 3} {
+	// Tab through Labels, Owner, and Parent — ctrl+e is a no-op for all three.
+	for _, want := range []int{2, 3, 4} {
 		out, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 		m = out.(Model)
 		if m.input.active != want {
@@ -364,6 +381,105 @@ func TestNewIssueForm_CtrlEOnlyWhenBodyFocused(t *testing.T) {
 		if cmd != nil {
 			t.Fatalf("ctrl+e on field[%d] dispatched cmd %T; want nil", want, cmd)
 		}
+	}
+}
+
+func TestNewIssueForm_ParentBlankOmitsLink(t *testing.T) {
+	s := newNewIssueForm()
+	s.fields[0].input.SetValue("childless issue")
+	body, err := newIssueBodyFromForm(s.fields, "tester")
+	if err != nil {
+		t.Fatalf("unexpected parent error: %v", err)
+	}
+	if len(body.Links) != 0 {
+		t.Fatalf("links = %+v, want none", body.Links)
+	}
+}
+
+func TestNewIssueForm_ParentNumberCreatesInitialParentLink(t *testing.T) {
+	s := newNewIssueForm()
+	s.fields[0].input.SetValue("child issue")
+	s.fields[4].input.SetValue("#42")
+	body, err := newIssueBodyFromForm(s.fields, "tester")
+	if err != nil {
+		t.Fatalf("unexpected parent error: %v", err)
+	}
+	if len(body.Links) != 1 {
+		t.Fatalf("links len = %d, want 1: %+v", len(body.Links), body.Links)
+	}
+	if body.Links[0].Type != "parent" || body.Links[0].ToNumber != 42 {
+		t.Fatalf("link = %+v, want parent -> #42", body.Links[0])
+	}
+}
+
+func TestNewIssueForm_ParentInvalidShowsError(t *testing.T) {
+	s := newNewIssueForm()
+	s.fields[0].input.SetValue("bad parent")
+	s.fields[4].input.SetValue("parent-ish")
+	if _, err := newIssueBodyFromForm(s.fields, "tester"); err == nil {
+		t.Fatal("expected invalid parent to return an error")
+	}
+}
+
+func TestList_NewChild_NoSelectionNoOp(t *testing.T) {
+	m := newIssueFormFixture()
+	out, cmd := m.Update(runeKey('N'))
+	nm := out.(Model)
+	if cmd != nil {
+		t.Fatalf("N with no selected row returned cmd %T, want nil", cmd)
+	}
+	if nm.input.kind != inputNone {
+		t.Fatalf("N with no selected row opened input kind=%v", nm.input.kind)
+	}
+}
+
+func TestList_NewChild_PrefillsSelectedParent(t *testing.T) {
+	m := newIssueFormFixture()
+	m.list.issues = []Issue{{ProjectID: 7, Number: 42, Title: "parent", Status: "open"}}
+	out, cmd := m.Update(runeKey('N'))
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatal("N on a selected row produced no open-input command")
+	}
+	out, _ = m.Update(cmd())
+	m = out.(Model)
+	if m.input.kind != inputNewIssueForm {
+		t.Fatalf("input kind = %v, want inputNewIssueForm", m.input.kind)
+	}
+	if m.input.title != "new child issue" {
+		t.Fatalf("title = %q, want new child issue", m.input.title)
+	}
+	parent := m.input.fields[4]
+	if got := parent.input.Value(); got != "42" {
+		t.Fatalf("parent field = %q, want 42", got)
+	}
+	if !parent.locked {
+		t.Fatal("prefilled child parent field must start locked")
+	}
+}
+
+func TestNewChildForm_ParentPrefillIgnoresEditsUntilCleared(t *testing.T) {
+	s := newNewIssueFormWithParent(42)
+	s = focusNewIssueField(s, 4)
+	next, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'9'}})
+	if got := next.fields[4].input.Value(); got != "42" {
+		t.Fatalf("locked parent accepted edit; got %q, want 42", got)
+	}
+}
+
+func TestNewChildForm_ParentPrefillBackspaceClearsAndUnlocks(t *testing.T) {
+	s := newNewIssueFormWithParent(42)
+	s = focusNewIssueField(s, 4)
+	next, _ := s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := next.fields[4].input.Value(); got != "" {
+		t.Fatalf("backspace on locked parent = %q, want empty", got)
+	}
+	if next.fields[4].locked {
+		t.Fatal("backspace on locked parent should unlock the field")
+	}
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'9'}})
+	if got := next.fields[4].input.Value(); got != "9" {
+		t.Fatalf("unlocked parent did not accept edit; got %q, want 9", got)
 	}
 }
 
@@ -476,6 +592,15 @@ func TestSnapshot_NewIssueForm_AllFields(t *testing.T) {
 	_ = s.fields[1].focus()
 	got := renderCenteredForm(s, 120, 30)
 	assertGolden(t, "new-issue-form-all-fields", got)
+}
+
+func TestSnapshot_NewChildForm(t *testing.T) {
+	defer snapshotInit(t)()
+	s := newNewIssueFormWithParent(42)
+	s.fields[0].input.SetValue("follow-up child issue")
+	s.fields[2].input.SetValue("ux")
+	got := renderCenteredForm(s, 120, 30)
+	assertGolden(t, "new-child-form", got)
 }
 
 // TestNewIssueForm_MutationSuccessRefreshesLabelCache pins the

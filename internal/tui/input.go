@@ -142,6 +142,7 @@ type inputField struct {
 	area     textarea.Model  // populated when kind == fieldMultiLine
 	radio    radioField      // populated when kind == fieldRadio
 	required bool
+	locked   bool
 }
 
 // value returns the current text from whichever bubbles model backs f.
@@ -373,6 +374,9 @@ func (s inputState) updateForm(msg tea.KeyMsg) (inputState, inputAction) {
 	if next, handled := s.handleFormNavKey(msg); handled {
 		return next, actionNone
 	}
+	if next, handled := s.handleLockedFieldKey(msg); handled {
+		return next, actionNone
+	}
 	if next, handled := s.handleRadioKey(msg); handled {
 		return next, actionNone
 	}
@@ -446,6 +450,20 @@ func (s inputState) handleRadioKey(msg tea.KeyMsg) (inputState, bool) {
 		return s, false
 	}
 	s.fields[s.active] = *f
+	return s, true
+}
+
+func (s inputState) handleLockedFieldKey(msg tea.KeyMsg) (inputState, bool) {
+	f := s.activeField()
+	if f == nil || !f.locked {
+		return s, false
+	}
+	switch msg.Type {
+	case tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlU:
+		f.setValue("")
+		f.locked = false
+		s.fields[s.active] = *f
+	}
 	return s, true
 }
 
@@ -659,11 +677,13 @@ func newFormTextarea(current string) inputField {
 	return inputField{kind: fieldMultiLine, area: ta}
 }
 
-// newIssueFormBodyIndex names the field index of the multi-line Body
-// textarea inside newNewIssueForm. ctrl+e is allowed only on this
-// field (the others are single-line textinputs); enter on any other
-// field advances to the next field rather than inserting a newline.
-const newIssueFormBodyIndex = 1
+// newIssueForm*Index names fields inside newNewIssueForm. ctrl+e is
+// allowed only on Body; Parent is optional and may start locked for
+// the `N` new-child flow.
+const (
+	newIssueFormBodyIndex   = 1
+	newIssueFormParentIndex = 4
+)
 
 // filterFormStatusChoices is the canonical Status-axis choice list for
 // the filter modal. "all" maps to ListFilter.Status="" on commit so
@@ -746,6 +766,17 @@ func joinLabelsForFilterForm(labels []string) string {
 // at commit time; Owner is a single-line textinput, nil-on-wire when
 // blank. tab cycles fields with wrap; ctrl+s commits; esc cancels.
 func newNewIssueForm() inputState {
+	return newNewIssueFormBase("new issue")
+}
+
+func newNewIssueFormWithParent(parentNumber int64) inputState {
+	s := newNewIssueFormBase("new child issue")
+	s.fields[newIssueFormParentIndex].input.SetValue(fmt.Sprintf("%d", parentNumber))
+	s.fields[newIssueFormParentIndex].locked = true
+	return s
+}
+
+func newNewIssueFormBase(title string) inputState {
 	ti := textinput.New()
 	ti.Prompt = ""
 	body := textarea.New()
@@ -758,15 +789,19 @@ func newNewIssueForm() inputState {
 	owner := textinput.New()
 	owner.Prompt = ""
 	owner.Blur()
+	parent := textinput.New()
+	parent.Prompt = ""
+	parent.Blur()
 	ti.Focus()
 	return inputState{
 		kind:  inputNewIssueForm,
-		title: "new issue",
+		title: title,
 		fields: []inputField{
 			{kind: fieldSingleLine, input: ti, label: "Title", required: true},
 			{kind: fieldMultiLine, area: body, label: "Body"},
 			{kind: fieldSingleLine, input: labels, label: "Labels"},
 			{kind: fieldSingleLine, input: owner, label: "Owner"},
+			{kind: fieldSingleLine, input: parent, label: "Parent"},
 		},
 	}
 }

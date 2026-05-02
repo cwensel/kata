@@ -199,24 +199,26 @@ func renderSingleFieldForm(s inputState, innerW, innerH int) string {
 	return modalBoxStyle.Width(innerW).Padding(0, 1).Render(strings.Join(parts, "\n"))
 }
 
-// renderNewIssueForm lays out the four fields of the multi-field
-// new-issue form: Title (single-line), Body (multi-line, gets the
-// remaining vertical slack), Labels (single-line), Owner (single-
-// line). Each field is preceded by a label cell; the active field's
-// label renders bold so the user can tell which field has focus.
+// renderNewIssueForm lays out the fields of the multi-field new-issue
+// form. Body gets the remaining vertical slack; the other fields are
+// single-line. Each field is preceded by a label cell; the active
+// field's label renders bold so the user can tell which field has
+// focus.
 //
 // The footer hint flips ctrl+e to "(body only)" when a single-line
 // field has focus so the user understands the editor handoff is
 // gated to the body textarea.
 func renderNewIssueForm(s inputState, innerW, innerH int) string {
-	if len(s.fields) < 4 {
+	if len(s.fields) < 5 {
 		return ""
 	}
 	statusLine := renderFormStatus(s)
 	footer := renderFormFooter(s, innerW, s.active == newIssueFormBodyIndex)
-	// Reserve title (1) + footer (1) + status (0 or 1) + 4 field
-	// labels + 3 single-line field rows. Body gets whatever is left.
-	reserved := 1 + 1 + 4 + 3
+	// Reserve title (1) + footer (1) + status (0 or 1) + one label
+	// per field + one row for every single-line field. Body gets the
+	// remaining height.
+	singleLineRows := len(s.fields) - 1
+	reserved := 1 + 1 + len(s.fields) + singleLineRows
 	if statusLine != "" {
 		reserved++
 	}
@@ -230,10 +232,9 @@ func renderNewIssueForm(s inputState, innerW, innerH int) string {
 	body.area.SetWidth(innerW)
 	body.area.SetHeight(bodyRows)
 	parts := []string{titleStyle.Render(s.title)}
-	parts = append(parts, renderNewIssueField(s, 0, innerW))
-	parts = append(parts, renderNewIssueField(s, 1, innerW))
-	parts = append(parts, renderNewIssueField(s, 2, innerW))
-	parts = append(parts, renderNewIssueField(s, 3, innerW))
+	for idx := range s.fields {
+		parts = append(parts, renderNewIssueField(s, idx, innerW))
+	}
 	if statusLine != "" {
 		parts = append(parts, statusLine)
 	}

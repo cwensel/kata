@@ -413,6 +413,16 @@ func (lm listModel) applyPromptKey(
 			return lm, nil, true
 		}
 		return lm, openInputCmd(inputNewIssueForm), true
+	case km.NewChild.matches(msg):
+		if sc.allProjects {
+			lm.status = "cannot create from all-projects view; cd into a project"
+			return lm, nil, true
+		}
+		iss, ok := lm.targetRow()
+		if !ok {
+			return lm, nil, true
+		}
+		return lm, openNewChildInputCmd(iss.Number), true
 	}
 	return lm, nil, false
 }
@@ -424,6 +434,12 @@ func (lm listModel) applyPromptKey(
 // integration in one place.
 func openInputCmd(k inputKind) tea.Cmd {
 	return func() tea.Msg { return openInputMsg{kind: k} }
+}
+
+func openNewChildInputCmd(parentNumber int64) tea.Cmd {
+	return func() tea.Msg {
+		return openInputMsg{kind: inputNewIssueForm, parentNumber: &parentNumber}
+	}
 }
 
 // clampCursorToFilter recomputes lm.cursor against the visible

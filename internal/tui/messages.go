@@ -75,7 +75,8 @@ type popDetailMsg struct{}
 // open through the shared input pipeline (snapshot/restore, focus
 // gating, render integration).
 type openInputMsg struct {
-	kind inputKind
+	kind         inputKind
+	parentNumber *int64
 }
 
 // jumpDetailMsg asks the top-level Model to jump the detail view to

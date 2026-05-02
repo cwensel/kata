@@ -2,8 +2,10 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -471,7 +473,7 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			return next, cmd, true
 		}
 	case openInputMsg:
-		next, cmd := m.openInput(msg.kind)
+		next, cmd := m.openInputFromMsg(msg)
 		return next, cmd, true
 	case openDetailMsg:
 		next, cmd := m.handleOpenDetail(msg)
@@ -508,12 +510,20 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 // from dm.issue.Labels (already loaded), and the others (owner /
 // parent / blocker / link) have no autocomplete in this commit.
 func (m Model) openInput(kind inputKind) (Model, tea.Cmd) {
+	return m.openInputFromMsg(openInputMsg{kind: kind})
+}
+
+func (m Model) openInputFromMsg(msg openInputMsg) (Model, tea.Cmd) {
+	kind := msg.kind
 	switch {
 	case kind == inputSearchBar:
 		m.input = newSearchBar(m.list.filter)
 	case kind == inputNewIssueForm:
 		m.nextFormGen++
 		s := newNewIssueForm()
+		if msg.parentNumber != nil {
+			s = newNewIssueFormWithParent(*msg.parentNumber)
+		}
 		s.formGen = m.nextFormGen
 		m.input = s
 	case kind == inputFilterForm:
@@ -1069,8 +1079,8 @@ func (m Model) commitFormInput(kind inputKind) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// commitNewIssueForm reads the four fields, normalizes Labels and
-// Owner, gates on a non-blank Title, and dispatches CreateIssue.
+// commitNewIssueForm reads the five fields, normalizes Labels, Owner,
+// and Parent, gates on a non-blank Title, and dispatches CreateIssue.
 // Title is sent untrimmed so deliberate leading/trailing whitespace
 // survives (mirrors the legacy inline-row contract). Labels are
 // comma-split with per-token TrimSpace; empty tokens drop. Owner is
@@ -1080,25 +1090,59 @@ func (m Model) commitFormInput(kind inputKind) (Model, tea.Cmd) {
 // routeFormMutation can drop a stale response that lands after the
 // user closed this form and opened another (jobs 242/244).
 func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
-	if len(m.input.fields) < 4 {
+	if len(m.input.fields) < 5 {
 		return m, nil
 	}
 	title := m.input.fields[0].input.Value()
-	body := m.input.fields[1].area.Value()
-	labelsBuf := m.input.fields[2].input.Value()
-	ownerBuf := m.input.fields[3].input.Value()
 	if strings.TrimSpace(title) == "" {
 		m.input.err = "title is required"
 		return m, nil
 	}
-	labels := normalizeLabels(labelsBuf)
-	owner := normalizeOwner(ownerBuf)
+	body, err := newIssueBodyFromForm(m.input.fields, m.list.actor)
+	if err != nil {
+		m.input.err = err.Error()
+		return m, nil
+	}
 	m.input.saving = true
 	m.input.err = ""
-	return m, dispatchFormCreateIssue(
-		m.api, m.scope.projectID, title, body, labels, owner,
-		m.list.actor, m.input.formGen,
-	)
+	return m, dispatchFormCreateIssue(m.api, m.scope.projectID, body, m.input.formGen)
+}
+
+func newIssueBodyFromForm(fields []inputField, actor string) (CreateIssueBody, error) {
+	if len(fields) < 5 {
+		return CreateIssueBody{}, fmt.Errorf("new issue form is incomplete")
+	}
+	parent, err := normalizeParentNumber(fields[newIssueFormParentIndex].input.Value())
+	if err != nil {
+		return CreateIssueBody{}, err
+	}
+	body := CreateIssueBody{
+		Title:  fields[0].input.Value(),
+		Body:   fields[1].area.Value(),
+		Labels: normalizeLabels(fields[2].input.Value()),
+		Owner:  normalizeOwner(fields[3].input.Value()),
+		Actor:  actor,
+	}
+	if parent != nil {
+		body.Links = []CreateInitialLinkBody{{
+			Type:     "parent",
+			ToNumber: *parent,
+		}}
+	}
+	return body, nil
+}
+
+func normalizeParentNumber(buf string) (*int64, error) {
+	trimmed := strings.TrimSpace(buf)
+	if trimmed == "" {
+		return nil, nil
+	}
+	trimmed = strings.TrimPrefix(trimmed, "#")
+	n, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil || n <= 0 {
+		return nil, fmt.Errorf("parent must be an issue number")
+	}
+	return &n, nil
 }
 
 // normalizeLabels splits buf on commas, trims whitespace per token,
@@ -1138,15 +1182,12 @@ func normalizeOwner(buf string) *string {
 // Title is sent untrimmed; Labels and Owner have already been
 // normalized by commitNewIssueForm.
 func dispatchFormCreateIssue(
-	api *Client, pid int64, title, body string,
-	labels []string, owner *string, actor string, formGen int64,
+	api *Client, pid int64, body CreateIssueBody, formGen int64,
 ) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.CreateIssue(ctx, pid, CreateIssueBody{
-			Title: title, Body: body, Labels: labels, Owner: owner, Actor: actor,
-		})
+		resp, err := api.CreateIssue(ctx, pid, body)
 		return mutationDoneMsg{
 			origin: "form", kind: "create", formGen: formGen,
 			resp: resp, err: err,

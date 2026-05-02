@@ -1,10 +1,10 @@
 ╭────────────────────────────────────────────────────────────────────────────────────╮
-│ new issue                                                                          │
+│ new child issue                                                                    │
 │ Title *                                                                            │
-│ fix login bug on Safari                                                            │
+│ follow-up child issue                                                              │
 │ Body                                                                               │
-│ Reproduces in Safari 17 only.                                                      │
-│ Click login twice.                                                                 │
+│                                                                                    │
+│                                                                                    │
 │                                                                                    │
 │                                                                                    │
 │                                                                                    │
@@ -14,10 +14,10 @@
 │                                                                                    │
 │                                                                                    │
 │ Labels                                                                             │
-│ bug, prio-1                                                                        │
+│ ux                                                                                 │
 │ Owner                                                                              │
-│ alice                                                                              │
-│ Parent                                                                             │
 │                                                                                    │
-│ ctrl+s save · esc cancel · ctrl+e $EDITOR                                          │
+│ Parent                                                                             │
+│ 42                                                                                 │
+│ ctrl+s save · esc cancel · tab next · ctrl+e (body only)                           │
 ╰────────────────────────────────────────────────────────────────────────────────────╯
