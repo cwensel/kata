@@ -477,6 +477,55 @@ func TestSnapshot_NewIssueForm_AllFields(t *testing.T) {
 	assertGolden(t, "new-issue-form-all-fields", got)
 }
 
+// TestNewIssueForm_MutationSuccessRefreshesLabelCache pins the
+// invariant that a successful form-side create routes through the
+// label-cache refresh hook the same way list/detail mutations do.
+//
+// Bug it guards against (commit 4 follow-up I-1): routeFormMutation
+// short-circuited at the top of routeMutation, so the
+// mutAffectsLabelCounts → batchLabelRefresh wiring on the regular
+// path was bypassed for inputNewIssueForm. Combined with the daemon
+// emitting only issue.created (not issue.labeled) for create-with-
+// labels, the per-project cache stayed stale until the next project
+// switch / restart / unrelated label SSE event.
+//
+// Setup primes the cache for pid=7 with a known gen so the assertion
+// can confirm dispatchLabelFetch ran (gen advanced + fetching=true).
+func TestNewIssueForm_MutationSuccessRefreshesLabelCache(t *testing.T) {
+	m := openNewIssueForm(t, newIssueFormFixture())
+	m.input.saving = true
+	// Prime the label cache for pid=7 as if the user had opened the
+	// `+` menu against this project once already. Without an entry
+	// present, batchLabelRefresh's existence gate would skip the
+	// dispatch — but the test scenario is "user already opened menu,
+	// then created with labels, expects fresh counts on next open".
+	m.projectLabels = newLabelCache()
+	m.projectLabels.byProject[7] = labelCacheEntry{
+		pid: 7, gen: 1,
+		labels: []LabelCount{{Label: "old", Count: 1}},
+	}
+	m.nextLabelsGen = 1
+	mut := mutationDoneMsg{
+		origin: "form", kind: "create",
+		resp: &MutationResp{Issue: &Issue{Number: 99, ProjectID: 7}},
+	}
+	out, _ := m.Update(mut)
+	nm := out.(Model)
+	if nm.input.kind != inputNone {
+		t.Fatalf("form did not close on success: kind=%v", nm.input.kind)
+	}
+	entry := nm.projectLabels.byProject[7]
+	if !entry.fetching {
+		t.Fatal("label cache for pid=7 did not enter fetching=true; " +
+			"form-create success must dispatch a label refresh " +
+			"(commit 4 follow-up I-1)")
+	}
+	if entry.gen <= 1 {
+		t.Fatalf("label cache gen for pid=7 = %d, want > 1 "+
+			"(dispatchLabelFetch must stamp a fresh gen)", entry.gen)
+	}
+}
+
 // TestNoLingeringInlineRowReferences walks internal/tui/*.go (skipping
 // test files) and asserts no source contains the symbol
 // `inputNewIssueRow` — guards against accidental re-introduction of

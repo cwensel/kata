@@ -769,6 +769,19 @@ func (m Model) routeFormMutation(mut mutationDoneMsg) (tea.Model, tea.Cmd) {
 		m.list, cmd = m.list.applyMutation(mutationDoneMsg{
 			origin: "list", kind: "create", resp: mut.resp,
 		}, m.api, m.scope)
+		// Form-create may carry labels (inline Labels field). The
+		// daemon emits only issue.created (with labels folded into the
+		// payload), NOT a separate issue.labeled event — so the
+		// SSE-side maybeRefetchLabels will not fire. Without an
+		// explicit refresh here, the per-project label aggregate would
+		// stay stale until the next project switch / restart /
+		// unrelated label SSE event. Use the same hook routeMutation
+		// uses; the cache-existence gate inside batchLabelRefresh
+		// keeps it a no-op for projects the user never opened the
+		// menu for.
+		if mutAffectsLabelCounts(mut) {
+			return batchLabelRefresh(m, cmd, mut)
+		}
 		return m, cmd
 	}
 	m.input = inputState{}
