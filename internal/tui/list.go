@@ -110,7 +110,7 @@ func (lm listModel) applyNavKey(
 	if next, ok := lm.applyExpandKey(msg, km); ok {
 		return next, nil
 	}
-	if next, cmd, ok := lm.applyFilterKey(msg, km, api, sc); ok {
+	if next, cmd, ok := lm.applyFilterKey(msg, km); ok {
 		return next, cmd
 	}
 	if next, cmd, ok := lm.applyPromptKey(msg, km, sc); ok {
@@ -367,9 +367,7 @@ func (lm listModel) syncSelection(rows []queueRow) listModel {
 // previously-selected issue if it survived the new filter. The
 // explicit "I changed the filter" intent overrides the implicit
 // "follow the same issue across refetches" intent.
-func (lm listModel) applyFilterKey(
-	msg tea.KeyMsg, km keymap, api listAPI, sc scope,
-) (listModel, tea.Cmd, bool) {
+func (lm listModel) applyFilterKey(msg tea.KeyMsg, km keymap) (listModel, tea.Cmd, bool) {
 	switch {
 	case km.FilterStatus.matches(msg):
 		lm.filter.Status = nextStatus(lm.filter.Status)

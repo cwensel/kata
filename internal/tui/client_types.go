@@ -32,11 +32,13 @@ type Issue struct {
 	ChildCounts  *ChildCounts `json:"child_counts,omitempty"`
 }
 
+// ChildCounts is the direct-child aggregate attached to queue/detail rows.
 type ChildCounts struct {
 	Open  int `json:"open"`
 	Total int `json:"total"`
 }
 
+// IssueRef is the compact parent issue projection on detail responses.
 type IssueRef struct {
 	Number int64  `json:"number"`
 	Title  string `json:"title"`
@@ -71,6 +73,7 @@ func (f ListFilter) values() url.Values {
 	return v
 }
 
+// CreateInitialLinkBody requests a link created atomically with a new issue.
 type CreateInitialLinkBody struct {
 	Type     string `json:"type"`
 	ToNumber int64  `json:"to_number"`
@@ -198,6 +201,7 @@ type showIssueBody struct {
 	Children []Issue          `json:"children,omitempty"`
 }
 
+// IssueDetail is the hydrated detail payload used by the TUI detail view.
 type IssueDetail struct {
 	Issue    *Issue
 	Parent   *IssueRef

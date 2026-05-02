@@ -1,3 +1,4 @@
+//nolint:revive // api is the public package namespace used throughout the repo.
 package api
 
 import (
