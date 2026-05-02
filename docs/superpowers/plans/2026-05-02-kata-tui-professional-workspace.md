@@ -48,14 +48,15 @@ Create:
 ## Key Design Constraints
 
 - Queue is hierarchical-only. No alternate flat queue toggle.
-- Queue fetches all statuses with a hard v1 cap of 2,000 rows, then filters status/search/owner/labels client-side.
-- Cache key for the queue working set is scope + limit, not rendered filter.
+- Queue fetches all statuses with a 2,001-row probe, trims to a hard v1 cap of 2,000 rendered rows, then filters status/search/owner/labels client-side.
+- Cache key for the queue working set is scope + fetch limit, not rendered filter.
 - Direct child counts only. No recursive progress counts.
 - Detail Children section is rendered only from `show issue`'s `children` field, never from the Links tab.
 - No steady-state N+1 detail fetches for child rows.
 - `space` on a row with no children is a silent no-op.
 - `N` with no visible row selected is a silent no-op, and the footer hides `N new child` in that state.
 - `NO_COLOR` disclosure fallback is `+` collapsed and `-` expanded.
+- Context rows render a leading `~` tree-cell marker in both color and no-color modes; subdued color is additive only.
 
 ## Implementation Notes From Current Code
 
@@ -503,7 +504,7 @@ Links []CreateInitialLinkBody `json:"links,omitempty"`
 
 - [ ] **Step 3.2: Add list limit query support test**
 
-In `internal/tui/client_test.go`, add a test that calls `Client.ListIssues` with a filter/query carrying `Limit: 2000` and asserts the request URL includes `limit=2000` and does not include `status=` when status is empty.
+In `internal/tui/client_test.go`, add a test that calls `Client.ListIssues` with a filter/query carrying `Limit: 2001` and asserts the request URL includes `limit=2001` and does not include `status=` when status is empty.
 
 Run:
 
@@ -551,7 +552,7 @@ type IssueDetail struct {
 func (c *Client) GetIssueDetail(ctx context.Context, projectID, number int64) (*IssueDetail, error)
 ```
 
-Keep `Client.GetIssue` as a compatibility wrapper that calls `GetIssueDetail` and returns only `detail.Issue`. Make `showIssue` decode parent/children and keep labels sorted on both the top issue and child rows.
+Make `showIssue` decode parent/children and keep labels sorted on both the top issue and child rows. Move `detailAPI`, `fetchIssue`, fake detail APIs, and tests to `GetIssueDetail`; then delete the exported `Client.GetIssue` method. `Client.ListComments` and `Client.ListLinks` may keep using the private `showIssue` helper internally, but they are not public wrapper call sites.
 
 Add client test:
 
@@ -587,13 +588,14 @@ In `internal/tui/list.go`:
 
 ```go
 const queueWorkingSetLimit = 2000
+const queueFetchLimit = queueWorkingSetLimit + 1
 
 func queueFetchFilter() ListFilter {
-	return ListFilter{Limit: queueWorkingSetLimit}
+	return ListFilter{Limit: queueFetchLimit}
 }
 ```
 
-In `Model.currentCacheKey`, return scope + `limit: queueWorkingSetLimit`.
+In `Model.currentCacheKey`, return scope + `limit: queueFetchLimit`.
 
 - [ ] **Step 3.7: Make initial/refetch use all-status capped fetch**
 
@@ -634,12 +636,16 @@ Update existing tests:
 
 - [ ] **Step 3.10: Add truncation marker**
 
-Add `truncated bool` to `listModel`. Set it after successful fetch when `len(issues) == queueWorkingSetLimit`.
+Add `truncated bool` to `listModel`. After a successful queue fetch:
+
+1. Set `lm.truncated = len(issues) > queueWorkingSetLimit`.
+2. If truncated, trim `issues = issues[:queueWorkingSetLimit]` before caching/applying them.
+3. If exactly 2,000 rows are returned, `lm.truncated` is false because the 2,001-row sentinel was absent.
 
 Rendering happens in Task 7; in this task add the model state and test:
 
 ```bash
-go test ./internal/tui -run TestList_ApplyFetched_SetsTruncatedAtWorkingSetLimit -count=1
+go test ./internal/tui -run TestList_ApplyFetched_SetsTruncatedAboveWorkingSetLimitAndTrims -count=1
 ```
 
 Expected: PASS.
@@ -748,6 +754,8 @@ seenPath map[issueKey]bool
 ```
 
 If a cycle appears, stop descending.
+
+This is a render-side safety net for a malformed or incomplete working set. The DB one-parent invariant prevents multiple parents, but the renderer should still avoid infinite recursion if bad hierarchy data reaches the TUI.
 
 Run Step 4.4. Expected: PASS.
 
@@ -1148,8 +1156,9 @@ Update list body rendering to use `lm.visibleRows()` instead of `filteredIssues`
 Render:
 
 - disclosure/tree glyph column
+- a fixed context-marker column before disclosure: `~` for context rows, blank otherwise
 - indentation for depth
-- context-row subdued style
+- context-row subdued style, with the `~` marker still present under `NO_COLOR`
 - child-count column
 - no owner/labels in split narrow list if space is tight
 
@@ -1187,7 +1196,7 @@ Inspect goldens for no overlap.
 Add fixtures:
 
 - filter matches child only; parent context visible and subdued
-- context row marked distinctly in `NO_COLOR`
+- context row marked distinctly in `NO_COLOR` with the leading `~` context marker
 
 Run:
 
@@ -1197,7 +1206,7 @@ go test ./internal/tui -run 'TestSnapshot_List_Tree(AutoExpandedMatch|ContextRow
 
 - [ ] **Step 7.6: Add no-color snapshot**
 
-Set `KATA_COLOR_MODE=none` or `NO_COLOR=1` in test and assert `+`/`-` disclosure fallback appears.
+Set `KATA_COLOR_MODE=none` or `NO_COLOR=1` in test and assert `+`/`-` disclosure fallback appears. Include at least one context row in the fixture and assert the `~` marker is still present.
 
 Run:
 
@@ -1353,6 +1362,8 @@ Update `newInputState` for `inputNewIssueForm` from 4 to 5 fields:
 
 Parent field accepts an issue number string. Empty means no parent.
 
+For `N new child`, the Parent field starts prefilled and locked. While locked, typed edits are ignored; backspace/delete/ctrl+u clears the whole Parent value and unlocks the field. Once empty, it behaves like the editable Parent field in `n new issue`.
+
 - [ ] **Step 9.2: Write form normalization tests**
 
 Add tests:
@@ -1394,7 +1405,7 @@ Run Step 9.2. Expected: PASS.
 In list key handling:
 
 - `N` opens `inputNewIssueForm` with mode/title `new child issue`
-- prefill Parent with selected issue number
+- prefill Parent with selected issue number and mark the Parent field locked
 - if no selected visible row, no-op
 - gate all-projects same as `n`
 
@@ -1415,6 +1426,8 @@ Add:
 ```go
 func TestList_NewChild_NoSelectionNoOp(t *testing.T)
 func TestList_NewChild_PrefillsSelectedParent(t *testing.T)
+func TestNewChildForm_ParentPrefillIgnoresEditsUntilCleared(t *testing.T)
+func TestNewChildForm_ParentPrefillBackspaceClearsAndUnlocks(t *testing.T)
 ```
 
 Run:
@@ -1464,11 +1477,22 @@ git commit -m "feat(tui): create child issues from the queue"
 
 - [ ] **Step 10.1: Inspect event payload parsing**
 
-Confirm `eventReceivedMsg` carries `eventType`, `projectID`, `issueNumber`, and payload. If payload is not retained today, add:
+Confirm `eventReceivedMsg` carries `eventType`, `projectID`, `issueNumber`, and a typed link payload for link events. If link payload data is not retained today, add:
 
 ```go
-payload map[string]any
+type linkPayload struct {
+	Type       string `json:"type"`
+	FromNumber int64  `json:"from_number"`
+	ToNumber   int64  `json:"to_number"`
+}
+
+type eventReceivedMsg struct {
+	// existing fields...
+	link *linkPayload
+}
 ```
+
+Decode `link` only for `issue.linked` and `issue.unlinked`; do not carry raw `map[string]any` payloads through consumers.
 
 - [ ] **Step 10.2: Add parser test for parent link event**
 
@@ -1478,7 +1502,7 @@ In `sse_test.go`, parse an `issue.linked` SSE frame with payload:
 {"type":"parent","from_number":43,"to_number":42}
 ```
 
-Assert eventReceivedMsg includes event type and payload type.
+Assert `eventReceivedMsg` includes event type and typed link payload fields.
 
 Run:
 
@@ -1486,11 +1510,11 @@ Run:
 go test ./internal/tui -run TestSSEParser_LinkPayloadType -count=1
 ```
 
-Expected: FAIL if payload is not retained.
+Expected: FAIL if typed link payload data is not decoded.
 
-- [ ] **Step 10.3: Retain event payload**
+- [ ] **Step 10.3: Decode link event payload once**
 
-Update parser/event message as needed. Keep existing tests passing.
+Update parser/event message as needed. Link payload decoding should happen in the SSE parser so model consumers do not repeat type assertions. Keep existing tests passing.
 
 - [ ] **Step 10.4: Add invalidation tests**
 
@@ -1499,7 +1523,7 @@ In `sse_update_test.go`, add:
 ```go
 func TestHandleEventReceived_ParentLinkInvalidatesQueue(t *testing.T)
 func TestHandleEventReceived_ParentLinkRefetchesOpenParentDetail(t *testing.T)
-func TestHandleEventReceived_NonParentLinkDoesNotRefetchHierarchyOnly(t *testing.T)
+func TestHandleEventReceived_NonParentLinkDoesNotRefetchForHierarchy(t *testing.T)
 ```
 
 Expected:
@@ -1569,10 +1593,17 @@ Confirm:
 - new child form centered
 - edit body form centered
 - comment form centered
-- filter form includes Labels axis
 - panel prompts still commit/cancel cleanly
 
 If any comment flow is still inline, convert it here.
+
+For the filter form Labels axis, implement or lock down the full UI behavior here rather than treating it as a visual-only check:
+
+- expose a Labels field in the filter form if it is not already present
+- accept comma-separated labels and normalize with the same label parser used by issue forms
+- apply labels as an any-of client-side filter against hydrated list-row labels
+- ensure clear/reset removes label filters along with status/owner/search
+- add or update form tests and snapshots for applying, resetting, and rendering Labels
 
 - [ ] **Step 11.3: Run snapshot update once**
 
@@ -1640,5 +1671,8 @@ Before executing this plan, verify:
 - [ ] Cache key ignores rendered filter state.
 - [ ] DB helper chunking follows `LabelsByIssues`.
 - [ ] Detail Children uses `show issue.children`.
+- [ ] Queue truncation uses a 2,001-row fetch probe, trims to 2,000 rows, and avoids the exact-boundary false positive.
+- [ ] `Client.GetIssue` is removed after detail call sites move to `GetIssueDetail`; no unused compatibility wrapper remains.
+- [ ] Context rows have a visible `~` marker in `NO_COLOR`, not color-only styling.
 - [ ] `space` on leaf and `N` without selected row are silent no-ops.
 - [ ] Phase 5-style visual work is split across Tasks 7, 8, 9, and 11, not one broad snapshot commit.

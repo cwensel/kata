@@ -96,11 +96,11 @@ Child progress:
 Filtering:
 
 - The queue fetches an all-status working set for the current project and applies status/search/owner/label filters client-side. Status still narrows the rendered rows; it is no longer sent as a server-side query filter from the TUI queue path.
-- The working set is capped at 2,000 rows in v1, ordered by the daemon's existing `updated_at DESC, id DESC` list order. When the cap is hit, the info/footer line must show a truncation notice such as `showing first 2000 issues; refine filters`.
-- Ancestor context is guaranteed only inside the returned working set. If the 2,000-row cap excludes a matched row's ancestor, render the nearest known row normally and keep the truncation notice visible.
+- The queue requests 2,001 rows to enforce an exact 2,000-row rendered cap in v1, ordered by the daemon's existing `updated_at DESC, id DESC` list order. If more than 2,000 rows are returned, the TUI trims to the first 2,000 rows and the info/footer line must show a truncation notice such as `showing first 2000 issues; refine filters`.
+- Ancestor context is guaranteed only inside the returned working set. If the 2,000-row rendered cap excludes a matched row's ancestor, render the nearest known row normally and keep the truncation notice visible.
 - Filtering applies to issue rows, but ancestors of matched children should remain visible as context when the ancestor exists in the working set.
 - If a child matches a search/filter but its parent does not, render the parent as a context row and auto-expand enough to show the match.
-- Context rows should be visually subdued if they do not themselves match.
+- Context rows should be visually subdued if they do not themselves match. They must not rely on color alone: render the tree cell as a two-character cell where the first character is `~` for a context row and a space otherwise, and the second character is the disclosure glyph or blank.
 - `c clear` resets filters, not expansion state.
 - Add a future `z collapse all` or `Z expand matching` only if needed; do not include in the first pass unless implementation proves simple.
 
@@ -221,7 +221,7 @@ Parent
 
 For `n new issue`, Parent is empty by default.
 
-For `N new child`, Parent is prefilled with the selected issue and shown as a fixed field unless the user explicitly clears it. If the current selection is itself a child, this still creates a child under the selected issue, not under the selected issue's parent.
+For `N new child`, Parent is prefilled with the selected issue and shown as a fixed field unless the user explicitly clears it. The prefilled Parent field starts locked: typed edits are ignored while it is non-empty, and backspace/delete/ctrl+u clears the whole value and unlocks the field. If the current selection is itself a child, this still creates a child under the selected issue, not under the selected issue's parent.
 
 The existing daemon create endpoint already supports initial links. The TUI `CreateIssueBody` should grow the client-side equivalent only:
 
@@ -347,6 +347,7 @@ No-color mode:
 - Active tab must still use brackets.
 - Expanded/collapsed state uses Unicode `▸` collapsed and `▾` expanded when color/UTF-8 glyph rendering is enabled.
 - Under `NO_COLOR` / `KATA_COLOR_MODE=none`, the disclosure fallback is `+` for collapsed and `-` for expanded. Do not reuse `>` because it is already the active-row marker.
+- Context rows use the `~` tree-cell marker in both color and no-color modes; color is only an additional subdued style.
 - Focused pane must have textual title/focus indication, not only colored border.
 
 ## Help System
@@ -419,10 +420,10 @@ The redesign is complete when:
 ## Resolved Planning Decisions
 
 - The queue is hierarchical-only in v1; no flat mode.
-- The queue fetches all statuses with a 2,000-row cap and applies status/search/owner/label filters client-side.
+- The queue fetches all statuses with a 2,001-row probe, trims to a 2,000-row cap, and applies status/search/owner/label filters client-side.
 - List rows carry `ParentNumber`; the TUI walks the in-memory parent chain for ancestor context.
 - Detail Children render only from `show issue`'s `Children` field.
 - `N` is no-op with no selected row and is hidden from the footer when not applicable.
-- The new issue form's Parent field is editable for `n`; `N` prefills it with the selected issue and submits a parent initial link unless the user clears the field.
+- The new issue form's Parent field is editable for `n`; `N` prefills it as a locked field and submits a parent initial link unless the user clears it.
 - Children get explicit detail focus, cycled with `tab`/`shift+tab` alongside Comments, Events, and Links.
 - Filtered child matches auto-expand their available ancestor chain.
