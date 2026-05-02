@@ -44,6 +44,14 @@ func newLabelCache() *labelCache {
 	return &labelCache{byProject: map[int64]labelCacheEntry{}}
 }
 
+// labelLister is the subset of *Client the label-cache dispatcher
+// needs. Defining it as an interface (instead of taking *Client
+// directly) lets tests inject a fake without standing up an httptest
+// server — same pattern as listAPI / detailAPI.
+type labelLister interface {
+	ListLabels(ctx context.Context, projectID int64) ([]LabelCount, error)
+}
+
 // dispatchLabelFetch stamps the cache entry for pid with a fresh
 // generation, marks it fetching, and returns the tea.Cmd that issues
 // the underlying HTTP call. The gen is stamped BEFORE the request
@@ -63,7 +71,13 @@ func (m Model) dispatchLabelFetch(pid int64) (Model, tea.Cmd) {
 	entry.fetching = true
 	entry.err = nil
 	m.projectLabels.byProject[pid] = entry
-	return m, fetchLabelsCmd(m.api, pid, gen)
+	// m.api is *Client — convert to labelLister carefully so a typed-
+	// nil pointer doesn't become a non-nil interface inside the cmd.
+	var api labelLister
+	if m.api != nil {
+		api = m.api
+	}
+	return m, fetchLabelsCmd(api, pid, gen)
 }
 
 // fetchLabelsCmd returns a tea.Cmd that calls api.ListLabels and
@@ -71,7 +85,7 @@ func (m Model) dispatchLabelFetch(pid int64) (Model, tea.Cmd) {
 // so the cache reflects the failure rather than spinning forever in
 // fetching=true (matches how the rest of the TUI handles the missing-
 // client path under tests).
-func fetchLabelsCmd(api *Client, pid, gen int64) tea.Cmd {
+func fetchLabelsCmd(api labelLister, pid, gen int64) tea.Cmd {
 	if api == nil {
 		return func() tea.Msg {
 			return labelsFetchedMsg{pid: pid, gen: gen}

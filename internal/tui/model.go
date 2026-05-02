@@ -360,16 +360,18 @@ func isCreateSuccess(mut mutationDoneMsg) bool {
 }
 
 // mutAffectsLabelCounts reports whether a successful mutation could
-// have changed the project's label aggregate. Label add/remove
-// always do; create may include initial labels (commit 4 wires that
-// path; commit 3's create has no labels payload but the kind hits
-// the same branch since downstream commits will need it).
+// have changed the project's label aggregate. Label add/remove are
+// the only commit-3 kinds that touch counts; "create" is deferred to
+// commit 4, which wires the multi-field create form's Labels payload
+// — until then "create" never carries labels, so refetching the
+// project's aggregate after a plain create burns a needless API call
+// against a project the user may never have opened the menu for.
 func mutAffectsLabelCounts(mut mutationDoneMsg) bool {
 	if mut.err != nil {
 		return false
 	}
 	switch mut.kind {
-	case "label.add", "label.remove", "create":
+	case "label.add", "label.remove":
 		return true
 	}
 	return false
@@ -379,6 +381,12 @@ func mutAffectsLabelCounts(mut mutationDoneMsg) bool {
 // project the mutation touched, batching the resulting cmd with any
 // existing cmd from the per-view dispatch. Returns the new model and
 // the combined cmd so the caller can return both atomically.
+//
+// Gated on cache-entry existence: a project the user never opened the
+// suggestion menu for has no entry, so a refetch would be a wasted
+// HTTP roundtrip — same gate as maybeRefetchLabels for SSE events.
+// The first time the user hits `+` against the project, the menu's
+// own dispatch primes the entry; later mutations then refresh it.
 func batchLabelRefresh(
 	next tea.Model, prior tea.Cmd, mut mutationDoneMsg,
 ) (tea.Model, tea.Cmd) {
@@ -388,6 +396,12 @@ func batchLabelRefresh(
 	}
 	pid := projectIDFromMutation(nm, mut)
 	if pid == 0 {
+		return next, prior
+	}
+	if nm.projectLabels == nil {
+		return next, prior
+	}
+	if _, exists := nm.projectLabels.byProject[pid]; !exists {
 		return next, prior
 	}
 	nm, refresh := nm.dispatchLabelFetch(pid)
@@ -1577,12 +1591,8 @@ func (m Model) viewBody() string {
 // pending invalidation flag, the active toast (if any), the
 // build-time version string, and the active input shell. Centralising
 // this keeps the sub-views free of Model coupling.
-//
-// suggestions / suggestEntry are populated when a label prompt is
-// active so the detail layout can reserve the menu's rendered
-// height. Empty otherwise.
 func (m Model) chrome() viewChrome {
-	c := viewChrome{
+	return viewChrome{
 		scope:     m.scope,
 		sseStatus: m.sseStatus,
 		pending:   m.pendingRefetch,
@@ -1590,13 +1600,4 @@ func (m Model) chrome() viewChrome {
 		version:   kataVersion,
 		input:     m.input,
 	}
-	if isLabelPromptKind(m.input.kind) {
-		c.suggestions = filterSuggestions(
-			m.suggestionsForPrompt(m.input),
-			m.activeBuffer(),
-		)
-		c.suggestEntry = m.cacheEntryForPrompt(m.input)
-		c.suggestActive = true
-	}
-	return c
 }

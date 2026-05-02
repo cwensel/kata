@@ -15,15 +15,16 @@ Click the login button twice.
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
 ── activity ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 [ Comments (2) ]  Events (2)  Links (1)
 [alice] 2026-04-30 10:00
   I can repro on macOS.
 
 [bob] 2026-04-30 11:00
-  Looks like a race in oauth.
-
- add label to #42:                                                                              ┌─────────────────────┐ 
- enter commit │ esc cancel                                                                      │(error: daemon 500)  │ 
-                                                                                                └─────────────────────┘
-
+  Looks like a race in oauth.                                                                   ┌─────────────────────┐
+                                                                                                │(error: daemon 500)  │
+                                                                                                └─────────────────────┘ 
+ add label to #42:                                                                                                      
+ enter commit │ esc cancel                                                                                              

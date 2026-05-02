@@ -159,6 +159,82 @@ func TestOverlayAtCorner_PlacesAtAnchor(t *testing.T) {
 	}
 }
 
+// TestSuggestMenu_InfoLineAndFooterStayAtBottom_WhenMenuOpen pins the
+// load-bearing layout invariant: when the suggestion menu is open, the
+// info line MUST sit on row height-2 (carrying the active panel-prompt
+// prefix) and the footer help row MUST sit on row height-1. The menu
+// may occupy rows ABOVE the info line, but it must NEVER overlay or
+// push past either of those bottom rows.
+//
+// This is the test that should have caught Plan-8 commit 3's C1 — the
+// detail layout shrunk the body+tab budget by menuH AND the overlay
+// computed anchorRow against the original height, so info+footer slid
+// up by menuH while the menu was anchored relative to the natural
+// bottom — collision at the info row, entries past the footer.
+func TestSuggestMenu_InfoLineAndFooterStayAtBottom_WhenMenuOpen(t *testing.T) {
+	defer snapshotInit(t)()
+	m := snapLabelPromptModel()
+	m.projectLabels.byProject[7] = labelCacheEntry{
+		pid: 7, gen: 1,
+		labels: []LabelCount{
+			{Label: "alpha", Count: 5},
+			{Label: "beta", Count: 4},
+			{Label: "gamma", Count: 3},
+		},
+	}
+	out := m.View()
+	lines := strings.Split(out, "\n")
+	if len(lines) < m.height {
+		t.Fatalf("View returned %d lines, want >= %d", len(lines), m.height)
+	}
+	infoRow := lines[m.height-2]
+	footerRow := lines[m.height-1]
+	// Info line must carry the active prompt prefix.
+	if !strings.Contains(infoRow, "add label to #42") {
+		t.Fatalf("info-line row (height-2 = %d) lost the prompt prefix.\n"+
+			"got: %q\nfull view:\n%s", m.height-2, infoRow, out)
+	}
+	// Footer must carry the prompt's commit/cancel help.
+	if !strings.Contains(footerRow, "enter") || !strings.Contains(footerRow, "commit") {
+		t.Fatalf("footer row (height-1 = %d) lost the help row.\n"+
+			"got: %q\nfull view:\n%s", m.height-1, footerRow, out)
+	}
+	// Menu border-top character `┌` MUST appear ABOVE the info line.
+	// If the menu top lands on info-row OR below, the layout is wrong.
+	topBorder := -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "┌") {
+			topBorder = i
+			break
+		}
+	}
+	if topBorder < 0 {
+		t.Fatalf("menu top border `┌` not found in view:\n%s", out)
+	}
+	if topBorder >= m.height-2 {
+		t.Fatalf("menu top border landed on row %d (info = %d, footer = %d)"+
+			" — menu must float ABOVE info/footer.\nfull view:\n%s",
+			topBorder, m.height-2, m.height-1, out)
+	}
+	// And the menu's bottom border `└` must be at most one row above
+	// the info line (height-3) — the spec says "menu's bottom row =
+	// info-line row - 1".
+	botBorder := -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "└") {
+			botBorder = i
+		}
+	}
+	if botBorder < 0 {
+		t.Fatalf("menu bottom border `└` not found in view:\n%s", out)
+	}
+	if botBorder != m.height-3 {
+		t.Fatalf("menu bottom border at row %d, want %d "+
+			"(one row above info line at %d).\nfull view:\n%s",
+			botBorder, m.height-3, m.height-2, out)
+	}
+}
+
 // TestSuggestMenuHeight_CountsBordersAndBody: the height includes
 // the top/bottom borders + body rows (max of visible entries vs.
 // placeholder rows).

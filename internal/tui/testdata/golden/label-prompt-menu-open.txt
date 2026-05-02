@@ -12,18 +12,19 @@ Click the login button twice.
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
 ── activity ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 [ Comments (2) ]  Events (2)  Links (1)
-[alice] 2026-04-30 10:00
-  I can repro on macOS.
-
-                                                                                                                        
-                                                                                                                        
- add label to #42:                                                                                     ┌──────────────┐ 
- enter commit │ esc cancel                                                                             │alpha (5)     │ 
+[alice] 2026-04-30 10:00                                                                               ┌──────────────┐
+  I can repro on macOS.                                                                                │alpha (5)     │
                                                                                                        │beta (4)      │
-                                                                                                       │gamma (3)     │
-                                                                                                       │delta (2)     │
+[bob] 2026-04-30 11:00                                                                                 │gamma (3)     │
+  Looks like a race in oauth.                                                                          │delta (2)     │
                                                                                                        │epsilon (1)   │
-                                                                                                       └──────────────┘
-
+                                                                                                       └──────────────┘ 
+ add label to #42:                                                                                                      
+ enter commit │ esc cancel                                                                                              

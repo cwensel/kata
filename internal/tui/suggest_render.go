@@ -166,9 +166,10 @@ func suggestMenuWidth(rows []string, _ bool) int {
 
 // suggestMenuHeight returns the rendered menu height in rows
 // (top border + body rows + bottom border). The body row count is
-// max(visibleEntries, placeholderRows). The detail-view layout
-// subtracts this from the tab/body budget so the menu doesn't lie
-// about the rendered height — see detail_render.go::renderInfoLine.
+// max(visibleEntries, placeholderRows). overlaySuggestMenu uses this
+// to compute the anchor row so the menu's bottom border lands exactly
+// one row above the info line. The body+tab area is NOT shrunk by
+// menuH — the menu overlays tab content; see detail_render.go::View.
 func suggestMenuHeight(s inputState, suggestions []LabelCount, entry labelCacheEntry) int {
 	rows, _ := suggestMenuRows(s, suggestions, entry)
 	body := len(rows)
@@ -176,18 +177,6 @@ func suggestMenuHeight(s inputState, suggestions []LabelCount, entry labelCacheE
 		body = 1
 	}
 	return body + 2 // top + bottom borders
-}
-
-// suggestMenuOverlayHeight is the menu's rendered height when the
-// chrome reports a label prompt is active; zero otherwise. The
-// detail-view layout subtracts this from the tab/body budget so the
-// menu doesn't overlay tab content (the scroll indicator would lie
-// by 2 — the borders — without this).
-func suggestMenuOverlayHeight(c viewChrome) int {
-	if !c.suggestActive {
-		return 0
-	}
-	return suggestMenuHeight(c.input, c.suggestions, c.suggestEntry)
 }
 
 // overlayAtCorner splices a panel onto bg at (anchorRow, anchorCol).

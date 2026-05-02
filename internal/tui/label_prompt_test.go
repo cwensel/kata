@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -160,32 +161,52 @@ func TestLabelPrompt_EscClosesPromptAndMenu(t *testing.T) {
 	}
 }
 
-// TestSuggestMenu_HeightSubtractedFromTabBudget: when the menu is
-// open, the detail-view layout reduces tabA by the menu's rendered
-// height. Test against renderInfoLine's indicator — with the menu
-// occupying 5 rows, the tab budget shrinks and the indicator math
-// reflects the smaller window.
-func TestSuggestMenu_HeightSubtractedFromTabBudget(t *testing.T) {
+// TestSuggestMenu_BodyKeepsFullHeight_AndChromeStaysAtBottom: when
+// the menu is open, the detail body+tab area MUST keep its full
+// vertical budget (no menuH subtraction). The menu OVERLAYS tab
+// content; the info line stays at row height-2 and the footer at
+// row height-1. Tightened from the prior "withMenu != noMenu" check
+// (which only proved input.kind swapped the footer text) to assert
+// the load-bearing layout invariant directly — paired with C1's
+// TestSuggestMenu_InfoLineAndFooterStayAtBottom_WhenMenuOpen, which
+// pins the same shape at the full Model.View() level.
+func TestSuggestMenu_BodyKeepsFullHeight_AndChromeStaysAtBottom(t *testing.T) {
 	defer snapshotInit(t)()
 	m := labelPromptFixture()
 	dm := m.detail
-	// Add comments so the tab is non-empty (otherwise no indicator).
 	dm.comments = []CommentEntry{
 		{ID: 1, Author: "a", Body: "x"},
 		{ID: 2, Author: "b", Body: "y"},
 		{ID: 3, Author: "c", Body: "z"},
 	}
 	dm.activeTab = tabComments
-	chrome := m.chrome()
-	// Without the menu: tabA at height 30 → 9 reserved → ~21 slack →
-	// 14 body + 7 tab. With menu: subtract menuH from slack.
-	withMenu := dm.View(120, 30, chrome)
-	noMenu := dm.View(120, 30, viewChrome{})
-	// The menu present means fewer tab rows; verify the rendered
-	// view differs (the menu overlay isn't in this string but the
-	// reservation reduces tabA, so renderInfoLine's chunk window
-	// changes).
-	if withMenu == noMenu {
-		t.Fatalf("layout did not differ with vs. without label prompt menu")
+	const h = 30
+	withMenu := dm.View(120, h, m.chrome())
+	noMenu := dm.View(120, h, viewChrome{})
+	withLines := strings.Split(withMenu, "\n")
+	noLines := strings.Split(noMenu, "\n")
+	if len(withLines) != h || len(noLines) != h {
+		t.Fatalf("dm.View row counts: withMenu=%d, noMenu=%d, want %d each",
+			len(withLines), len(noLines), h)
 	}
+	// The activity rule must land at the same row in both renders —
+	// the body+tab budget MUST not change when the menu is active.
+	withRule := indexOf(withLines, "── activity")
+	noRule := indexOf(noLines, "── activity")
+	if withRule != noRule || withRule < 0 {
+		t.Fatalf("activity rule moved with menu (withMenu row=%d, "+
+			"noMenu row=%d) — the body must not shrink when menu opens",
+			withRule, noRule)
+	}
+}
+
+// indexOf returns the row index of the first line containing prefix,
+// or -1 when not found.
+func indexOf(lines []string, prefix string) int {
+	for i, ln := range lines {
+		if strings.Contains(ln, prefix) {
+			return i
+		}
+	}
+	return -1
 }

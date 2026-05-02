@@ -15,15 +15,16 @@ Click the login button twice.
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
 ── activity ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 [ Comments (2) ]  Events (2)  Links (1)
 [alice] 2026-04-30 10:00
   I can repro on macOS.
 
 [bob] 2026-04-30 11:00
-  Looks like a race in oauth.
-
- add label to #42:                                                             ┌──────────────────────────────────────┐ 
- enter commit │ esc cancel                                                     │(no labels in project — type to add)  │ 
-                                                                               └──────────────────────────────────────┘
-
+  Looks like a race in oauth.                                                  ┌──────────────────────────────────────┐
+                                                                               │(no labels in project — type to add)  │
+                                                                               └──────────────────────────────────────┘ 
+ add label to #42:                                                                                                      
+ enter commit │ esc cancel                                                                                              

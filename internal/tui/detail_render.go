@@ -51,16 +51,18 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	// No separate "tab rule" — the activity rule above the tab strip
 	// is the only horizontal divider in the activity panel.
 	//
-	// Plan-8: when a label prompt is open, the suggestion menu
-	// floats above the info line. Subtract the actual rendered menu
-	// height so the tab/body budget shrinks by the menu's footprint
-	// — without this the menu overlays the tab content and the
-	// scroll indicator under-counts the visible rows. Use the
-	// rendered height (top border + body rows + bottom border), NOT
-	// just the entry count, so placeholder states (loading/error)
-	// reserve the same vertical footprint.
-	menuH := suggestMenuOverlayHeight(chrome)
-	avail := height - 9 - menuH
+	// Plan-8 commit-3 follow-up: the suggestion menu OVERLAYS tab
+	// content rather than shrinking the body. If the body+tab budget
+	// also shrank by menuH, the info+footer would slide UP by menuH
+	// while overlaySuggestMenu still anchored at height-2-menuH —
+	// the menu's top border collided with the prompt row and entries
+	// extended past the footer. Keeping the body at full height
+	// preserves info on row height-2 and footer on height-1, and the
+	// menu overlay places its bottom border on row height-3 (one
+	// above the info line). The scroll indicator is briefly less
+	// accurate while the menu is open — acceptable: the user is
+	// autocompleting, not paging tab content.
+	avail := height - 9
 	if avail < detailMinSplit {
 		avail = detailMinSplit
 	}
