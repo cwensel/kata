@@ -1,15 +1,19 @@
-# kata
+# kata かた
 
-kata is a local-first issue tracker for AI-assisted software work.
+Small issue tracking for humans and agents working on code.
 
-It gives agents a small, structured place to record tasks, decisions, links,
-comments, and state changes without turning GitHub Issues, markdown plans, or
-chat transcripts into scratch space. The current implementation is a Go CLI
-backed by a local daemon and SQLite database. A human-facing TUI is under active
-development.
+kata is a local-first issue tracker for AI-assisted software work. It gives
+agents a structured place to record tasks, decisions, links, comments, and state
+changes without turning GitHub Issues, markdown plans, or chat transcripts into
+the source of truth.
 
-Status: pre-release. The CLI and daemon are usable, but command contracts and
-the TUI are still being hardened.
+The CLI is built for agents and automation: stable commands, JSON output, and
+predictable failure modes. The TUI is built for people: browse, triage, edit,
+and supervise agent-written work without reading raw JSON. Both talk to the same
+local daemon and SQLite database.
+
+Status: early public preview. The CLI, daemon, and TUI are usable, but command
+contracts and UI details may still change before a stable release.
 
 ## What kata does today
 
@@ -27,6 +31,7 @@ the TUI are still being hardened.
   purge.
 - Exposes JSON output for successful commands so agents can parse results
   reliably.
+- Provides `kata tui` for human review and triage of the same issue ledger.
 
 kata is intentionally small. It is not a project-management suite, a git
 workflow engine, or an agent worker pool. It is a durable task ledger that
@@ -88,6 +93,14 @@ kata show 1
 kata comment 1 --body "Reproduced on macOS."
 kata close 1 --reason done
 ```
+
+Open the TUI for human triage:
+
+```sh
+kata tui
+```
+
+Press `?` inside the TUI for keybindings.
 
 Use `--workspace <path>` when running from outside the project directory:
 
