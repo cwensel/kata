@@ -137,3 +137,23 @@ func TestRenderLabelChips_RenderedTextSanitized(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderLabelChips_NewlineInLabelDoesNotBreakRow pins the
+// defense-in-depth invariant that a label containing a literal newline
+// cannot split a chip across two terminal rows. The chip strip is a
+// single-row context, so the renderer must source chip text through
+// textsafe.Line (which replaces \n with literal "\n") rather than
+// textsafe.Block (which preserves \n for multi-line bodies). The
+// schema bars newlines in labels (SQLite CHECK at 0001_init.sql:103)
+// but the TUI is the wrong layer to depend on that; this test guards
+// the renderer-level invariant directly.
+func TestRenderLabelChips_NewlineInLabelDoesNotBreakRow(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	got := renderLabelChips([]string{"bug\nfoo"}, 80)
+	if strings.ContainsRune(got, '\n') {
+		t.Fatalf("literal newline survived in chip strip: %q", got)
+	}
+	if !strings.Contains(got, `\n`) {
+		t.Fatalf("expected literal escape sequence \\n in rendered chip: %q", got)
+	}
+}

@@ -787,13 +787,18 @@ func renderLabelChips(labels []string, available int) string {
 }
 
 // sanitizeAndSortLabels returns labels with each entry sanitized
-// through textsafe.Block (ANSI / control / Cf stripped) and the slice
-// sorted in ascending byte order. Sort lives here so renderLabelChips
-// stays focused on the packing math.
+// through textsafe.Line (ANSI / control / Cf stripped, plus newlines
+// replaced with literal "\n" and tabs with spaces) and the slice
+// sorted in ascending byte order. Line — not Block — because the chip
+// strip is a single-row context: a label containing a literal \n
+// would split mid-chip across terminal rows and break the fixed-row
+// budget. The schema bars newlines in labels, but the renderer is
+// the wrong layer to depend on that. Sort lives here so
+// renderLabelChips stays focused on the packing math.
 func sanitizeAndSortLabels(labels []string) []string {
 	clean := make([]string, len(labels))
 	for i, l := range labels {
-		clean[i] = textsafe.Block(l)
+		clean[i] = textsafe.Line(l)
 	}
 	sort.Strings(clean)
 	return clean
