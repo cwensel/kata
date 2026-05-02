@@ -61,3 +61,25 @@ func TestSearch_UnquotedMultiTerm(t *testing.T) {
 	assert.Contains(t, buf.String(), "fix login crash on Safari")
 	assert.NotContains(t, buf.String(), "unrelated issue")
 }
+
+// TestSearch_RejectsNonPositiveLimit covers hammer-test #5: --limit
+// 0/-1 used to be silently treated as "no limit" because
+// buildSearchURL only set the param when limit > 0. Now mirrors
+// list/ready/events/daemon-logs validation.
+func TestSearch_RejectsNonPositiveLimit(t *testing.T) {
+	for _, lim := range []string{"0", "-1"} {
+		resetFlags(t)
+		cmd := newRootCmd()
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs([]string{"search", "x", "--limit", lim})
+		cmd.SetContext(context.Background())
+
+		err := cmd.Execute()
+		require.Errorf(t, err, "--limit %s should reject", lim)
+		var ce *cliError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ExitValidation, ce.ExitCode)
+	}
+}

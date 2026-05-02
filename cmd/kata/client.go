@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/daemonclient"
 )
 
@@ -14,6 +15,31 @@ import (
 // daemonclient.BaseURLKey{} on the context.
 func ensureDaemon(ctx context.Context) (string, error) {
 	return daemonclient.EnsureRunning(ctx)
+}
+
+// discoverDaemon returns the live daemon URL without auto-starting one.
+// Used by health probes and any other surface where "no daemon running"
+// is a meaningful answer rather than a state to paper over. Honors the
+// BaseURLKey context shortcut so tests can still inject. Returns a
+// kindDaemonUnavail cliError when no live daemon is found, matching
+// hammer-test finding #1's expectation that `kata health` doesn't lie
+// about the daemon's actual state.
+func discoverDaemon(ctx context.Context) (string, error) {
+	if v, ok := ctx.Value(daemonclient.BaseURLKey{}).(string); ok && v != "" {
+		return v, nil
+	}
+	ns, err := daemon.NewNamespace()
+	if err != nil {
+		return "", err
+	}
+	if url, ok := daemonclient.Discover(ctx, ns.DataDir); ok {
+		return url, nil
+	}
+	return "", &cliError{
+		Message:  "no daemon running (start one with `kata daemon start`)",
+		Kind:     kindDaemonUnavail,
+		ExitCode: ExitDaemonUnavail,
+	}
 }
 
 // httpClientFor returns an *http.Client whose transport understands the

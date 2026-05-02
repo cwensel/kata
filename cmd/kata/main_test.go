@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/testenv"
 )
 
 func TestRoot_HelpListsUniversalFlags(t *testing.T) {
@@ -217,4 +219,59 @@ func TestKindForStatus(t *testing.T) {
 	assert.Equal(t, kindConflict, kindForStatus(409))
 	assert.Equal(t, kindConfirm, kindForStatus(412))
 	assert.Equal(t, kindInternal, kindForStatus(500))
+}
+
+// TestHealth_DoesNotAutoStartDaemon covers hammer-test finding #1:
+// `kata health` used to call ensureDaemon, which auto-starts a
+// daemon if none is running. A health probe should report the
+// system's actual state, not paper over it. After the fix, health
+// uses discoverDaemon and returns a kindDaemonUnavail cliError when
+// no daemon is found.
+func TestHealth_DoesNotAutoStartDaemon(t *testing.T) {
+	// We can't easily test "no daemon" directly because tests share a
+	// daemon namespace, but we CAN verify the discoverDaemon helper
+	// returns a kindDaemonUnavail cliError when discovery fails. The
+	// caller (health.RunE) propagates the error verbatim, so this
+	// test pins the helper's contract.
+	resetFlags(t)
+	// Empty context (no BaseURLKey) + a fresh KATA_HOME guarantees
+	// no daemon discovery succeeds.
+	t.Setenv("KATA_HOME", t.TempDir())
+	_, err := discoverDaemon(context.Background())
+	require.Error(t, err)
+	var ce *cliError
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, ExitDaemonUnavail, ce.ExitCode)
+	assert.Equal(t, kindDaemonUnavail, ce.Kind)
+	assert.Contains(t, ce.Message, "no daemon running",
+		"hint must point the user at the right action")
+}
+
+// TestList_ShowsOwnerInParens covers hammer-test #10: list and ready
+// used to disagree on what the trailing "(...)" cell meant — list
+// printed Author, ready printed Owner. List now matches ready by
+// printing Owner; unowned issues render as "(unowned)" so the cell
+// is never empty.
+func TestList_ShowsOwnerInParens(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	body := []byte(`{"actor":"x","title":"T","owner":"alice"}`)
+	resp, err := http.Post(env.URL+"/api/v1/projects/"+itoa(pid)+"/issues",
+		"application/json", bytes.NewReader(body)) //nolint:gosec,noctx
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+	_ = resp.Body.Close()
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--workspace", dir, "list"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	out := buf.String()
+	assert.Contains(t, out, "(alice)", "list must show owner in parens")
+	assert.NotContains(t, out, "(x)",
+		"list must not show author in parens (would disagree with ready)")
 }

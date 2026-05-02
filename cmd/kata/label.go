@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/kata/internal/textsafe"
@@ -32,6 +33,9 @@ func labelAddCmd() *cobra.Command {
 				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			label := args[1]
+			if strings.TrimSpace(label) == "" {
+				return &cliError{Message: "label must not be empty", Kind: kindValidation, ExitCode: ExitValidation}
+			}
 			ctx := cmd.Context()
 			start, err := resolveStartPath(flags.Workspace)
 			if err != nil {
@@ -75,6 +79,13 @@ func labelRmCmd() *cobra.Command {
 				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			label := args[1]
+			// Empty label here used to URL-encode to "" and hit
+			// /labels/?actor=... which the daemon answered with a
+			// raw 404 page. Reject client-side so the user gets a
+			// meaningful message — hammer-test finding #8.
+			if strings.TrimSpace(label) == "" {
+				return &cliError{Message: "label must not be empty", Kind: kindValidation, ExitCode: ExitValidation}
+			}
 			ctx := cmd.Context()
 			start, err := resolveStartPath(flags.Workspace)
 			if err != nil {

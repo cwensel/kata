@@ -74,3 +74,52 @@ func TestLabelsList_PrintsCounts(t *testing.T) {
 	assert.Contains(t, out, "bug")
 	assert.Contains(t, out, "1")
 }
+
+// TestLabel_RejectsEmptyLabel covers hammer-test finding #8: label
+// rm 1 "" used to URL-encode to "" and hit /labels/?actor=... which
+// the daemon answered with a raw 404 page. label add 1 "" was already
+// validated in some daemon path but the messaging was inconsistent.
+// Now both reject client-side with a uniform validation message.
+func TestLabel_RejectsEmptyLabel(t *testing.T) {
+	for _, args := range [][]string{
+		{"label", "add", "1", ""},
+		{"label", "rm", "1", "  "},
+	} {
+		resetFlags(t)
+		cmd := newRootCmd()
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs(args)
+		cmd.SetContext(context.Background())
+
+		err := cmd.Execute()
+		require.Errorf(t, err, "args %v should reject", args)
+		var ce *cliError
+		require.ErrorAs(t, err, &ce)
+		assert.Equal(t, ExitValidation, ce.ExitCode)
+		assert.Contains(t, ce.Message, "label must not be empty")
+	}
+}
+
+// TestCreate_RejectsWhitespaceLabel covers the create --label case
+// from hammer #8. Pflag's StringSliceVar drops a literal empty
+// argument (""), but a whitespace-only label like "   " makes it
+// through and used to be silently dropped by the daemon. Reject
+// client-side instead.
+func TestCreate_RejectsWhitespaceLabel(t *testing.T) {
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"create", "title", "--label", "   "})
+	cmd.SetContext(context.Background())
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	var ce *cliError
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, ExitValidation, ce.ExitCode)
+	assert.Contains(t, ce.Message, "label must not be empty")
+}

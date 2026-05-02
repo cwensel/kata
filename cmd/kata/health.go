@@ -16,7 +16,10 @@ func newHealthCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			baseURL, err := ensureDaemon(ctx)
+			// health is a probe — it must report the daemon's actual
+			// state, not auto-start one and report on the spawned
+			// child. Hammer-test finding #1.
+			baseURL, err := discoverDaemon(ctx)
 			if err != nil {
 				return err
 			}

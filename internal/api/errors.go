@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 )
@@ -74,13 +75,65 @@ func (e *APIError) MarshalJSON() ([]byte, error) {
 // Huma emits 422 for request-body validation failures; we normalize that to
 // 400 with code "validation" so the wire contract documented in spec §4.7
 // (no 422 in the status table) holds.
+//
+// Validation errors arrive with a generic message ("validation failed") plus
+// a slice of huma.ErrorDetail entries that carry the per-field details.
+// Without folding the details into the message, both human ("kata: validation
+// failed") and JSON envelope payloads tell the user nothing about what went
+// wrong (hammer-test finding #11). Fold up to ~3 details into the surfaced
+// message in "field: reason" form so close --reason banana, link 3 banana 4,
+// and list --status nonsense surface actionable feedback.
 func InstallErrorFormatter() {
-	huma.NewError = func(status int, message string, _ ...error) huma.StatusError {
+	huma.NewError = func(status int, message string, errs ...error) huma.StatusError {
 		if status == http.StatusUnprocessableEntity {
 			status = http.StatusBadRequest
 		}
-		return &APIError{Status: status, Code: codeForStatus(status), Message: message}
+		return &APIError{
+			Status:  status,
+			Code:    codeForStatus(status),
+			Message: foldDetailsIntoMessage(message, errs),
+		}
 	}
+}
+
+// foldDetailsIntoMessage appends per-error detail to the generic huma
+// validation message. Caps at 3 details so a request with many invalid
+// fields doesn't produce a multi-paragraph error string; an "and N more"
+// suffix replaces the truncated tail.
+func foldDetailsIntoMessage(message string, errs []error) string {
+	if len(errs) == 0 {
+		return message
+	}
+	const maxDetails = 3
+	parts := make([]string, 0, maxDetails)
+	for i, e := range errs {
+		if i == maxDetails {
+			parts = append(parts, fmt.Sprintf("(and %d more)", len(errs)-maxDetails))
+			break
+		}
+		parts = append(parts, formatErrorDetail(e))
+	}
+	return message + ": " + strings.Join(parts, "; ")
+}
+
+// formatErrorDetail extracts a "location: message" pair from an
+// ErrorDetailer when possible; falls back to the error's own string.
+// huma's validator sets Location for body/path/query field violations
+// so the user can tell which field failed.
+func formatErrorDetail(e error) string {
+	if d, ok := e.(huma.ErrorDetailer); ok {
+		det := d.ErrorDetail()
+		if det != nil {
+			loc := strings.TrimPrefix(det.Location, "body.")
+			loc = strings.TrimPrefix(loc, "query.")
+			loc = strings.TrimPrefix(loc, "path.")
+			if loc != "" {
+				return loc + ": " + det.Message
+			}
+			return det.Message
+		}
+	}
+	return e.Error()
 }
 
 func codeForStatus(status int) string {

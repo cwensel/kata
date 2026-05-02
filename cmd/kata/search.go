@@ -31,6 +31,14 @@ func newSearchCmd() *cobra.Command {
 			if strings.TrimSpace(query) == "" {
 				return &cliError{Message: "query must be non-empty", Kind: kindValidation, ExitCode: ExitValidation}
 			}
+			// Mirror list / ready / events validation (hammer-test
+			// finding #5): --limit 0/-1 used to be silently treated
+			// as "no limit" because buildSearchURL only set the param
+			// when limit > 0. Reject with kindValidation so the user
+			// sees what actually happened.
+			if limit <= 0 {
+				return &cliError{Message: "--limit must be a positive integer", Kind: kindValidation, ExitCode: ExitValidation}
+			}
 			ctx := cmd.Context()
 			start, err := resolveStartPath(flags.Workspace)
 			if err != nil {

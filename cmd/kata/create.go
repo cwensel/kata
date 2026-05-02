@@ -79,6 +79,19 @@ func newCreateCmd() *cobra.Command {
 			req["owner"] = owner
 		}
 		if len(labels) > 0 {
+			// Reject blank labels client-side so a typo or accidental
+			// "--label ''" doesn't silently succeed-with-no-label
+			// (hammer-test finding #8). The daemon would just drop
+			// the empty entry on the floor, which is confusing.
+			for _, l := range labels {
+				if strings.TrimSpace(l) == "" {
+					return &cliError{
+						Message:  "--label must not be empty",
+						Kind:     kindValidation,
+						ExitCode: ExitValidation,
+					}
+				}
+			}
 			req["labels"] = labels
 		}
 		var links []map[string]any

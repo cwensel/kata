@@ -61,19 +61,29 @@ func newListCmd() *cobra.Command {
 			}
 			var b struct {
 				Issues []struct {
-					Number int64  `json:"number"`
-					Title  string `json:"title"`
-					Status string `json:"status"`
-					Author string `json:"author"`
+					Number int64   `json:"number"`
+					Title  string  `json:"title"`
+					Status string  `json:"status"`
+					Owner  *string `json:"owner"`
 				} `json:"issues"`
 			}
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
 			}
+			// Show owner in parens to match ready's convention. Owner
+			// is the actionable identity ("who's responsible") whereas
+			// author is historical metadata; mixing the two between
+			// list and ready confused users (hammer-test finding #10).
+			// Unowned issues render as "(unowned)" so the trailing
+			// "(...)" cell is never empty.
 			for _, i := range b.Issues {
+				owner := "unowned"
+				if i.Owner != nil && *i.Owner != "" {
+					owner = *i.Owner
+				}
 				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "#%-4d  %-8s  %s  (%s)\n",
 					i.Number, i.Status,
-					textsafe.Line(i.Title), textsafe.Line(i.Author)); err != nil {
+					textsafe.Line(i.Title), textsafe.Line(owner)); err != nil {
 					return err
 				}
 			}
