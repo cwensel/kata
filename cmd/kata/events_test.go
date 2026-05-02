@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -255,4 +256,70 @@ func TestEvents_TailFollowsResetRequired(t *testing.T) {
 
 	assert.Contains(t, buf.Snapshot(), `"reset_required":true`,
 		"--tail must emit a reset envelope when the daemon sends sync.reset_required")
+}
+
+// TestEvents_TailRejectsOneShotFlags covers hammer-test finding #6:
+// --tail with --limit or --after used to be silently accepted, even
+// though those flags are documented as one-shot mode. --limit 1
+// still streamed indefinitely. Now both reject as kindUsage.
+func TestEvents_TailRejectsOneShotFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"events", "--tail", "--limit", "1"},
+		{"events", "--tail", "--after", "5"},
+	} {
+		resetFlags(t)
+		cmd := newRootCmd()
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs(args)
+		cmd.SetContext(context.Background())
+
+		err := cmd.Execute()
+		require.Errorf(t, err, "args %v should reject", args)
+		var ce *cliError
+		require.True(t, errors.As(err, &ce), "expected *cliError, got %T", err)
+		assert.Equalf(t, ExitUsage, ce.ExitCode, "args %v: wrong exit code", args)
+		assert.Equalf(t, kindUsage, ce.Kind, "args %v: wrong kind", args)
+	}
+}
+
+// TestEvents_OneShotRejectsTailFlag mirrors the symmetric case:
+// --last-event-id is documented as --tail-only, so passing it without
+// --tail should reject loudly instead of being silently ignored.
+func TestEvents_OneShotRejectsTailFlag(t *testing.T) {
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"events", "--last-event-id", "5"})
+	cmd.SetContext(context.Background())
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	var ce *cliError
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, ExitUsage, ce.ExitCode)
+}
+
+// TestEvents_OneShotRejectsNonPositiveLimit: parallel to list/ready,
+// --limit 0/-1 in one-shot mode rejects with kindValidation. Search
+// has the same check after hammer-test #5.
+func TestEvents_OneShotRejectsNonPositiveLimit(t *testing.T) {
+	for _, lim := range []string{"0", "-1"} {
+		resetFlags(t)
+		cmd := newRootCmd()
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs([]string{"events", "--limit", lim})
+		cmd.SetContext(context.Background())
+
+		err := cmd.Execute()
+		require.Errorf(t, err, "--limit %s should reject", lim)
+		var ce *cliError
+		require.True(t, errors.As(err, &ce))
+		assert.Equal(t, ExitValidation, ce.ExitCode)
+	}
 }

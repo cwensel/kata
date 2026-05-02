@@ -39,6 +39,17 @@ func daemonLogsCmd() *cobra.Command {
 			if !hooks {
 				return &cliError{Kind: kindUsage, ExitCode: ExitUsage, Message: "currently only --hooks is supported"}
 			}
+			// hammer-test finding #7: --limit was silently treated as
+			// "no limit" for 0 / -1, contradicting the help text. Reject
+			// non-positive values with a clear validation error. Same
+			// for --hook-index: -1 means "all" (per help), so anything
+			// below -1 is meaningless and should fail loudly.
+			if limit <= 0 {
+				return &cliError{Message: "--limit must be a positive integer", Kind: kindValidation, ExitCode: ExitValidation}
+			}
+			if hookIndex < -1 {
+				return &cliError{Message: "--hook-index must be -1 (all) or a non-negative integer", Kind: kindValidation, ExitCode: ExitValidation}
+			}
 			f := &hookLogFilter{failedOnly: failedOnly, eventType: eventType, hookIndex: hookIndex}
 			if tail {
 				return runHookLogTail(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), limit, f)

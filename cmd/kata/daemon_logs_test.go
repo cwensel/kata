@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/config"
 )
 
@@ -342,4 +345,46 @@ func TestDaemonLogs_Hooks_Tail_PicksUpNewLines(t *testing.T) {
 	if !strings.Contains(out, `"event_id":1`) || !strings.Contains(out, `"event_id":2`) {
 		t.Fatalf("tail should print initial + appended: %q", out)
 	}
+}
+
+// TestDaemonLogs_RejectsNonPositiveLimit covers hammer-test
+// finding #7 part 1: --limit -1 / --limit 0 used to be silently
+// treated as "no limit", contradicting the help text. Reject with
+// kindValidation so the user sees what actually happened.
+func TestDaemonLogs_RejectsNonPositiveLimit(t *testing.T) {
+	for _, lim := range []string{"0", "-1"} {
+		resetFlags(t)
+		cmd := newRootCmd()
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs([]string{"daemon", "logs", "--hooks", "--limit", lim})
+		cmd.SetContext(context.Background())
+
+		err := cmd.Execute()
+		require.Errorf(t, err, "--limit %s should reject", lim)
+		var ce *cliError
+		require.True(t, errors.As(err, &ce))
+		assert.Equal(t, ExitValidation, ce.ExitCode)
+	}
+}
+
+// TestDaemonLogs_RejectsHookIndexBelowMinusOne covers hammer-test
+// finding #7 part 2: --hook-index -2 used to be silently accepted,
+// contradicting the help text where -1 means "all". Anything below
+// -1 is meaningless; reject loudly.
+func TestDaemonLogs_RejectsHookIndexBelowMinusOne(t *testing.T) {
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"daemon", "logs", "--hooks", "--hook-index", "-2"})
+	cmd.SetContext(context.Background())
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	var ce *cliError
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, ExitValidation, ce.ExitCode)
 }

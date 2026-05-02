@@ -39,6 +39,16 @@ until SIGINT/SIGTERM. Reconnects with exponential backoff on disconnect.`,
 				return &cliError{Message: "--all-projects and --project-id are mutually exclusive", Kind: kindUsage, ExitCode: ExitUsage}
 			}
 			if tail {
+				// One-shot-only flags must reject under --tail so users
+				// don't think `--tail --limit 1` will stream just one
+				// event (it streams indefinitely; --limit is poll-only).
+				// hammer-test finding #6.
+				if cmd.Flags().Changed("limit") {
+					return &cliError{Message: "--limit applies only to one-shot mode (drop --tail to use it)", Kind: kindUsage, ExitCode: ExitUsage}
+				}
+				if cmd.Flags().Changed("after") {
+					return &cliError{Message: "--after applies only to one-shot mode (use --last-event-id with --tail)", Kind: kindUsage, ExitCode: ExitUsage}
+				}
 				if lastEventID < 0 {
 					return &cliError{Message: "--last-event-id must be a non-negative integer", Kind: kindUsage, ExitCode: ExitUsage}
 				}
@@ -48,8 +58,14 @@ until SIGINT/SIGTERM. Reconnects with exponential backoff on disconnect.`,
 					LastEventID:  lastEventID,
 				})
 			}
+			if cmd.Flags().Changed("last-event-id") {
+				return &cliError{Message: "--last-event-id applies only to --tail mode (use --after for one-shot)", Kind: kindUsage, ExitCode: ExitUsage}
+			}
 			if afterID < 0 {
 				return &cliError{Message: "--after must be a non-negative integer", Kind: kindUsage, ExitCode: ExitUsage}
+			}
+			if limit <= 0 {
+				return &cliError{Message: "--limit must be a positive integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			return runEventsPoll(cmd, eventsPollOptions{
 				ProjectIDArg: projectIDArg,
