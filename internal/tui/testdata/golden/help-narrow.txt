@@ -13,7 +13,9 @@ pgdown  page down
 g       first
 G       last
 enter   open detail
+space   expand/collapse
 n       new issue (form)
+N       new child
 /       search
 s       cycle status filter
 f       filter (form)

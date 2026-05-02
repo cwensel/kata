@@ -328,6 +328,87 @@ func TestList_Cursor_MovesInFilteredSpace(t *testing.T) {
 	}
 }
 
+func TestList_ExpandCollapse(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+	lm := listModel{
+		issues: []Issue{
+			{ProjectID: 7, Number: 1, ChildCounts: &ChildCounts{Open: 1, Total: 1}},
+			{ProjectID: 7, Number: 2, ParentNumber: int64Ptr(1)},
+		},
+	}
+
+	lm, cmd := lm.Update(tea.KeyMsg{Type: tea.KeySpace}, km, api, sc)
+	if cmd != nil {
+		t.Fatalf("space should not dispatch a command, got %T", cmd)
+	}
+	if len(lm.visibleRows()) != 2 {
+		t.Fatalf("expanded visible rows = %+v, want parent+child", lm.visibleRows())
+	}
+	lm, _ = lm.Update(tea.KeyMsg{Type: tea.KeySpace}, km, api, sc)
+	if len(lm.visibleRows()) != 1 {
+		t.Fatalf("collapsed visible rows = %+v, want parent only", lm.visibleRows())
+	}
+}
+
+func TestList_ExpandCollapse_LeafNoOp(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+	lm := listModel{issues: []Issue{{ProjectID: 7, Number: 1}}}
+
+	next, cmd := lm.Update(tea.KeyMsg{Type: tea.KeySpace}, km, api, sc)
+	if cmd != nil {
+		t.Fatalf("space on leaf should not dispatch a command, got %T", cmd)
+	}
+	if len(next.expanded) != 0 {
+		t.Fatalf("expanded = %+v, want empty on leaf", next.expanded)
+	}
+}
+
+func TestList_SelectionPreservedAcrossRefetchWithParentInsertion(t *testing.T) {
+	parentNumber := int64(1)
+	lm := listModel{
+		issues:            []Issue{{ProjectID: 7, Number: 2, Title: "child"}},
+		selectedNumber:    2,
+		selectedProjectID: 7,
+	}
+
+	lm = lm.applyFetched(refetchedMsg{issues: []Issue{
+		{ProjectID: 7, Number: 1, Title: "parent", ChildCounts: &ChildCounts{Open: 1, Total: 1}},
+		{ProjectID: 7, Number: 2, Title: "child", ParentNumber: &parentNumber},
+	}})
+	iss, ok := lm.targetRow()
+	if !ok || iss.Number != 2 {
+		t.Fatalf("targetRow = (%+v, %v), want selected child #2", iss, ok)
+	}
+	if !lm.expanded[issueKey{projectID: 7, number: 1}] {
+		t.Fatalf("parent was not auto-expanded: %+v", lm.expanded)
+	}
+}
+
+func TestList_SelectionClampsWhenFilterHidesSelectedChild(t *testing.T) {
+	lm := listModel{
+		filter:            ListFilter{Status: "closed"},
+		cursor:            1,
+		selectedNumber:    2,
+		selectedProjectID: 7,
+	}
+
+	lm = lm.applyFetched(refetchedMsg{issues: []Issue{
+		{ProjectID: 7, Number: 1, Status: "closed", Title: "visible"},
+		{ProjectID: 7, Number: 2, Status: "open", Title: "hidden"},
+	}})
+	iss, ok := lm.targetRow()
+	if !ok || iss.Number != 1 {
+		t.Fatalf("targetRow = (%+v, %v), want fallback visible #1", iss, ok)
+	}
+	if lm.selectedNumber != 1 {
+		t.Fatalf("selectedNumber = %d, want 1 after clamp", lm.selectedNumber)
+	}
+}
+
 // TestList_NewIssue_AllProjectsModeIsNoOp: in cross-project view there
 // is no projectID to create against, so 'n' should not open the prompt
 // and should leave a status hint.

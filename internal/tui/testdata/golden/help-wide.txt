@@ -8,12 +8,14 @@ R         scope toggle (gated)pgup    page up            enter          jump to 
                               g       first              e              edit body               
                               G       last               c              new comment             
                               enter   open detail        p              set parent              
-                              n       new issue (form)   b              add blocker             
-                              /       search             L              add link                
-                              s       cycle status filter+              add label               
-                              f       filter (form)      -              remove label            
-                              c       clear filters      a              assign owner            
-                              x       close              A              clear owner             
+                              space   expand/collapse    b              add blocker             
+                              n       new issue (form)   L              add link                
+                              N       new child          +              add label               
+                              /       search             -              remove label            
+                              s       cycle status filtera              assign owner            
+                              f       filter (form)      A              clear owner             
+                              c       clear filters                                             
+                              x       close                                                     
                               r       reopen                                                    
 
 press ? to return

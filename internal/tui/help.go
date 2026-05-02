@@ -24,8 +24,8 @@ func helpSections(km keymap) []helpSection {
 		{"Global", []helpRow{r(km.Help), r(km.Quit), r(km.ToggleScope)}},
 		{"List", []helpRow{
 			r(km.Up), r(km.Down), r(km.PageUp), r(km.PageDown), r(km.Home),
-			r(km.End), r(km.Open), r(km.NewIssue), r(km.Search),
-			r(km.FilterStatus), r(km.FilterForm),
+			r(km.End), r(km.Open), r(km.ExpandCollapse), r(km.NewIssue),
+			r(km.NewChild), r(km.Search), r(km.FilterStatus), r(km.FilterForm),
 			r(km.ClearFilters), r(km.Close), r(km.Reopen),
 		}},
 		{"Detail", []helpRow{
@@ -38,7 +38,17 @@ func helpSections(km keymap) []helpSection {
 }
 
 // keyDisplay joins multi-key bindings with '/' (e.g. "q/ctrl+c").
-func keyDisplay(k key) string { return strings.Join(k.Keys, "/") }
+func keyDisplay(k key) string {
+	parts := make([]string, len(k.Keys))
+	for i, binding := range k.Keys {
+		if binding == " " {
+			parts[i] = "space"
+		} else {
+			parts[i] = binding
+		}
+	}
+	return strings.Join(parts, "/")
+}
 
 // reflowHelpRows redistributes helpRow items across rows so the rendered
 // table fits within width. Each cell's visible width is key + space +

@@ -8,7 +8,8 @@ import tea "github.com/charmbracelet/bubbletea"
 type keymap struct {
 	Help, Quit, ToggleScope                        key
 	Up, Down, PageUp, PageDown, Home, End          key
-	Open, NewIssue, Search                         key
+	Open, NewIssue, NewChild, Search               key
+	ExpandCollapse                                 key
 	FilterStatus, FilterForm, ClearFilters         key
 	Close, Reopen                                  key
 	NextTab, PrevTab, JumpRef, Back                key
@@ -27,20 +28,22 @@ type key struct {
 // newKeymap returns the spec §7.3 bindings.
 func newKeymap() keymap {
 	return keymap{
-		Help:         key{Keys: []string{"?"}, Help: "help"},
-		Quit:         key{Keys: []string{"q", "ctrl+c"}, Help: "quit"},
-		ToggleScope:  key{Keys: []string{"R"}, Help: "scope toggle (gated)"},
-		Up:           key{Keys: []string{"k", "up"}, Help: "up"},
-		Down:         key{Keys: []string{"j", "down"}, Help: "down"},
-		PageUp:       key{Keys: []string{"pgup"}, Help: "page up"},
-		PageDown:     key{Keys: []string{"pgdown"}, Help: "page down"},
-		Home:         key{Keys: []string{"g"}, Help: "first"},
-		End:          key{Keys: []string{"G"}, Help: "last"},
-		Open:         key{Keys: []string{"enter"}, Help: "open detail"},
-		NewIssue:     key{Keys: []string{"n"}, Help: "new issue (form)"},
-		Search:       key{Keys: []string{"/"}, Help: "search"},
-		FilterStatus: key{Keys: []string{"s"}, Help: "cycle status filter"},
-		FilterForm:   key{Keys: []string{"f"}, Help: "filter (form)"},
+		Help:           key{Keys: []string{"?"}, Help: "help"},
+		Quit:           key{Keys: []string{"q", "ctrl+c"}, Help: "quit"},
+		ToggleScope:    key{Keys: []string{"R"}, Help: "scope toggle (gated)"},
+		Up:             key{Keys: []string{"k", "up"}, Help: "up"},
+		Down:           key{Keys: []string{"j", "down"}, Help: "down"},
+		PageUp:         key{Keys: []string{"pgup"}, Help: "page up"},
+		PageDown:       key{Keys: []string{"pgdown"}, Help: "page down"},
+		Home:           key{Keys: []string{"g"}, Help: "first"},
+		End:            key{Keys: []string{"G"}, Help: "last"},
+		Open:           key{Keys: []string{"enter"}, Help: "open detail"},
+		NewIssue:       key{Keys: []string{"n"}, Help: "new issue (form)"},
+		NewChild:       key{Keys: []string{"N"}, Help: "new child"},
+		ExpandCollapse: key{Keys: []string{" "}, Help: "expand/collapse"},
+		Search:         key{Keys: []string{"/"}, Help: "search"},
+		FilterStatus:   key{Keys: []string{"s"}, Help: "cycle status filter"},
+		FilterForm:     key{Keys: []string{"f"}, Help: "filter (form)"},
 		// Plan 8 commit 5a: the o key (filter by owner) was subsumed
 		// by the f filter modal. The s/ /c keys stay as cheap paths
 		// for common single-axis gestures (Q6 hybrid).

@@ -41,15 +41,17 @@ type listAPI interface {
 // bar (M3a) covers search/owner; the inline new-issue row (M3.5c)
 // covers `n`. All input flows now live on Model.input.
 type listModel struct {
-	issues         []Issue
-	cursor         int
-	selectedNumber int64
-	filter         ListFilter
-	actor          string
-	status         string
-	err            error
-	loading        bool
-	truncated      bool
+	issues            []Issue
+	cursor            int
+	selectedNumber    int64
+	selectedProjectID int64
+	filter            ListFilter
+	expanded          expansionSet
+	actor             string
+	status            string
+	err               error
+	loading           bool
+	truncated         bool
 }
 
 const queueWorkingSetLimit = 2000
@@ -103,6 +105,9 @@ func (lm listModel) applyNavKey(
 	msg tea.KeyMsg, km keymap, api listAPI, sc scope,
 ) (listModel, tea.Cmd) {
 	if next, ok := lm.applyCursorKey(msg, km); ok {
+		return next, nil
+	}
+	if next, ok := lm.applyExpandKey(msg, km); ok {
 		return next, nil
 	}
 	if next, cmd, ok := lm.applyFilterKey(msg, km, api, sc); ok {
@@ -166,15 +171,27 @@ func (lm listModel) dispatchListReopen(
 // client-side filter that hides rows the cursor still indexes. ok=false
 // when the visible list is empty.
 func (lm listModel) targetRow() (Issue, bool) {
-	rows := filteredIssues(lm.issues, lm.filter)
-	if len(rows) == 0 {
+	row, ok := lm.targetQueueRow()
+	if !ok {
 		return Issue{}, false
+	}
+	return row.issue, true
+}
+
+func (lm listModel) targetQueueRow() (queueRow, bool) {
+	rows := lm.visibleRows()
+	if len(rows) == 0 {
+		return queueRow{}, false
 	}
 	idx := lm.cursor
 	if idx >= len(rows) {
 		idx = len(rows) - 1
 	}
 	return rows[idx], true
+}
+
+func (lm listModel) visibleRows() []queueRow {
+	return buildQueueRows(lm.issues, lm.filter, lm.expanded)
 }
 
 // projectIDForRow picks the right project_id for the row's mutation.
@@ -220,7 +237,7 @@ func (lm listModel) applyOpenKey(
 	if !km.Open.matches(msg) {
 		return lm, nil, false
 	}
-	rows := filteredIssues(lm.issues, lm.filter)
+	rows := lm.visibleRows()
 	if len(rows) == 0 {
 		return lm, nil, true
 	}
@@ -228,7 +245,7 @@ func (lm listModel) applyOpenKey(
 	if idx >= len(rows) {
 		idx = len(rows) - 1
 	}
-	iss := rows[idx]
+	iss := rows[idx].issue
 	return lm, func() tea.Msg { return openDetailMsg{issue: iss} }, true
 }
 
@@ -236,15 +253,13 @@ func (lm listModel) applyOpenKey(
 // the key was consumed. The cursor moves in filtered-space (the slice
 // the user actually sees) so a hidden row preceding the cursor cannot
 // desync the marker from the highlighted row. lm.cursor is therefore
-// an index into filteredIssues(lm.issues, lm.filter), and every render
-// path that needs the unfiltered slice must re-look-up via that
-// helper.
+// an index into lm.visibleRows().
 //
 // Each cursor change also updates lm.selectedNumber so an SSE-driven
 // refetch can put the cursor back on the same issue rather than the
 // same index — see syncSelection.
 func (lm listModel) applyCursorKey(msg tea.KeyMsg, km keymap) (listModel, bool) {
-	rows := filteredIssues(lm.issues, lm.filter)
+	rows := lm.visibleRows()
 	n := len(rows)
 	switch {
 	case km.Up.matches(msg):
@@ -281,6 +296,29 @@ func (lm listModel) applyCursorKey(msg tea.KeyMsg, km keymap) (listModel, bool) 
 	return lm, true
 }
 
+func (lm listModel) applyExpandKey(msg tea.KeyMsg, km keymap) (listModel, bool) {
+	if !km.ExpandCollapse.matches(msg) {
+		return lm, false
+	}
+	return lm.toggleExpanded(), true
+}
+
+func (lm listModel) toggleExpanded() listModel {
+	row, ok := lm.targetQueueRow()
+	if !ok || !row.hasChildren {
+		return lm
+	}
+	if lm.expanded == nil {
+		lm.expanded = expansionSet{}
+	}
+	if lm.expanded[row.key] {
+		delete(lm.expanded, row.key)
+	} else {
+		lm.expanded[row.key] = true
+	}
+	return lm
+}
+
 // pageStepRows is the row delta for pgup/pgdown. We don't have access
 // to the rendered viewport height here, so we use a constant matching
 // roughly half a screen on a typical terminal — large enough to feel
@@ -300,9 +338,10 @@ func pageStep(n int) int {
 // refetch can restore the cursor onto the same issue rather than the
 // same index. Empty filtered list zeroes selectedNumber so we don't
 // pin to a row that no longer exists.
-func (lm listModel) syncSelection(rows []Issue) listModel {
+func (lm listModel) syncSelection(rows []queueRow) listModel {
 	if len(rows) == 0 {
 		lm.selectedNumber = 0
+		lm.selectedProjectID = 0
 		return lm
 	}
 	idx := lm.cursor
@@ -312,7 +351,8 @@ func (lm listModel) syncSelection(rows []Issue) listModel {
 	if idx < 0 {
 		idx = 0
 	}
-	lm.selectedNumber = rows[idx].Number
+	lm.selectedNumber = rows[idx].issue.Number
+	lm.selectedProjectID = rows[idx].issue.ProjectID
 	return lm
 }
 
@@ -387,11 +427,11 @@ func openInputCmd(k inputKind) tea.Cmd {
 }
 
 // clampCursorToFilter recomputes lm.cursor against the visible
-// filtered slice so a live filter change can't leave the cursor past
+// visible row slice so a live filter change can't leave the cursor past
 // the end. Used by Model.applyLiveBarFilter / commitInput / cancelInput
 // when the bar mutates lm.filter on the user's behalf.
 func (lm listModel) clampCursorToFilter() listModel {
-	visible := len(filteredIssues(lm.issues, lm.filter))
+	visible := len(lm.visibleRows())
 	if visible == 0 {
 		lm.cursor = 0
 		return lm
@@ -400,6 +440,45 @@ func (lm listModel) clampCursorToFilter() listModel {
 		lm.cursor = visible - 1
 	}
 	return lm
+}
+
+func (lm listModel) expandAncestorsOfSelection() listModel {
+	if lm.selectedNumber == 0 {
+		return lm
+	}
+	byKey := make(map[issueKey]Issue, len(lm.issues))
+	var selectedKey issueKey
+	for _, iss := range lm.issues {
+		key := issueKey{projectID: iss.ProjectID, number: iss.Number}
+		byKey[key] = iss
+		if iss.Number == lm.selectedNumber &&
+			(lm.selectedProjectID == 0 || iss.ProjectID == lm.selectedProjectID) {
+			selectedKey = key
+		}
+	}
+	if selectedKey.number == 0 {
+		return lm
+	}
+	seen := map[issueKey]bool{selectedKey: true}
+	for key := selectedKey; ; {
+		iss := byKey[key]
+		if iss.ParentNumber == nil {
+			return lm
+		}
+		parentKey := issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}
+		if seen[parentKey] {
+			return lm
+		}
+		if _, ok := byKey[parentKey]; !ok {
+			return lm
+		}
+		if lm.expanded == nil {
+			lm.expanded = expansionSet{}
+		}
+		lm.expanded[parentKey] = true
+		seen[parentKey] = true
+		key = parentKey
+	}
 }
 
 // nextStatus cycles "" → "open" → "closed" → "".
@@ -438,15 +517,18 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 			lm.issues, lm.truncated = trimQueueWorkingSet(m.issues)
 		}
 	}
-	rows := filteredIssues(lm.issues, lm.filter)
+	lm = lm.expandAncestorsOfSelection()
+	rows := lm.visibleRows()
 	if len(rows) == 0 {
 		lm.cursor = 0
 		lm.selectedNumber = 0
+		lm.selectedProjectID = 0
 		return lm
 	}
 	if lm.selectedNumber != 0 {
-		for i, iss := range rows {
-			if iss.Number == lm.selectedNumber {
+		for i, row := range rows {
+			if row.issue.Number == lm.selectedNumber &&
+				(lm.selectedProjectID == 0 || row.issue.ProjectID == lm.selectedProjectID) {
 				lm.cursor = i
 				return lm
 			}
@@ -461,7 +543,8 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 	if lm.cursor < 0 {
 		lm.cursor = 0
 	}
-	lm.selectedNumber = rows[lm.cursor].Number
+	lm.selectedNumber = rows[lm.cursor].issue.Number
+	lm.selectedProjectID = rows[lm.cursor].issue.ProjectID
 	return lm
 }
 
@@ -498,6 +581,7 @@ func (lm listModel) applyMutation(
 	// just-created issue can fall off-screen — roborev #113 finding 2.
 	if m.kind == "create" && m.resp != nil && m.resp.Issue != nil {
 		lm.selectedNumber = m.resp.Issue.Number
+		lm.selectedProjectID = projectIDForRow(*m.resp.Issue, sc)
 		lm.cursor = 0
 	}
 	return lm, lm.refetchCmd(api, sc)
