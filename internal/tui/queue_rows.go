@@ -125,6 +125,9 @@ func (s *queueBuildState) appendNode(key issueKey, depth int, lastChild bool, se
 	iss := s.byKey[key]
 	hasChildren := len(s.childrenByParent[key]) > 0
 	isExpanded := s.expanded != nil && s.expanded[key]
+	if s.filterActive && len(s.visibleChildKeys(key, true)) > 0 {
+		isExpanded = true
+	}
 	s.rows = append(s.rows, queueRow{
 		issue:       iss,
 		key:         key,

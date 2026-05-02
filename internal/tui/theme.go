@@ -62,6 +62,8 @@ var (
 	tabInactive   lipgloss.Style
 )
 
+var activeColorMode = colorAuto
+
 // Border colors used by M3+ render code for panel chrome (focused vs
 // unfocused panes, form/prompt boxes). Stored as lipgloss.TerminalColor
 // so callers pass them straight to BorderForeground without re-resolving
@@ -110,6 +112,7 @@ var (
 // actual output stream (not the package-default os.Stdout-bound
 // renderer, which is wrong when opts.Stdout is something else).
 func applyColorMode(m colorMode, w io.Writer) {
+	activeColorMode = m
 	if w == nil {
 		w = os.Stdout
 	}

@@ -132,6 +132,19 @@ func TestDetailViewFooterUsesChildrenFocusHints(t *testing.T) {
 	assertStringContains(t, got, "N child")
 }
 
+func TestRenderFooterBar_DropsLowPriorityHintsBeforeTruncating(t *testing.T) {
+	items := footerHints(footerContext{
+		view: viewList, input: inputNone, hasRows: true, hasChildren: true,
+	})
+	got := stripANSI(renderFooterBar(120, items, 0, 2))
+	if strings.Contains(got, "…") {
+		t.Fatalf("footer should drop low-priority hints before truncating:\n%s", got)
+	}
+	assertStringContains(t, got, "space expand")
+	assertStringContains(t, got, "N child")
+	assertStringContains(t, got, "q quit")
+}
+
 func assertHelpRowPresent(t *testing.T, rows []helpRow, want helpRow) {
 	t.Helper()
 	for _, row := range rows {

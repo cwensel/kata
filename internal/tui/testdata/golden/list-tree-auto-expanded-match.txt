@@ -1,10 +1,10 @@
  Project: kata                                                                                       kata かた · v0.1.0 
- open: 1 · closed: 1 · all: 3                                                                                           
+ open: 4 · closed: 1 · all: 5                                                                      search:"jump target" 
         #     status    title                                                           kids    owner         updated   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-        #1    open      fix login bug on Safari                                                 claude-4.7    3h ago    
-▶       #2    closed    rebuild search index                                                    wesm          1h ago    
-        #3    [deleted] purge stale tokens                                                                    2h ago    
+▶ ~ -   #10   open      professional workspace polish                                   1/2     wesm          30m ago   
+  ~  -  #11   open      detail hint bars incomplete                                     1/1     claude        45m ago   
+        #13   open      child detail jump target                                                              3h ago    
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -19,12 +19,4 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
- ↑↓ move │ ↵ open │ n new │ N child │ / search │ f filter │ s status │ c clear │ x close │ ? help │ q quit        [2/3] 
+ ↑↓ move │ ↵ open │ space expand │ n new │ N child │ / search │ f filter │ c clear │ x close │ ? help │ q quit    [1/3] 

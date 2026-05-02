@@ -213,3 +213,86 @@ func TestRenderLabelChips_NewlineInLabelDoesNotBreakRow(t *testing.T) {
 		t.Fatalf("expected literal escape sequence \\n in rendered chip: %q", got)
 	}
 }
+
+func TestDisclosureGlyph(t *testing.T) {
+	applyColorMode(colorAuto, io.Discard)
+	if got := disclosureGlyph(false, false); got != " " {
+		t.Fatalf("leaf glyph = %q, want blank", got)
+	}
+	if got := disclosureGlyph(true, false); got != "▸" {
+		t.Fatalf("collapsed glyph = %q, want ▸", got)
+	}
+	if got := disclosureGlyph(true, true); got != "▾" {
+		t.Fatalf("expanded glyph = %q, want ▾", got)
+	}
+
+	applyColorMode(colorNone, io.Discard)
+	if got := disclosureGlyph(true, false); got != "+" {
+		t.Fatalf("no-color collapsed glyph = %q, want +", got)
+	}
+	if got := disclosureGlyph(true, true); got != "-" {
+		t.Fatalf("no-color expanded glyph = %q, want -", got)
+	}
+}
+
+func TestRenderListBody_UsesQueueRowsWithDisclosureAndChildCounts(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	parentNum := int64(1)
+	lm := listModel{issues: []Issue{
+		{
+			ProjectID: 7, Number: parentNum, Title: "parent", Status: "open",
+			ChildCounts: &ChildCounts{Open: 1, Total: 2},
+		},
+		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
+	}}
+
+	collapsed := stripANSI(lm.renderBody(100, 6, false))
+	if !strings.Contains(collapsed, "+") {
+		t.Fatalf("collapsed parent missing disclosure glyph:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "1/2") {
+		t.Fatalf("collapsed parent missing child count:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "child") {
+		t.Fatalf("collapsed tree rendered child row:\n%s", collapsed)
+	}
+
+	lm.expanded = expansionSet{{projectID: 7, number: parentNum}: true}
+	expanded := stripANSI(lm.renderBody(100, 6, false))
+	if !strings.Contains(expanded, "-") {
+		t.Fatalf("expanded parent missing disclosure glyph:\n%s", expanded)
+	}
+	if !strings.Contains(expanded, "child") {
+		t.Fatalf("expanded tree missing child row:\n%s", expanded)
+	}
+}
+
+func TestRenderListBody_ContextRowHasVisibleMarkerInNoColor(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	parentNum := int64(1)
+	lm := listModel{
+		issues: []Issue{
+			{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
+			{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child login", Status: "open"},
+		},
+		filter: ListFilter{Search: "login"},
+	}
+
+	got := stripANSI(lm.renderBody(100, 6, false))
+	if !strings.Contains(got, "~") {
+		t.Fatalf("context row missing no-color marker:\n%s", got)
+	}
+	if !strings.Contains(got, "parent") || !strings.Contains(got, "child login") {
+		t.Fatalf("context render missing ancestor or child:\n%s", got)
+	}
+}
+
+func TestRenderListInfoLine_TruncationNotice(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	lm := listModel{truncated: true, issues: []Issue{{Number: 1, Status: "open"}}}
+	got := stripANSI(renderListInfoLine(100, viewChrome{}, lm, 10))
+	want := "showing first 2000 issues; refine filters"
+	if !strings.Contains(got, want) {
+		t.Fatalf("truncation notice missing %q in %q", want, got)
+	}
+}

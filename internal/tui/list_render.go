@@ -66,7 +66,7 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	}
 	title := renderTitleBar(width, chrome.scope, chrome.version)
 	stats := renderStatsLine(width, chrome.scope, lm.issueCounts(), lm.filter)
-	footer := renderFooterBar(width, footerHints(listFooterContext(lm, chrome)), lm.cursor, lm.issues, lm.filter)
+	footer := renderFooterBar(width, footerHints(listFooterContext(lm, chrome)), lm.cursor, len(lm.visibleRows()))
 
 	// Body area: everything between header (lines 1-2) and the
 	// info+footer (last 2 lines). bodyRows is computed first so the
@@ -252,8 +252,10 @@ func renderListInfoLine(width int, chrome viewChrome, lm listModel, dataBudget i
 		body = sseDegradedFlash(chrome.sseStatus)
 	case chrome.toast != nil:
 		body = chrome.toast.text
+	case lm.truncated:
+		body = fmt.Sprintf("showing first %d issues; refine filters", queueWorkingSetLimit)
 	default:
-		visible := filteredIssues(lm.issues, lm.filter)
+		visible := lm.visibleRows()
 		if n := len(visible); n > 0 && dataBudget > 0 && n > dataBudget {
 			start, end := windowBounds(n, lm.cursor, dataBudget)
 			body = rightAlignInside(
@@ -297,11 +299,76 @@ func sseDegradedFlash(state sseConnState) string {
 // joined with ` │ ` (vertical bar with spaces) — msgvault's denser
 // style. A right-aligned position indicator (`[N/M]`) appears when
 // there are issues to count.
-func renderFooterBar(width int, items []helpRow, cursor int, issues []Issue, f ListFilter) string {
+func renderFooterBar(width int, items []helpRow, cursor, totalRows int) string {
+	right := footerPositionIndicator(cursor, totalRows)
+	items = fitFooterItems(items, titleBarInnerWidth(width), right)
 	left := joinHelpItems(items)
-	right := footerPositionIndicator(cursor, issues, f)
 	body := padLeftRightInside(left, right, titleBarInnerWidth(width))
 	return footerBarStyle.Render(body)
+}
+
+func fitFooterItems(items []helpRow, innerWidth int, right string) []helpRow {
+	available := innerWidth
+	if right != "" {
+		available -= runewidth.StringWidth(right) + 1
+	}
+	if available <= 0 {
+		return nil
+	}
+	out := append([]helpRow(nil), items...)
+	for helpRowsWidth(out) > available {
+		idx := footerDropIndex(out)
+		if idx < 0 {
+			idx = fallbackFooterDropIndex(out)
+		}
+		if idx < 0 {
+			break
+		}
+		out = append(out[:idx], out[idx+1:]...)
+	}
+	return out
+}
+
+func footerDropIndex(items []helpRow) int {
+	dropOrder := []helpRow{
+		{key: "s", desc: "status"},
+		{key: "c", desc: "clear"},
+		{key: "x", desc: "close"},
+		{key: "?", desc: "help"},
+		{key: "/", desc: "search"},
+	}
+	for _, drop := range dropOrder {
+		for i, item := range items {
+			if item == drop {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func fallbackFooterDropIndex(items []helpRow) int {
+	if len(items) == 0 {
+		return -1
+	}
+	if items[len(items)-1].key == "q" && len(items) > 1 {
+		return len(items) - 2
+	}
+	return len(items) - 1
+}
+
+func helpRowsWidth(items []helpRow) int {
+	total := 0
+	for i, item := range items {
+		if i > 0 {
+			total += 3 // " │ "
+		}
+		total += runewidth.StringWidth(item.key)
+		if item.desc != "" {
+			total += 1 + runewidth.StringWidth(item.desc)
+		}
+	}
+	return total
 }
 
 // joinHelpItems renders a flat list of helpRow as a `key desc` line
@@ -321,16 +388,15 @@ func joinHelpItems(items []helpRow) string {
 
 // footerPositionIndicator returns the cursor position in the visible
 // list — `[N/M]`. Renders empty when the list is empty.
-func footerPositionIndicator(cursor int, issues []Issue, f ListFilter) string {
-	visible := filteredIssues(issues, f)
-	if len(visible) == 0 {
+func footerPositionIndicator(cursor, totalRows int) string {
+	if totalRows == 0 {
 		return ""
 	}
 	pos := cursor + 1
-	if pos > len(visible) {
-		pos = len(visible)
+	if pos > totalRows {
+		pos = totalRows
 	}
-	return fmt.Sprintf("[%d/%d]", pos, len(visible))
+	return fmt.Sprintf("[%d/%d]", pos, totalRows)
 }
 
 // padLeftRightInside places left text on the left and right text on
@@ -419,21 +485,21 @@ func (lm listModel) issueCounts() issueCounts {
 // redundant in split mode — the detail pane's assignment row carries
 // it on the right of the screen.
 func (lm listModel) renderBody(width, height int, narrow bool) string {
-	issues := filteredIssues(lm.issues, lm.filter)
-	if len(issues) == 0 {
+	queueRows := lm.visibleRows()
+	if len(queueRows) == 0 {
 		hint := "no issues match. press c to clear filters or n to create one."
 		return tableHeaderRow(width, narrow) + "\n" +
 			separatorRuleStyle.Render(strings.Repeat("─", width)) + "\n" +
 			normalRowStyle.Render(padToWidth("  "+hint, width))
 	}
 	displayCursor := lm.cursor
-	if displayCursor >= len(issues) {
-		displayCursor = len(issues) - 1
+	if displayCursor >= len(queueRows) {
+		displayCursor = len(queueRows) - 1
 	}
 	if displayCursor < 0 {
 		displayCursor = 0
 	}
-	visible, vCursor := windowIssues(issues, displayCursor, height)
+	visible, vCursor := windowQueueRows(queueRows, displayCursor, height)
 	cols := listColumnWidths(width, narrow)
 	rows := buildRows(visible, vCursor, cols.title, narrow)
 	headers := listTableHeaders(narrow)
@@ -458,6 +524,9 @@ func (lm listModel) renderBody(width, height int, narrow bool) string {
 			if row >= 0 && row < len(rows) && row == vCursor {
 				return s.Inherit(cursorRowStyle)
 			}
+			if row >= 0 && row < len(visible) && visible[row].context {
+				return s.Inherit(subtleStyle)
+			}
 			if row >= 0 && row%2 == 1 {
 				return s.Inherit(altRowStyle)
 			}
@@ -480,9 +549,9 @@ func (lm listModel) renderBody(width, height int, narrow bool) string {
 // owner; narrow (M6 split-mode list pane) drops owner.
 func listTableHeaders(narrow bool) []string {
 	if narrow {
-		return []string{"", "#", "status", "title", "updated"}
+		return []string{"", "", "", "#", "status", "title", "kids", "updated"}
 	}
-	return []string{"", "#", "status", "title", "owner", "updated"}
+	return []string{"", "", "", "#", "status", "title", "kids", "owner", "updated"}
 }
 
 // tableHeaderRow renders just the column-header line at the given
@@ -505,7 +574,7 @@ func tableHeaderRow(width int, narrow bool) string {
 // they need; the title column flexes to fill the rest of the terminal
 // with a 20-cell floor so titles stay readable on narrow terminals.
 type listColWidths struct {
-	cursor, num, status, title, owner, updated int
+	cursor, context, tree, num, status, title, children, owner, updated int
 }
 
 // byIndex maps a table column index to its width. The narrow flag
@@ -518,12 +587,18 @@ func (c listColWidths) byIndex(col int, narrow bool) int {
 		case 0:
 			return c.cursor
 		case 1:
-			return c.num
+			return c.context
 		case 2:
-			return c.status
+			return c.tree
 		case 3:
-			return c.title
+			return c.num
 		case 4:
+			return c.status
+		case 5:
+			return c.title
+		case 6:
+			return c.children
+		case 7:
 			return c.updated
 		}
 		return 0
@@ -532,14 +607,20 @@ func (c listColWidths) byIndex(col int, narrow bool) int {
 	case 0:
 		return c.cursor
 	case 1:
-		return c.num
+		return c.context
 	case 2:
-		return c.status
+		return c.tree
 	case 3:
-		return c.title
+		return c.num
 	case 4:
-		return c.owner
+		return c.status
 	case 5:
+		return c.title
+	case 6:
+		return c.children
+	case 7:
+		return c.owner
+	case 8:
 		return c.updated
 	}
 	return 0
@@ -554,13 +635,16 @@ func (c listColWidths) byIndex(col int, narrow bool) int {
 // titles readable inside the 68-cell list pane.
 func listColumnWidths(termWidth int, narrow bool) listColWidths {
 	c := listColWidths{
-		cursor:  2,  // "▶" + padding
-		num:     6,  // "#9999"
-		status:  10, // "[deleted]"
-		owner:   14,
-		updated: 10, // "12w ago"
+		cursor:   2,  // "▶" + padding
+		context:  2,  // "~" + padding
+		tree:     4,  // disclosure + shallow indent
+		num:      6,  // "#9999"
+		status:   10, // "[deleted]"
+		children: 8,  // "12/100"
+		owner:    14,
+		updated:  10, // "12w ago"
 	}
-	fixed := c.cursor + c.num + c.status + c.updated
+	fixed := c.cursor + c.context + c.tree + c.num + c.status + c.children + c.updated
 	if !narrow {
 		fixed += c.owner
 	}
@@ -571,17 +655,17 @@ func listColumnWidths(termWidth int, narrow bool) listColWidths {
 	return c
 }
 
-// windowIssues returns the contiguous slice of issues that includes
+// windowQueueRows returns the contiguous slice of queue rows that includes
 // the cursor row and fits within budget. The cursor index in the
 // returned slice (vCursor) is the local position so the table renderer
 // can highlight the right row.
-func windowIssues(issues []Issue, cursor, budget int) ([]Issue, int) {
-	n := len(issues)
+func windowQueueRows(rows []queueRow, cursor, budget int) ([]queueRow, int) {
+	n := len(rows)
 	if n == 0 {
-		return issues, 0
+		return rows, 0
 	}
 	start, end := windowBounds(n, cursor, budget)
-	return issues[start:end], cursor - start
+	return rows[start:end], cursor - start
 }
 
 // windowBounds returns the [start, end) slice indices of the visible
@@ -806,17 +890,21 @@ func joinNonEmpty(parts []string) string {
 //
 // narrow=true (M6 split-mode list pane) drops the owner cell so the
 // row aligns with the five-header table.
-func buildRows(issues []Issue, cursor, titleW int, narrow bool) [][]string {
+func buildRows(queueRows []queueRow, cursor, titleW int, narrow bool) [][]string {
 	if titleW < 20 {
 		titleW = 20
 	}
-	rows := make([][]string, 0, len(issues))
-	for i, iss := range issues {
+	rows := make([][]string, 0, len(queueRows))
+	for i, qr := range queueRows {
+		iss := qr.issue
 		row := []string{
 			selMarker(i == cursor),
+			contextMarker(qr.context),
+			treeCell(qr),
 			fmt.Sprintf("#%d", iss.Number),
 			statusChip(iss),
 			truncate(sanitizeForDisplay(iss.Title), titleW),
+			childCountCell(iss.ChildCounts),
 		}
 		if !narrow {
 			row = append(row, truncate(sanitizeForDisplay(ownerText(iss.Owner)), 12))
@@ -825,6 +913,41 @@ func buildRows(issues []Issue, cursor, titleW int, narrow bool) [][]string {
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func contextMarker(context bool) string {
+	if context {
+		return "~"
+	}
+	return ""
+}
+
+func treeCell(row queueRow) string {
+	indent := strings.Repeat(" ", min(row.depth, 3))
+	return truncate(indent+disclosureGlyph(row.hasChildren, row.expanded), 3)
+}
+
+func disclosureGlyph(hasChildren, expanded bool) string {
+	if !hasChildren {
+		return " "
+	}
+	if activeColorMode == colorNone {
+		if expanded {
+			return "-"
+		}
+		return "+"
+	}
+	if expanded {
+		return "▾"
+	}
+	return "▸"
+}
+
+func childCountCell(counts *ChildCounts) string {
+	if counts == nil || counts.Total == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d/%d", counts.Open, counts.Total)
 }
 
 // selMarker is the per-row arrow glyph; ' ' for unselected so the

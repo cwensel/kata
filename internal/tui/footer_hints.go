@@ -40,7 +40,6 @@ func inputFooterHints(kind inputKind) []helpRow {
 		return []helpRow{
 			{key: "enter", desc: "commit"},
 			{key: "esc", desc: "cancel"},
-			{key: "ctrl+u", desc: "clear"},
 		}
 	case kind == inputFilterForm:
 		return []helpRow{

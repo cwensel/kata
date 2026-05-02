@@ -1,21 +1,23 @@
 kata — keybindings
 
-Global                        List                       Detail                                 
-?         help                k/up    up                 tab            next tab                
-q/ctrl+c  quit                j/down  down               shift+tab      prev tab                
-R         scope toggle (gated)pgup    page up            enter          jump to referenced issue
-                              pgdown  page down          esc/backspace  back                    
-                              g       first              e              edit body               
-                              G       last               c              new comment             
-                              enter   open detail        p              set parent              
-                              space   expand/collapse    b              add blocker             
-                              n       new issue (form)   L              add link                
-                              N       new child          +              add label               
-                              /       search             -              remove label            
-                              s       cycle status filtera              assign owner            
-                              f       filter (form)      A              clear owner             
-                              c       clear filters                                             
-                              x       close                                                     
-                              r       reopen                                                    
+Global                        Detail                                 Forms                       
+?         help                tab            next tab                ctrl+s         save or apply
+q/ctrl+c  quit                shift+tab      prev tab                esc            cancel       
+R         scope toggle (gated)enter          jump to referenced issuetab/shift+tab  change field 
+                              esc/backspace  back                    ctrl+e         open editor  
+Queue                         e              edit body               ctrl+u         clear prompt 
+k/up    up                    c              new comment                                         
+j/down  down                  p              set parent              Filters                     
+pgup    page up               b              add blocker             /       search              
+pgdown  page down             L              add link                s       cycle status filter 
+g       first                 +              add label               f       filter (form)       
+G       last                  -              remove label            c       clear filters       
+enter   open detail           a              assign owner            ctrl+r  reset filter form   
+space   expand/collapse       A              clear owner                                         
+n       new issue (form)                                                                         
+x       close                 Children                                                           
+r       reopen                N      new child                                                   
+                              ↑↓     move child cursor                                           
+                              enter  open child                                                  
 
 press ? to return

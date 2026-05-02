@@ -5,7 +5,7 @@ Global
 q/ctrl+c  quit
 R         scope toggle (gated)
 
-List
+Queue
 k/up    up
 j/down  down
 pgup    page up
@@ -15,11 +15,6 @@ G       last
 enter   open detail
 space   expand/collapse
 n       new issue (form)
-N       new child
-/       search
-s       cycle status filter
-f       filter (form)
-c       clear filters
 x       close
 r       reopen
 
@@ -36,6 +31,25 @@ L              add link
 +              add label
 -              remove label
 a              assign owner
-A              clear owner    
+A              clear owner
+
+Children
+N      new child
+↑↓     move child cursor
+enter  open child
+
+Forms
+ctrl+s         save or apply
+esc            cancel
+tab/shift+tab  change field
+ctrl+e         open editor
+ctrl+u         clear prompt
+
+Filters
+/       search
+s       cycle status filter
+f       filter (form)
+c       clear filters
+ctrl+r  reset filter form    
 
 press ? to return

@@ -107,6 +107,40 @@ func snapListFixture() []Issue {
 	}
 }
 
+func snapTreeFixture() []Issue {
+	parent := int64(10)
+	child := int64(11)
+	return []Issue{
+		{
+			ProjectID: 7, Number: parent, Title: "professional workspace polish",
+			Status: "open", Owner: ptrString("wesm"),
+			UpdatedAt:   snapshotFixedNow.Add(-30 * time.Minute),
+			ChildCounts: &ChildCounts{Open: 1, Total: 2},
+		},
+		{
+			ProjectID: 7, Number: child, ParentNumber: &parent,
+			Title: "detail hint bars incomplete", Status: "open",
+			Owner:       ptrString("claude"),
+			UpdatedAt:   snapshotFixedNow.Add(-45 * time.Minute),
+			ChildCounts: &ChildCounts{Open: 1, Total: 1},
+		},
+		{
+			ProjectID: 7, Number: 12, ParentNumber: &parent,
+			Title: "new issue form parent field", Status: "closed",
+			UpdatedAt: snapshotFixedNow.Add(-2 * time.Hour),
+		},
+		{
+			ProjectID: 7, Number: 13, ParentNumber: &child,
+			Title: "child detail jump target", Status: "open",
+			UpdatedAt: snapshotFixedNow.Add(-3 * time.Hour),
+		},
+		{
+			ProjectID: 7, Number: 20, Title: "standalone queue cleanup",
+			Status: "open", UpdatedAt: snapshotFixedNow.Add(-4 * time.Hour),
+		},
+	}
+}
+
 // snapDetailFixture builds a detailModel with two comments, two events,
 // and one link so each tab snapshot has data to render. All timestamps
 // are absolute so fmtTime produces the same output every run.
@@ -272,6 +306,84 @@ func TestSnapshot_List_WithFilterChips(t *testing.T) {
 	}
 	got := lm.View(120, 30, chrome)
 	assertGolden(t, "list-with-filter-chips", got)
+}
+
+func TestSnapshot_List_TreeCollapsed(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = snapTreeFixture()
+	chrome := viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	got := lm.View(120, 22, chrome)
+	assertGolden(t, "list-tree-collapsed", got)
+}
+
+func TestSnapshot_List_TreeExpanded(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = snapTreeFixture()
+	lm.expanded = expansionSet{{projectID: 7, number: 10}: true}
+	chrome := viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	got := lm.View(120, 22, chrome)
+	assertGolden(t, "list-tree-expanded", got)
+}
+
+func TestSnapshot_List_TreeAutoExpandedMatch(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = snapTreeFixture()
+	lm.filter = ListFilter{Search: "jump target"}
+	chrome := viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	got := lm.View(120, 22, chrome)
+	assertGolden(t, "list-tree-auto-expanded-match", got)
+}
+
+func TestSnapshot_List_TreeContextRow(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = snapTreeFixture()
+	lm.filter = ListFilter{Search: "hint bars"}
+	chrome := viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	got := lm.View(120, 22, chrome)
+	assertGolden(t, "list-tree-context-row", got)
+}
+
+func TestSnapshot_List_TreeNoColor(t *testing.T) {
+	defer snapshotInit(t)()
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = snapTreeFixture()
+	lm.expanded = expansionSet{{projectID: 7, number: 10}: true}
+	lm.filter = ListFilter{Search: "hint bars"}
+	chrome := viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+	got := lm.View(120, 22, chrome)
+	if !strings.Contains(got, "-") || !strings.Contains(got, "~") {
+		t.Fatalf("no-color tree snapshot missing fallback disclosure or context marker:\n%s", got)
+	}
+	assertGolden(t, "list-tree-no-color", got)
 }
 
 // TestSnapshot_Detail_WithLabelPrompt covers the M3b panel-local

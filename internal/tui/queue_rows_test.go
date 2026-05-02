@@ -57,6 +57,9 @@ func TestBuildQueueRows_FilteredChildAutoShowsAncestorContext(t *testing.T) {
 	if rows[1].context {
 		t.Fatal("matching child should not be a context row")
 	}
+	if !rows[0].expanded {
+		t.Fatal("ancestor context row should render as expanded while showing a matched child")
+	}
 }
 
 func TestBuildQueueRows_StatusFilterIsClientSide(t *testing.T) {

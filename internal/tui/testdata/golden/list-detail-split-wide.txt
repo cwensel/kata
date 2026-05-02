@@ -1,10 +1,10 @@
  Project: kata                                                                                                                                  kata かた · dev 
 ┌──────────────────────────────────────────────────────────────────┐┌──────────────────────────────────────────────────────────────────────────────────────────┐
-│  #     status    title                                 updated   ││#42 · open · wesm                                                                         │
+│        #     status    title                   kids    updated   ││#42 · open · wesm                                                                         │
 │──────────────────────────────────────────────────────────────────││Owner: —                                                                       (no labels)│
-│  #1    open      fix login bug on Safari               3h ago    ││fix login bug on Safari                                                                   │
-│▶ #2    closed    rebuild search index                  1h ago    ││── body ──────────────────────────────────────────────────────────────────────────────────│
-│  #3    [deleted] purge stale tokens                    2h ago    ││Reproduces in Safari 17 only.                                                             │
+│        #1    open      fix login bug on Safari         3h ago    ││fix login bug on Safari                                                                   │
+│▶       #2    closed    rebuild search index            1h ago    ││── body ──────────────────────────────────────────────────────────────────────────────────│
+│        #3    [deleted] purge stale tokens              2h ago    ││Reproduces in Safari 17 only.                                                             │
 │                                                                  ││Click the login button twice.                                                             │
 │                                                                  ││                                                                                          │
 │                                                                  ││                                                                                          │
@@ -37,4 +37,4 @@
 │                                                                  ││                                                                                          │
 └──────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────┘
                                                                                                                                                                 
- ↑↓ move │ ↵ open │ n new │ / search │ f filter │ s status │ c clear │ x close │ ? help │ q quit                                                          [2/3] 
+ ↑↓ move │ ↵ open │ n new │ N child │ / search │ f filter │ s status │ c clear │ x close │ ? help │ q quit                                                [2/3] 

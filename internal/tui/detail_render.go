@@ -41,7 +41,7 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	bodyRule := renderLabeledRule("body", width)
 	activityRule := renderLabeledRule("activity", width)
 	tabs := dm.renderTabStrip()
-	footer := renderFooterBar(width, footerHints(detailFooterContext(dm, chrome)), 0, nil, ListFilter{})
+	footer := renderFooterBar(width, footerHints(detailFooterContext(dm, chrome)), 0, 0)
 
 	// Reserve nine fixed rows:
 	//   title bar (1) + meta (1) + assignment (1) + title row (1) +

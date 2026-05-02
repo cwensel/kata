@@ -176,7 +176,7 @@ func renderSplitFooter(width int, m Model) string {
 // color (multi-redundant cue, helpful in colorNone mode).
 func splitFooterRight(m Model) string {
 	if m.focus == focusList {
-		return footerPositionIndicator(m.list.cursor, m.list.issues, m.list.filter)
+		return footerPositionIndicator(m.list.cursor, len(m.list.visibleRows()))
 	}
 	return ""
 }
@@ -238,7 +238,7 @@ func (dm detailModel) ViewSplit(width, height int, _ viewChrome) string {
 // empty. Used by the M6 detail-follows-cursor path to retarget
 // dm.issue immediately as the cursor moves.
 func pickHighlightedIssue(lm listModel) (Issue, bool) {
-	rows := filteredIssues(lm.issues, lm.filter)
+	rows := lm.visibleRows()
 	if len(rows) == 0 {
 		return Issue{}, false
 	}
@@ -249,5 +249,5 @@ func pickHighlightedIssue(lm listModel) (Issue, bool) {
 	if idx < 0 {
 		idx = 0
 	}
-	return rows[idx], true
+	return rows[idx].issue, true
 }
