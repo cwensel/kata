@@ -771,6 +771,25 @@ func (m Model) detailIsActive() bool {
 	return m.view == viewDetail
 }
 
+// detailPaneVisible reports whether the detail pane is currently
+// visible to the user. True for: viewDetail in stacked, OR viewList
+// in split mode (where the detail pane sits next to the list). False
+// for viewHelp / viewEmpty (full-screen overlays that hide both
+// panes) or when the layout doesn't show detail at all.
+//
+// detailIsActive() alone is insufficient: in split mode focus can be
+// focusDetail while m.view == viewHelp or viewEmpty (a full-screen
+// overlay that hides the detail pane). Async messages — most notably
+// jumpDetailMsg — must reject those hidden-view cases so a queued
+// jump can't silently mutate the hidden detail state and dispatch
+// fetches against an issue the user is no longer looking at.
+func (m Model) detailPaneVisible() bool {
+	if m.view != viewList && m.view != viewDetail {
+		return false
+	}
+	return m.detailIsActive()
+}
+
 // listIsActive is the focusList counterpart of detailIsActive. In
 // stacked layout it's m.view == viewList; in split layout it's
 // m.focus == focusList.
@@ -1716,12 +1735,13 @@ func (m Model) handleJumpDetail(msg jumpDetailMsg) (tea.Model, tea.Cmd) {
 	// state and dispatch four fetches against an issue the user is no
 	// longer looking at. Active-pane check first; navStack cap second.
 	//
-	// Use detailIsActive() (not m.view==viewDetail) so the gate is
-	// correct in M6 split layout: scheduleDetailFollow retargets
-	// m.detail.issue synchronously without touching m.view, so after
-	// j/k followed by Tab the user is on focusDetail while m.view is
-	// still viewList. A bare m.view check would silently drop the jump.
-	if !m.detailIsActive() {
+	// Use detailPaneVisible() (not m.view==viewDetail or bare
+	// detailIsActive()) so the gate is correct in M6 split layout AND
+	// rejects full-screen overlays (viewHelp/viewEmpty). detailIsActive()
+	// alone misses the latter: in split mode focus can stay focusDetail
+	// while m.view == viewHelp, which would let a queued jump mutate
+	// the hidden detail state.
+	if !m.detailPaneVisible() {
 		return m, nil
 	}
 	if len(m.detail.navStack) >= detailNavCap {

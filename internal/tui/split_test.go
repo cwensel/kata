@@ -327,6 +327,66 @@ func TestSplit_JumpDetail_SurvivesCursorFollowFocusDetail(t *testing.T) {
 	}
 }
 
+// TestSplit_JumpDetail_DroppedWhenHelpOverlayOpen covers Job 252:
+// when viewHelp is active in split mode (full-screen overlay hides
+// both panes), a queued jumpDetailMsg must NOT silently mutate the
+// hidden detail state. The original M6 fix used detailIsActive() which
+// ignored m.view; this test pins the corrected detailPaneVisible()
+// gate.
+func TestSplit_JumpDetail_DroppedWhenHelpOverlayOpen(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.api = &Client{}
+	// Park focus on detail (the racy state: ? opens help while focus
+	// is still focusDetail). detailIsActive() alone returns true here,
+	// so the bare-helper gate would let the jump through.
+	m.focus = focusDetail
+	m.view = viewHelp
+	priorGen := m.detail.gen
+	if !m.detailIsActive() {
+		t.Fatalf("setup: detailIsActive=false with focusDetail, want true (test would not exercise the gate)")
+	}
+	if m.detailPaneVisible() {
+		t.Fatalf("setup: detailPaneVisible=true with viewHelp, want false")
+	}
+	out, cmd := m.Update(jumpDetailMsg{number: 99})
+	if cmd != nil {
+		t.Fatal("jumpDetailMsg under viewHelp dispatched a cmd — hidden detail state mutated (Job 252 regression)")
+	}
+	nm := out.(Model)
+	if nm.detail.gen != priorGen {
+		t.Errorf("detail.gen advanced from %d to %d under viewHelp — hidden detail state mutated", priorGen, nm.detail.gen)
+	}
+}
+
+// TestSplit_JumpDetail_DroppedWhenEmptyState is the viewEmpty
+// counterpart of TestSplit_JumpDetail_DroppedWhenHelpOverlayOpen
+// (Job 252). viewEmpty (e.g. no project bound) is a full-screen
+// state that hides both panes; a queued jumpDetailMsg must not
+// mutate the hidden detail state.
+func TestSplit_JumpDetail_DroppedWhenEmptyState(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.api = &Client{}
+	m.focus = focusDetail
+	m.view = viewEmpty
+	priorGen := m.detail.gen
+	if !m.detailIsActive() {
+		t.Fatalf("setup: detailIsActive=false with focusDetail, want true (test would not exercise the gate)")
+	}
+	if m.detailPaneVisible() {
+		t.Fatalf("setup: detailPaneVisible=true with viewEmpty, want false")
+	}
+	out, cmd := m.Update(jumpDetailMsg{number: 99})
+	if cmd != nil {
+		t.Fatal("jumpDetailMsg under viewEmpty dispatched a cmd — hidden detail state mutated (Job 252 regression)")
+	}
+	nm := out.(Model)
+	if nm.detail.gen != priorGen {
+		t.Errorf("detail.gen advanced from %d to %d under viewEmpty — hidden detail state mutated", priorGen, nm.detail.gen)
+	}
+}
+
 // TestSplit_ListMutation_LandsOnListWhileFocusDetail covers the
 // cross-focus mutation routing (I2 from M6 review): in split mode
 // with focus=focusDetail, a list-originated mutation must still
