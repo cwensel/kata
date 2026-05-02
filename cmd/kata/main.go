@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -93,14 +95,67 @@ func main() {
 		stop()
 	}()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
-		var cli *cliError
-		if errors.As(err, &cli) {
-			fmt.Fprintln(os.Stderr, "kata:", cli.Message)
-			os.Exit(cli.ExitCode)
-		}
-		fmt.Fprintln(os.Stderr, "kata:", err)
-		os.Exit(exitCodeFor(err, runEEntered))
+		emitError(os.Stderr, err, flags.JSON, runEEntered)
+		os.Exit(exitCodeForErr(err, runEEntered))
 	}
+}
+
+// emitError writes the error to w. When jsonMode is true, the output
+// is a JSON envelope shaped after the daemon's ErrorEnvelope plus a
+// `kind` and `exit_code` for client-side classification — agents can
+// branch on a stable taxonomy without grepping the human message.
+// When jsonMode is false, the human path stays "kata: <message>".
+//
+// The JSON envelope is always emitted to stderr (where the human
+// message also goes) so consumers don't have to reconfigure stream
+// routing per --json. Stdout stays reserved for successful command
+// output, so a partial-success run can emit useful stdout JSON and
+// an error envelope on stderr without the streams being mixed.
+func emitError(w io.Writer, err error, jsonMode bool, runEReached bool) {
+	var cli *cliError
+	if !errors.As(err, &cli) {
+		// Non-cliError: synthesize one so the JSON path has uniform
+		// shape. Kind/code are inferred from exit-code conventions.
+		exit := exitCodeForErr(err, runEReached)
+		cli = &cliError{
+			Message:  err.Error(),
+			Kind:     kindForExit(exit),
+			ExitCode: exit,
+		}
+	}
+	if jsonMode {
+		env := struct {
+			Error struct {
+				Kind     errKind `json:"kind"`
+				Code     string  `json:"code,omitempty"`
+				Message  string  `json:"message"`
+				ExitCode int     `json:"exit_code"`
+			} `json:"error"`
+		}{}
+		env.Error.Kind = cli.Kind
+		env.Error.Code = cli.Code
+		env.Error.Message = cli.Message
+		env.Error.ExitCode = cli.ExitCode
+		bs, mErr := json.Marshal(env)
+		if mErr == nil {
+			_, _ = fmt.Fprintln(w, string(bs))
+			return
+		}
+		// JSON marshal failed (shouldn't happen on a fixed shape) —
+		// fall through to plain text so the user still gets *something*.
+	}
+	_, _ = fmt.Fprintln(w, "kata:", cli.Message)
+}
+
+// exitCodeForErr returns the exit code an error should produce. When
+// err is a *cliError, its ExitCode wins; otherwise exitCodeFor's
+// runE-reached heuristic decides.
+func exitCodeForErr(err error, runEReached bool) int {
+	var cli *cliError
+	if errors.As(err, &cli) {
+		return cli.ExitCode
+	}
+	return exitCodeFor(err, runEReached)
 }
 
 // exitCodeFor maps a non-cliError ExecuteContext error to a CLI exit code

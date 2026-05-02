@@ -20,7 +20,7 @@ func newShowCmd() *cobra.Command {
 			ctx := cmd.Context()
 			n, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			start, err := resolveStartPath(flags.Workspace)
 			if err != nil {

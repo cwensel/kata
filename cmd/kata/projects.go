@@ -76,7 +76,7 @@ func projectsShowCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "project id must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "project id must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			ctx := cmd.Context()
 			baseURL, err := ensureDaemon(ctx)

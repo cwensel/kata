@@ -20,12 +20,12 @@ func newLinkCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			from, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "from must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "from must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			linkType := args[1]
 			to, err := strconv.ParseInt(args[2], 10, 64)
 			if err != nil {
-				return &cliError{Message: "to must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "to must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			return runLinkCreate(cmd, from, linkType, to, false)
 		},
@@ -41,11 +41,11 @@ func newParentCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			child, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "child must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "child must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			parent, err := strconv.ParseInt(args[1], 10, 64)
 			if err != nil {
-				return &cliError{Message: "parent must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "parent must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			return runLinkCreate(cmd, child, "parent", parent, replace)
 		},
@@ -62,12 +62,12 @@ func newUnlinkCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			from, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "from must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "from must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			linkType := args[1]
 			to, err := strconv.ParseInt(args[2], 10, 64)
 			if err != nil {
-				return &cliError{Message: "to must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "to must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			return runUnlinkByEndpoints(cmd, from, linkType, to)
 		},
@@ -82,7 +82,7 @@ func newUnparentCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			child, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "child must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "child must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			return runUnlinkByType(cmd, child, "parent")
 		},
@@ -97,11 +97,11 @@ func newBlockCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			blocker, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "blocker must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "blocker must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			blocked, err := strconv.ParseInt(args[1], 10, 64)
 			if err != nil {
-				return &cliError{Message: "blocked must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "blocked must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			return runLinkCreate(cmd, blocker, "blocks", blocked, false)
 		},
@@ -116,11 +116,11 @@ func newUnblockCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			blocker, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "blocker must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "blocker must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			blocked, err := strconv.ParseInt(args[1], 10, 64)
 			if err != nil {
-				return &cliError{Message: "blocked must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "blocked must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			return runUnlinkByEndpoints(cmd, blocker, "blocks", blocked)
 		},
@@ -135,11 +135,11 @@ func newRelateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "a must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "a must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			b, err := strconv.ParseInt(args[1], 10, 64)
 			if err != nil {
-				return &cliError{Message: "b must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "b must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			from, to := canonicalRelated(a, b)
 			return runLinkCreate(cmd, from, "related", to, false)
@@ -155,11 +155,11 @@ func newUnrelateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "a must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "a must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			b, err := strconv.ParseInt(args[1], 10, 64)
 			if err != nil {
-				return &cliError{Message: "b must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "b must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			from, to := canonicalRelated(a, b)
 			return runUnlinkByEndpoints(cmd, from, "related", to)
@@ -301,7 +301,7 @@ func lookupLink(ctx context.Context, baseURL string, pid, fromNumber int64, link
 		}
 		return l, nil
 	}
-	return linkRow{}, &cliError{Message: "link not found", Code: "link_not_found", ExitCode: ExitNotFound}
+	return linkRow{}, &cliError{Message: "link not found", Code: "link_not_found", Kind: kindNotFound, ExitCode: ExitNotFound}
 }
 
 // linkEndpointsMatch reports whether l matches the (from, to) request. For

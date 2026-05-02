@@ -24,13 +24,13 @@ func newPurgeCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			n, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			if !force {
 				return &cliError{
-					Message:  "purge requires --force; this is irreversible",
-					Code:     "validation",
-					ExitCode: ExitValidation,
+					Message: "purge requires --force; this is irreversible",
+					Code:    "validation",
+					Kind:    kindValidation, ExitCode: ExitValidation,
 				}
 			}
 			expected := fmt.Sprintf("PURGE #%d", n)

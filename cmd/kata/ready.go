@@ -17,7 +17,7 @@ func newReadyCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if limit < 0 {
-				return &cliError{Message: "--limit must be non-negative", ExitCode: ExitValidation}
+				return &cliError{Message: "--limit must be non-negative", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			ctx := cmd.Context()
 			start, err := resolveStartPath(flags.Workspace)

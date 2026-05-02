@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -122,4 +124,97 @@ func resetRunEEntered(t *testing.T) {
 	saved := runEEntered
 	runEEntered = false
 	t.Cleanup(func() { runEEntered = saved })
+}
+
+// TestEmitError_JSONMode_ProducesParseableEnvelope confirms that under
+// --json the error path emits a JSON envelope shaped after the
+// daemon's ErrorEnvelope plus client-side `kind` and `exit_code` fields,
+// instead of "kata: <message>". This is the contract gap that hammer
+// finding #3 flagged.
+func TestEmitError_JSONMode_ProducesParseableEnvelope(t *testing.T) {
+	cli := &cliError{
+		Message:  "issue not found",
+		Code:     "issue_not_found",
+		Kind:     kindNotFound,
+		ExitCode: ExitNotFound,
+	}
+	var buf bytes.Buffer
+	emitError(&buf, cli, true, true)
+	var got struct {
+		Error struct {
+			Kind     string `json:"kind"`
+			Code     string `json:"code"`
+			Message  string `json:"message"`
+			ExitCode int    `json:"exit_code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got),
+		"--json error must be parseable JSON; got %q", buf.String())
+	assert.Equal(t, "not_found", got.Error.Kind)
+	assert.Equal(t, "issue_not_found", got.Error.Code)
+	assert.Equal(t, "issue not found", got.Error.Message)
+	assert.Equal(t, ExitNotFound, got.Error.ExitCode)
+}
+
+// TestEmitError_HumanMode_StillPrintsKataPrefix locks the legacy
+// human path so a future refactor doesn't break scripts grepping
+// stderr for "kata:".
+func TestEmitError_HumanMode_StillPrintsKataPrefix(t *testing.T) {
+	cli := &cliError{
+		Message: "title must not be empty", Kind: kindValidation,
+		ExitCode: ExitValidation,
+	}
+	var buf bytes.Buffer
+	emitError(&buf, cli, false, true)
+	assert.Contains(t, buf.String(), "kata: title must not be empty")
+}
+
+// TestEmitError_NonCliError_SynthesizesEnvelope confirms a plain
+// error (e.g. a network failure that escaped the cliError wrap)
+// still gets a uniform JSON envelope when --json is set, with the
+// kind inferred from the runEReached heuristic.
+func TestEmitError_NonCliError_SynthesizesEnvelope(t *testing.T) {
+	plain := errors.New("connection refused")
+	var buf bytes.Buffer
+	emitError(&buf, plain, true, true) // runEReached=true → ExitInternal/internal
+	var got struct {
+		Error struct {
+			Kind     string `json:"kind"`
+			Message  string `json:"message"`
+			ExitCode int    `json:"exit_code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	assert.Equal(t, "internal", got.Error.Kind)
+	assert.Equal(t, "connection refused", got.Error.Message)
+	assert.Equal(t, ExitInternal, got.Error.ExitCode)
+}
+
+// TestKindForExit pins the exit-code → kind mapping so additions to
+// the exit-code table can't silently drift.
+func TestKindForExit(t *testing.T) {
+	cases := map[int]errKind{
+		ExitOK:            kindInternal, // 0 isn't an error path; defaults
+		ExitInternal:      kindInternal,
+		ExitUsage:         kindUsage,
+		ExitValidation:    kindValidation,
+		ExitNotFound:      kindNotFound,
+		ExitConflict:      kindConflict,
+		ExitConfirm:       kindConfirm,
+		ExitDaemonUnavail: kindDaemonUnavail,
+	}
+	for code, want := range cases {
+		assert.Equalf(t, want, kindForExit(code),
+			"kindForExit(%d) = %q, want %q", code, kindForExit(code), want)
+	}
+}
+
+// TestKindForStatus pins the HTTP-status → kind mapping (used by
+// apiErrFromBody when the daemon returns an error envelope).
+func TestKindForStatus(t *testing.T) {
+	assert.Equal(t, kindValidation, kindForStatus(400))
+	assert.Equal(t, kindNotFound, kindForStatus(404))
+	assert.Equal(t, kindConflict, kindForStatus(409))
+	assert.Equal(t, kindConfirm, kindForStatus(412))
+	assert.Equal(t, kindInternal, kindForStatus(500))
 }

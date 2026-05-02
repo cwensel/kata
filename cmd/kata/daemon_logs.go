@@ -37,7 +37,7 @@ func daemonLogsCmd() *cobra.Command {
 		Short: "read daemon logs (hook runs)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !hooks {
-				return &cliError{ExitCode: ExitUsage, Message: "currently only --hooks is supported"}
+				return &cliError{Kind: kindUsage, ExitCode: ExitUsage, Message: "currently only --hooks is supported"}
 			}
 			f := &hookLogFilter{failedOnly: failedOnly, eventType: eventType, hookIndex: hookIndex}
 			if tail {

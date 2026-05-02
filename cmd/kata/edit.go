@@ -29,7 +29,7 @@ func newEditCmd() *cobra.Command {
 		ctx := cmd.Context()
 		n, err := strconv.ParseInt(args[0], 10, 64)
 		if err != nil {
-			return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+			return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 		}
 		payload := map[string]any{}
 		if cmd.Flags().Changed("title") {
@@ -42,7 +42,7 @@ func newEditCmd() *cobra.Command {
 			payload["owner"] = owner
 		}
 		if len(payload) == 0 {
-			return &cliError{Message: "pass at least one of --title, --body, --owner", ExitCode: ExitValidation}
+			return &cliError{Message: "pass at least one of --title, --body, --owner", Kind: kindValidation, ExitCode: ExitValidation}
 		}
 		actor, _ := resolveActor(flags.As, nil)
 		payload["actor"] = actor

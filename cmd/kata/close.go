@@ -29,7 +29,7 @@ func runAction(cmd *cobra.Command, raw, action string, extra map[string]any) err
 	ctx := cmd.Context()
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+		return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 	}
 	start, err := resolveStartPath(flags.Workspace)
 	if err != nil {

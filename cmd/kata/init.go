@@ -30,13 +30,73 @@ type callInitOpts struct {
 }
 
 // cliError is a structured error that carries an exit code for main().
+//
+// Kind is the coarse classification used by the --json error envelope so
+// scripts can branch on a stable taxonomy instead of grepping the
+// human-readable message. Code is the daemon-supplied per-error tag
+// (e.g. "issue_not_found"); empty when the error originated client-side.
+// Message is the human-readable text. ExitCode is what main() exits with.
 type cliError struct {
 	Message  string
+	Kind     errKind
 	Code     string
 	ExitCode int
 }
 
 func (e *cliError) Error() string { return e.Message }
+
+// errKind is the coarse classification surfaced in the --json error
+// envelope. Maps roughly onto the spec §4.7 exit codes but is named
+// for the kind of failure rather than the numeric exit, so JSON
+// consumers can branch on a stable identifier.
+type errKind string
+
+const (
+	kindUsage         errKind = "usage"
+	kindValidation    errKind = "validation"
+	kindNotFound      errKind = "not_found"
+	kindConflict      errKind = "conflict"
+	kindConfirm       errKind = "confirm"
+	kindDaemonUnavail errKind = "daemon_unavailable"
+	kindInternal      errKind = "internal"
+)
+
+// kindForExit maps an exit code to the conventional errKind. Used when
+// a non-cliError reaches main and we still want to emit a JSON
+// envelope under --json.
+func kindForExit(exit int) errKind {
+	switch exit {
+	case ExitUsage:
+		return kindUsage
+	case ExitValidation:
+		return kindValidation
+	case ExitNotFound:
+		return kindNotFound
+	case ExitConflict:
+		return kindConflict
+	case ExitConfirm:
+		return kindConfirm
+	case ExitDaemonUnavail:
+		return kindDaemonUnavail
+	}
+	return kindInternal
+}
+
+// kindForStatus maps an HTTP status to the conventional errKind. The
+// daemon-supplied error code is reserved for future per-code overrides.
+func kindForStatus(status int) errKind {
+	switch status {
+	case http.StatusBadRequest:
+		return kindValidation
+	case http.StatusNotFound:
+		return kindNotFound
+	case http.StatusConflict:
+		return kindConflict
+	case http.StatusPreconditionFailed:
+		return kindConfirm
+	}
+	return kindInternal
+}
 
 // newInitCmd returns the cobra.Command for `kata init`.
 func newInitCmd() *cobra.Command {
@@ -158,12 +218,14 @@ func apiErrFromBody(status int, bs []byte) *cliError {
 		return &cliError{
 			Message:  errors.New(string(bs)).Error(),
 			Code:     "",
+			Kind:     kindForStatus(status),
 			ExitCode: mapStatusToExit(status, ""),
 		}
 	}
 	return &cliError{
 		Message:  env.Error.Message,
 		Code:     env.Error.Code,
+		Kind:     kindForStatus(status),
 		ExitCode: mapStatusToExit(status, env.Error.Code),
 	}
 }

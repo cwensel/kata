@@ -31,13 +31,13 @@ func newDeleteCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			n, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			if !force {
 				return &cliError{
-					Message:  "deletion requires --force; use `kata restore` to undo if you change your mind",
-					Code:     "validation",
-					ExitCode: ExitValidation,
+					Message: "deletion requires --force; use `kata restore` to undo if you change your mind",
+					Code:    "validation",
+					Kind:    kindValidation, ExitCode: ExitValidation,
 				}
 			}
 			expected := fmt.Sprintf("DELETE #%d", n)
@@ -85,9 +85,9 @@ func resolveConfirm(cmd *cobra.Command, flagVal, expected, prompt string,
 	}
 	if !isTTY(os.Stdin) {
 		return "", &cliError{
-			Message:  "no TTY: pass --confirm \"" + expected + "\" to proceed noninteractively",
-			Code:     "confirm_required",
-			ExitCode: ExitConfirm,
+			Message: "no TTY: pass --confirm \"" + expected + "\" to proceed noninteractively",
+			Code:    "confirm_required",
+			Kind:    kindConfirm, ExitCode: ExitConfirm,
 		}
 	}
 	if _, err := fmt.Fprint(cmd.ErrOrStderr(), prompt); err != nil {
@@ -100,9 +100,9 @@ func resolveConfirm(cmd *cobra.Command, flagVal, expected, prompt string,
 	line = strings.TrimSpace(line)
 	if !match(line, expected) {
 		return "", &cliError{
-			Message:  "confirmation input did not match",
-			Code:     "confirm_mismatch",
-			ExitCode: ExitConfirm,
+			Message: "confirmation input did not match",
+			Code:    "confirm_mismatch",
+			Kind:    kindConfirm, ExitCode: ExitConfirm,
 		}
 	}
 	return expected, nil

@@ -109,21 +109,21 @@ func daemonReloadCmd() *cobra.Command {
 				p, err := os.FindProcess(r.PID)
 				if err != nil {
 					return &cliError{
-						ExitCode: ExitInternal,
-						Message:  fmt.Sprintf("find pid %d: %v", r.PID, err),
+						Kind: kindInternal, ExitCode: ExitInternal,
+						Message: fmt.Sprintf("find pid %d: %v", r.PID, err),
 					}
 				}
 				if err := p.Signal(syscall.SIGHUP); err != nil {
 					return &cliError{
-						ExitCode: ExitInternal,
-						Message:  fmt.Sprintf("signal pid %d: %v", r.PID, err),
+						Kind: kindInternal, ExitCode: ExitInternal,
+						Message: fmt.Sprintf("signal pid %d: %v", r.PID, err),
 					}
 				}
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"reload signal sent to pid=%d (check daemon log for result)\n", r.PID)
 				return nil
 			}
-			return &cliError{ExitCode: ExitUsage, Message: "no daemon running"}
+			return &cliError{Kind: kindUsage, ExitCode: ExitUsage, Message: "no daemon running"}
 		},
 	}
 }

@@ -28,7 +28,7 @@ func newSearchCmd() *cobra.Command {
 			// multi-term query is needless friction.
 			query := strings.Join(args, " ")
 			if strings.TrimSpace(query) == "" {
-				return &cliError{Message: "query must be non-empty", ExitCode: ExitValidation}
+				return &cliError{Message: "query must be non-empty", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			ctx := cmd.Context()
 			start, err := resolveStartPath(flags.Workspace)

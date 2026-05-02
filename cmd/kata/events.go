@@ -36,11 +36,11 @@ With --tail, opens an SSE connection and emits one NDJSON envelope per line
 until SIGINT/SIGTERM. Reconnects with exponential backoff on disconnect.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if allProjects && projectIDArg != 0 {
-				return &cliError{Message: "--all-projects and --project-id are mutually exclusive", ExitCode: ExitUsage}
+				return &cliError{Message: "--all-projects and --project-id are mutually exclusive", Kind: kindUsage, ExitCode: ExitUsage}
 			}
 			if tail {
 				if lastEventID < 0 {
-					return &cliError{Message: "--last-event-id must be a non-negative integer", ExitCode: ExitUsage}
+					return &cliError{Message: "--last-event-id must be a non-negative integer", Kind: kindUsage, ExitCode: ExitUsage}
 				}
 				return runEventsTail(cmd, eventsTailOptions{
 					ProjectIDArg: projectIDArg,
@@ -49,7 +49,7 @@ until SIGINT/SIGTERM. Reconnects with exponential backoff on disconnect.`,
 				})
 			}
 			if afterID < 0 {
-				return &cliError{Message: "--after must be a non-negative integer", ExitCode: ExitUsage}
+				return &cliError{Message: "--after must be a non-negative integer", Kind: kindUsage, ExitCode: ExitUsage}
 			}
 			return runEventsPoll(cmd, eventsPollOptions{
 				ProjectIDArg: projectIDArg,

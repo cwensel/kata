@@ -30,7 +30,7 @@ func newCommentCmd() *cobra.Command {
 		ctx := cmd.Context()
 		n, err := strconv.ParseInt(args[0], 10, 64)
 		if err != nil {
-			return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+			return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 		}
 		body, err := resolveBody(src, cmd.InOrStdin())
 		if err != nil {
@@ -38,10 +38,10 @@ func newCommentCmd() *cobra.Command {
 			if strings.HasPrefix(err.Error(), "must pass exactly one of") {
 				code = ExitUsage
 			}
-			return &cliError{Message: err.Error(), ExitCode: code}
+			return &cliError{Message: err.Error(), Kind: kindForExit(code), ExitCode: code}
 		}
 		if strings.TrimSpace(body) == "" {
-			return &cliError{Message: "comment body is required (--body, --body-file, --body-stdin)", ExitCode: ExitValidation}
+			return &cliError{Message: "comment body is required (--body, --body-file, --body-stdin)", Kind: kindValidation, ExitCode: ExitValidation}
 		}
 		start, err := resolveStartPath(flags.Workspace)
 		if err != nil {

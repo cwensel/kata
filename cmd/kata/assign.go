@@ -35,7 +35,7 @@ func newUnassignCmd() *cobra.Command {
 func runAssign(cmd *cobra.Command, raw, owner string, unassign bool) error {
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+		return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 	}
 	ctx := cmd.Context()
 	start, err := resolveStartPath(flags.Workspace)

@@ -28,7 +28,7 @@ func labelAddCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			n, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			label := args[1]
 			ctx := cmd.Context()
@@ -71,7 +71,7 @@ func labelRmCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			n, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
-				return &cliError{Message: "issue number must be an integer", ExitCode: ExitValidation}
+				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			label := args[1]
 			ctx := cmd.Context()

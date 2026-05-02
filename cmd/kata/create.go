@@ -43,7 +43,7 @@ func newCreateCmd() *cobra.Command {
 
 		title := args[0]
 		if strings.TrimSpace(title) == "" {
-			return &cliError{Message: "title must not be empty", ExitCode: ExitValidation}
+			return &cliError{Message: "title must not be empty", Kind: kindValidation, ExitCode: ExitValidation}
 		}
 
 		ctx := cmd.Context()
@@ -65,7 +65,7 @@ func newCreateCmd() *cobra.Command {
 			if strings.HasPrefix(err.Error(), "must pass exactly one of") {
 				code = ExitUsage
 			}
-			return &cliError{Message: err.Error(), ExitCode: code}
+			return &cliError{Message: err.Error(), Kind: kindForExit(code), ExitCode: code}
 		}
 		actor, _ := resolveActor(flags.As, nil)
 		client, err := httpClientFor(ctx, baseURL)

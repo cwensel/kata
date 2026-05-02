@@ -17,7 +17,7 @@ func newListCmd() *cobra.Command {
 		Short: "list issues in this project",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if limit <= 0 {
-				return &cliError{Message: "--limit must be a positive integer", ExitCode: ExitValidation}
+				return &cliError{Message: "--limit must be a positive integer", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			ctx := cmd.Context()
 			start, err := resolveStartPath(flags.Workspace)
