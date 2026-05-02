@@ -277,6 +277,58 @@ func TestDetail_TabPlaceholder_ErrorRendered(t *testing.T) {
 	}
 }
 
+// TestHandleOpenDetail_DispatchesFetchIssue: opening a detail issue via
+// openDetailMsg must dispatch all four detail fetches (issue + comments
+// + events + links). handleJumpDetail already does this; the open path
+// was missing the issue fetch, so the seeded list-row Issue (no Labels)
+// stuck around until a manual refresh. Asserted at the batch shape so
+// the children aren't actually run against the real *Client.
+func TestHandleOpenDetail_DispatchesFetchIssue(t *testing.T) {
+	m := initialModel(Options{})
+	m.api = NewClient("http://kata.invalid", nil)
+	m.scope = scope{projectID: 7}
+	iss := Issue{ProjectID: 7, Number: 42, Title: "x"}
+	_, cmd := m.Update(openDetailMsg{issue: iss})
+	if cmd == nil {
+		t.Fatal("expected batch cmd from openDetailMsg")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	if got := len(batch); got != 4 {
+		t.Fatalf("expected 4 fetches in open batch (issue + 3 tabs), got %d", got)
+	}
+}
+
+// TestDetailFetch_PopulatesIssueLabelsOnOpen: the show-response carries
+// labels (commit 1: showIssue lifts them onto resp.Issue.Labels), and
+// applyFetched replaces dm.issue wholesale on detailFetchedMsg, so the
+// labels arrive on dm.issue.Labels for the renderer to chip out. This
+// pins the hard invariant: detail opens populate labels via the
+// existing fetchIssue helper without any per-field copy.
+func TestDetailFetch_PopulatesIssueLabelsOnOpen(t *testing.T) {
+	dm := detailModel{
+		gen:   1,
+		issue: &Issue{Number: 42, Title: "seed (no labels)"},
+	}
+	msg := detailFetchedMsg{
+		gen: 1,
+		issue: &Issue{
+			Number: 42,
+			Title:  "fetched",
+			Labels: []string{"bug"},
+		},
+	}
+	out := dm.applyFetched(msg)
+	if out.issue == nil {
+		t.Fatal("dm.issue should not be nil after applyFetched")
+	}
+	if got, want := out.issue.Labels, []string{"bug"}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("dm.issue.Labels = %v, want %v", got, want)
+	}
+}
+
 // TestDetail_OpenDetail_SeedsLoadingFlags: opening detail through the
 // model-level handler seeds all three per-tab loading flags so the
 // initial render shows "(loading…)" until the tab fetches return.

@@ -1100,10 +1100,17 @@ func (m Model) routeModalKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 // handleOpenDetail seeds m.detail with the chosen issue and dispatches
-// the three concurrent tab fetches via tea.Batch. The fetches run in
+// the four concurrent fetches via tea.Batch. The fetches run in
 // parallel so the user sees data on whichever tab is active first. The
 // detail model also remembers the project_id and all-projects flag so
 // the Enter-jump path has them without re-resolving scope.
+//
+// fetchIssue rides alongside the three tab fetches because the list-row
+// Issue seeded above carries no Labels (list rows don't include them
+// today) — without the show-response refresh, the detail header would
+// stay label-less until a manual refetch. handleJumpDetail dispatches
+// the same four-fetch batch; this brings the open-from-list path to
+// parity. Same fetchIssue helper, additional call site.
 //
 // The detail-open generation is allocated from m.nextGen — a Model-
 // level monotonic counter — so it never collides with a previously
@@ -1133,6 +1140,7 @@ func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	}
 	gen := m.detail.gen
 	cmds := []tea.Cmd{
+		fetchIssue(m.api, pid, iss.Number, gen),
 		fetchComments(m.api, pid, iss.Number, gen),
 		fetchEvents(m.api, pid, iss.Number, gen),
 		fetchLinks(m.api, pid, iss.Number, gen),

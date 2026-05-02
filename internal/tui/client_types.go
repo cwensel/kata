@@ -7,9 +7,11 @@ import (
 	"time"
 )
 
-// Issue is a strict subset of the daemon's wire shape: Labels and the
-// deleted bool live elsewhere on the wire (labels come from a separate
-// fetch; deleted is derived from DeletedAt being non-nil).
+// Issue is a strict subset of the daemon's wire shape. Labels rides on
+// list-row decode (the daemon embeds them per row) and on a manual
+// copy from showIssue's body.labels for detail open; the omitempty tag
+// keeps absence on a show response from blanking a previously-populated
+// slice. The deleted bool is derived from DeletedAt being non-nil.
 type Issue struct {
 	ID           int64      `json:"id"`
 	ProjectID    int64      `json:"project_id"`
@@ -24,6 +26,7 @@ type Issue struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 	ClosedAt     *time.Time `json:"closed_at,omitempty"`
 	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
+	Labels       []string   `json:"labels,omitempty"`
 }
 
 // ListFilter is the union of filters used by list views. Only Status is
@@ -155,8 +158,18 @@ func (e *APIError) Error() string {
 }
 
 // showIssueBody mirrors the daemon's GET /issues/{number} envelope.
+// The daemon ships labels as a sibling slice (one IssueLabel per row);
+// showIssueLabel keeps decode tight to the fields the TUI needs.
 type showIssueBody struct {
-	Issue    Issue          `json:"issue"`
-	Comments []CommentEntry `json:"comments"`
-	Links    []LinkEntry    `json:"links"`
+	Issue    Issue            `json:"issue"`
+	Comments []CommentEntry   `json:"comments"`
+	Links    []LinkEntry      `json:"links"`
+	Labels   []showIssueLabel `json:"labels"`
+}
+
+// showIssueLabel is the per-label projection from showIssue's labels
+// slice. The wire shape is db.IssueLabel (issue_id, label, author,
+// created_at) — only label is used for rendering.
+type showIssueLabel struct {
+	Label string `json:"label"`
 }

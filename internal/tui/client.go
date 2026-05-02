@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 )
 
 // Client is the typed adapter the TUI uses to talk to the daemon. Errors
@@ -230,6 +231,19 @@ func (c *Client) showIssue(ctx context.Context, projectID, number int64) (*showI
 	var resp showIssueBody
 	if err := c.do(ctx, http.MethodGet, issuePath(projectID, number), nil, &resp); err != nil {
 		return nil, err
+	}
+	// Lift the sibling labels slice onto resp.Issue.Labels so detail
+	// rendering reads a single field. Sort alphabetically so the wire
+	// order (insertion-order from the daemon) doesn't bleed into the
+	// chip rendering — list-row decode produces sorted labels too,
+	// so the detail and list paths agree.
+	if len(resp.Labels) > 0 {
+		labels := make([]string, len(resp.Labels))
+		for i, lbl := range resp.Labels {
+			labels[i] = lbl.Label
+		}
+		sort.Strings(labels)
+		resp.Issue.Labels = labels
 	}
 	return &resp, nil
 }

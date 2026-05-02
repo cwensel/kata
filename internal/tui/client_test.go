@@ -313,6 +313,45 @@ func TestClient_ListIssues_FilterShape(t *testing.T) {
 	}
 }
 
+// TestShowIssue_PopulatesLabelsFromTopLevel: the daemon ships labels as
+// a sibling slice on the show envelope (one IssueLabel per row, no
+// guaranteed order). showIssue extracts the label names, sorts them
+// alphabetically, and assigns them to resp.Issue.Labels so downstream
+// rendering doesn't have to re-sort. Wire absence (omitempty on the
+// Issue struct) means a show response with no labels leaves a
+// previously-populated Labels slice empty — covered by other tests.
+func TestShowIssue_PopulatesLabelsFromTopLevel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issue":    map[string]any{"number": 42, "title": "fix", "status": "open"},
+			"comments": []any{},
+			"links":    []any{},
+			"labels": []map[string]any{
+				{"issue_id": 1, "label": "prio-1", "author": "a"},
+				{"issue_id": 1, "label": "bug", "author": "a"},
+				{"issue_id": 1, "label": "needs-design", "author": "a"},
+			},
+		})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+	resp, err := c.showIssue(context.Background(), 7, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resp.Issue.Labels
+	want := []string{"bug", "needs-design", "prio-1"}
+	if len(got) != len(want) {
+		t.Fatalf("labels = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("labels[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 // TestAPIError_EmptyBodyFallback covers the 404 with no body case where
 // Code and Message are both blank. Without the fallback, Error() would
 // return ": ".
