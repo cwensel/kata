@@ -219,23 +219,6 @@ func TestSnapshot_List_SearchBarActive(t *testing.T) {
 	assertGolden(t, "list-search-bar-active", got)
 }
 
-// TestSnapshot_List_OwnerBarActive mirrors the search-bar snapshot
-// for the `o` (owner) filter.
-func TestSnapshot_List_OwnerBarActive(t *testing.T) {
-	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapListFixture()
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-		input:     newOwnerBar(ListFilter{Owner: "wesm"}),
-	}
-	got := lm.View(120, 30, chrome)
-	assertGolden(t, "list-owner-bar-active", got)
-}
-
 // TestSnapshot_List_ScrollIndicator covers the scroll-indicator slot
 // in the footer status line. With 50 issues and a 30-row terminal, the
 // chrome reserves enough rows that not every issue fits — the

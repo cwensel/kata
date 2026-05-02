@@ -478,11 +478,14 @@ func (m Model) openInput(kind inputKind) (Model, tea.Cmd) {
 	switch {
 	case kind == inputSearchBar:
 		m.input = newSearchBar(m.list.filter)
-	case kind == inputOwnerBar:
-		m.input = newOwnerBar(m.list.filter)
 	case kind == inputNewIssueForm:
 		m.nextFormGen++
 		s := newNewIssueForm()
+		s.formGen = m.nextFormGen
+		m.input = s
+	case kind == inputFilterForm:
+		m.nextFormGen++
+		s := newFilterForm(m.list.filter)
 		s.formGen = m.nextFormGen
 		m.input = s
 	case kind.isPanelPrompt():
@@ -827,17 +830,16 @@ func (m Model) routeEditorReturn(msg editorReturnedMsg) (Model, tea.Cmd) {
 // applyLiveBarFilter mirrors the active bar's buffer into the
 // corresponding lm.filter slot. Each keystroke re-applies the
 // filter, which then narrows filteredIssues at render time without a
-// network call (Search/Owner are client-side).
+// network call (Search is client-side). Plan 8 commit 5a retired
+// the owner bar; the filter modal's Owner axis takes its place and
+// commits via commitFilterForm rather than per-keystroke.
 func (m Model) applyLiveBarFilter() Model {
 	if m.input.kind == inputNone {
 		return m
 	}
 	v := m.input.activeField().value()
-	switch m.input.kind {
-	case inputSearchBar:
+	if m.input.kind == inputSearchBar {
 		m.list.filter.Search = v
-	case inputOwnerBar:
-		m.list.filter.Owner = v
 	}
 	// Filter changed — clamp the cursor to the new visible-row count
 	// so the highlighted row never falls past the end.
@@ -857,8 +859,20 @@ func (m Model) applyLiveBarFilter() Model {
 // gates: comments require non-empty content; body edits allow empty
 // (clearing a body is legitimate); the new-issue form requires a
 // non-blank Title and normalizes Labels/Owner.
+//
+// Plan 8 commit 5a: the filter form branches BEFORE the
+// isCenteredForm() check. The filter form IS in isCenteredForm() for
+// rendering (overlayModal needs to know to draw it), but its commit
+// is filter-apply-and-refetch, not mutation-dispatch. Without the
+// explicit early branch, ctrl+s on the filter modal would fall into
+// commitFormInput, set saving=true, and wait forever for a
+// mutationDoneMsg that never arrives (no daemon round-trip is in
+// flight). Order matters here.
 func (m Model) commitInput() (Model, tea.Cmd) {
 	kind := m.input.kind
+	if kind == inputFilterForm {
+		return m.commitFilterForm(m.input)
+	}
 	rawBuf := ""
 	if f := m.input.activeField(); f != nil {
 		rawBuf = f.value()
@@ -874,6 +888,40 @@ func (m Model) commitInput() (Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// commitFilterForm reads the three filter axes off the form and
+// applies them to lm.filter as a single atomic update. Cursor and
+// selectedNumber are reset to 0 so the next render lands on a fresh
+// row (the prior selection may no longer match the new filter, and
+// a clamp would be less predictable than starting at the top); the
+// status line clears so any prior mutation hint doesn't linger over
+// the new view. A refetch is dispatched to pick up the daemon-side
+// Status filter (Owner/Search are client-side); the form clears in
+// one step (no saving=true, no daemon round-trip).
+//
+// Mirrors the s/c convention in applyFilterKey — explicit "I changed
+// the filter" intent overrides the implicit "follow the same issue
+// across refetches" intent.
+func (m Model) commitFilterForm(form inputState) (Model, tea.Cmd) {
+	if len(form.fields) < 3 {
+		return m, nil
+	}
+	m.list.filter = ListFilter{
+		Status: form.fields[0].radio.value(),
+		Owner:  strings.TrimSpace(form.fields[1].input.Value()),
+		Search: strings.TrimSpace(form.fields[2].input.Value()),
+	}
+	// "all" is the surface label for "no Status filter"; the wire
+	// expects an empty string.
+	if m.list.filter.Status == "all" {
+		m.list.filter.Status = ""
+	}
+	m.list.cursor = 0
+	m.list.selectedNumber = 0
+	m.list.status = ""
+	m.input = inputState{}
+	return m, m.list.refetchCmd(m.api, m.scope)
 }
 
 // commitFormInput handles ctrl+s on a centered form. The form stays
@@ -1017,12 +1065,19 @@ func dispatchFormEditBody(
 	}
 }
 
-// cancelInput restores any pre-open filter snapshot (bars only) and
-// closes the input — undoing every live keystroke the user typed.
-// Panel-local prompts and centered forms have no live mirror, so
-// cancel is just close.
+// cancelInput restores any pre-open filter snapshot (bars + filter
+// modal) and closes the input — undoing every live keystroke the
+// user typed. Panel-local prompts and centered forms (other than the
+// filter modal) have no live mirror, so cancel is just close.
+//
+// The filter form's commit ALSO writes lm.filter, so a cancel that
+// arrives BEFORE the commit only needs to clear the open form (no
+// snapshot restore is needed because the filter never moved). The
+// preFilter restore here is a no-op in that case but kept symmetric
+// with the bar path so any future "live preview" mode plugs in
+// without changing this code.
 func (m Model) cancelInput() (Model, tea.Cmd) {
-	if m.input.kind.isCommandBar() {
+	if m.input.kind.isCommandBar() || m.input.kind == inputFilterForm {
 		m.list.filter = m.input.preFilter
 		m.list = m.list.clampCursorToFilter()
 	}

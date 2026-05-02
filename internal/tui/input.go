@@ -12,15 +12,15 @@ import (
 // shell taxonomy": three shells (inline command bar, panel-local
 // prompt, centered form) backed by one shared component family.
 //
-// M3a implements only inputSearchBar and inputOwnerBar (the inline
-// command bar). M3b adds the panel-local prompt kinds; M4 adds the
-// centered form kinds.
+// M3a implements only inputSearchBar (the inline command bar; the
+// matching owner bar was retired in Plan 8 commit 5a when the `o`
+// key was subsumed by the centered filter modal). M3b adds the
+// panel-local prompt kinds; M4 adds the centered form kinds.
 type inputKind int
 
 const (
 	inputNone inputKind = iota
 	inputSearchBar
-	inputOwnerBar
 	inputLabelPrompt       // detail `+` — add label
 	inputRemoveLabelPrompt // detail `-` — remove label
 	inputOwnerPrompt       // detail `a` — assign owner
@@ -30,6 +30,7 @@ const (
 	inputNewIssueForm      // list `n` — multi-field modal: Title/Body/Labels/Owner
 	inputBodyEditForm      // detail `e` — centered multi-line body editor
 	inputCommentForm       // detail `c` — centered multi-line comment editor
+	inputFilterForm        // list `f` — multi-axis filter modal: Status/Owner/Search
 )
 
 // isPanelPrompt reports whether a kind is one of the M3b panel-local
@@ -44,18 +45,23 @@ func (k inputKind) isPanelPrompt() bool {
 }
 
 // isCommandBar reports whether a kind is one of the M3a inline
-// command bar kinds (replaces the chip strip).
+// command bar kinds (replaces the chip strip). Plan 8 commit 5a
+// retired the owner bar; only the search bar remains.
 func (k inputKind) isCommandBar() bool {
-	return k == inputSearchBar || k == inputOwnerBar
+	return k == inputSearchBar
 }
 
 // isCenteredForm reports whether a kind is one of the centered form
 // kinds (multi-line textarea, ctrl+s commit, esc cancel, ctrl+e
 // $EDITOR escape hatch). M4 introduced edit-body and comment;
-// Plan 8 commit 4 added the multi-field new-issue form.
+// Plan 8 commit 4 added the multi-field new-issue form; Plan 8
+// commit 5a added the filter modal. The filter modal renders via
+// the centered overlay but its commit path is filter-apply, not
+// mutation-dispatch — see Model.commitInput for the explicit early
+// branch that keeps it out of commitFormInput.
 func (k inputKind) isCenteredForm() bool {
 	switch k {
-	case inputBodyEditForm, inputCommentForm, inputNewIssueForm:
+	case inputBodyEditForm, inputCommentForm, inputNewIssueForm, inputFilterForm:
 		return true
 	}
 	return false
@@ -67,7 +73,55 @@ type fieldKind int
 const (
 	fieldSingleLine fieldKind = iota
 	fieldMultiLine
+	fieldRadio // Plan 8 commit 5a — finite-choice axis (e.g. Status all/open/closed)
 )
+
+// radioField backs a fieldRadio inputField: a finite set of choices
+// and the index of the currently-selected one. Used by the filter
+// modal's Status axis (all/open/closed) where free-form text would
+// be a worse fit than a discrete cycle. set("") falls back to the
+// first choice so callers don't have to special-case "no value yet".
+type radioField struct {
+	choices []string
+	index   int
+}
+
+// value returns the currently-selected choice, or "" when no choices
+// are configured (defensive — every constructor seeds at least one).
+func (r radioField) value() string {
+	if len(r.choices) == 0 {
+		return ""
+	}
+	idx := r.index
+	if idx < 0 || idx >= len(r.choices) {
+		idx = 0
+	}
+	return r.choices[idx]
+}
+
+// set positions the radio on s. Empty string and unknown values pin
+// to index 0 — Status="" historically means "all", which is the
+// expected first choice.
+func (r *radioField) set(s string) {
+	for i, c := range r.choices {
+		if c == s {
+			r.index = i
+			return
+		}
+	}
+	r.index = 0
+}
+
+// cycle advances by delta with wrap. delta=+1 is the space key's
+// "next" gesture; ←/→ pass +1/-1 directly. Empty choice list is a
+// no-op so callers don't have to guard.
+func (r *radioField) cycle(delta int) {
+	n := len(r.choices)
+	if n == 0 {
+		return
+	}
+	r.index = ((r.index+delta)%n + n) % n
+}
 
 // inputField is one editable field on an input. Bars and prompts have
 // a single field; centered forms have two or more. The bubbles models
@@ -77,50 +131,68 @@ const (
 // required gates whether commit can proceed when the field is blank
 // (Title is the only required field today). Bars and prompts that
 // only ever show one field leave both empty.
+//
+// The radio member backs fieldRadio kinds (Plan 8 commit 5a — Status
+// axis on the filter modal); the bubbles models stay zero-valued.
 type inputField struct {
 	label    string
 	kind     fieldKind
 	input    textinput.Model // populated when kind == fieldSingleLine
 	area     textarea.Model  // populated when kind == fieldMultiLine
+	radio    radioField      // populated when kind == fieldRadio
 	required bool
 }
 
 // value returns the current text from whichever bubbles model backs f.
 func (f *inputField) value() string {
-	if f.kind == fieldMultiLine {
+	switch f.kind {
+	case fieldMultiLine:
 		return f.area.Value()
+	case fieldRadio:
+		return f.radio.value()
 	}
 	return f.input.Value()
 }
 
 // setValue mirrors a string into whichever bubbles model backs f.
 // Used by the $EDITOR escape hatch (M4) when handing a buffer back to
-// a multi-line field on resume.
+// a multi-line field on resume; for fieldRadio this positions the
+// radio on the matching choice (or first choice on no match).
 func (f *inputField) setValue(s string) {
-	if f.kind == fieldMultiLine {
+	switch f.kind {
+	case fieldMultiLine:
 		f.area.SetValue(s)
-		return
+	case fieldRadio:
+		f.radio.set(s)
+	default:
+		f.input.SetValue(s)
 	}
-	f.input.SetValue(s)
 }
 
 // focus / blur delegate to the bubbles model so cursor visibility +
 // key dispatch flip correctly when the active field changes. Used by
 // the new-issue form when tab cycles fields between Title, Body,
-// Labels, and Owner.
+// Labels, and Owner. fieldRadio carries no bubbles cursor (the
+// rendered glyph is the focus indicator) so focus/blur are no-ops.
 func (f *inputField) focus() tea.Cmd {
-	if f.kind == fieldMultiLine {
+	switch f.kind {
+	case fieldMultiLine:
 		return f.area.Focus()
+	case fieldRadio:
+		return nil
 	}
 	return f.input.Focus()
 }
 
 func (f *inputField) blur() {
-	if f.kind == fieldMultiLine {
+	switch f.kind {
+	case fieldMultiLine:
 		f.area.Blur()
-		return
+	case fieldRadio:
+		// no-op
+	default:
+		f.input.Blur()
 	}
-	f.input.Blur()
 }
 
 // inputState carries every active-input case. The renderer dispatches
@@ -289,64 +361,151 @@ func (s inputState) handleSuggestKey(msg tea.KeyMsg) (inputState, bool) {
 // fields on a multi-field form.
 //
 // While saving=true, ctrl+s is absorbed (no duplicate dispatches).
+//
+// The filter form (Plan 8 commit 5a) honors ctrl+r as a reset gesture
+// (zeros every field; preFilter intact for esc) and routes ←/→/space
+// through the radio when the Status field is active.
 func (s inputState) updateForm(msg tea.KeyMsg) (inputState, inputAction) {
+	if next, action, handled := s.handleFormControlKey(msg); handled {
+		return next, action
+	}
+	if next, handled := s.handleFormNavKey(msg); handled {
+		return next, actionNone
+	}
+	if next, handled := s.handleRadioKey(msg); handled {
+		return next, actionNone
+	}
+	return s.delegateToField(msg)
+}
+
+// handleFormControlKey handles the action-emitting key family
+// (ctrl+s, esc, ctrl+e, ctrl+r). handled=true means the key was
+// consumed (the action may still be actionNone for absorbed gestures
+// like ctrl+r and the saving=true ctrl+s gate).
+func (s inputState) handleFormControlKey(
+	msg tea.KeyMsg,
+) (inputState, inputAction, bool) {
 	switch msg.Type {
 	case tea.KeyCtrlS:
 		if s.saving {
-			return s, actionNone
+			return s, actionNone, true
 		}
-		return s, actionCommit
+		return s, actionCommit, true
 	case tea.KeyEsc:
-		return s, actionCancel
+		return s, actionCancel, true
 	case tea.KeyCtrlE:
 		if !s.ctrlEAllowed() {
-			return s, actionNone
+			return s, actionNone, true
 		}
-		return s, actionEditorHandoff
+		return s, actionEditorHandoff, true
+	case tea.KeyCtrlR:
+		if s.kind == inputFilterForm {
+			return s.resetFilterFields(), actionNone, true
+		}
+	}
+	return s, actionNone, false
+}
+
+// handleFormNavKey handles tab / shift+tab / enter for field cycling.
+// Returns handled=true when the key was consumed by the navigation
+// layer; otherwise the caller falls through to the next handler.
+func (s inputState) handleFormNavKey(msg tea.KeyMsg) (inputState, bool) {
+	switch msg.Type {
 	case tea.KeyTab:
 		if s.shouldCycleFields() {
-			return s.advanceField(1), actionNone
+			return s.advanceField(1), true
 		}
 	case tea.KeyShiftTab:
 		if s.shouldCycleFields() {
-			return s.advanceField(-1), actionNone
+			return s.advanceField(-1), true
 		}
 	case tea.KeyEnter:
 		if s.shouldAdvanceOnEnter() {
-			return s.advanceField(1), actionNone
+			return s.advanceField(1), true
 		}
 	}
-	return s.delegateToField(msg)
+	return s, false
+}
+
+// handleRadioKey routes ←/→/space into the active radio field. Used
+// only when the active field is fieldRadio; other fields fall through
+// so arrow keys move the textinput cursor and space inserts a literal
+// space character. handled=true means the key was consumed.
+func (s inputState) handleRadioKey(msg tea.KeyMsg) (inputState, bool) {
+	f := s.activeField()
+	if f == nil || f.kind != fieldRadio {
+		return s, false
+	}
+	switch msg.Type {
+	case tea.KeyLeft:
+		f.radio.cycle(-1)
+	case tea.KeyRight, tea.KeySpace:
+		f.radio.cycle(1)
+	default:
+		return s, false
+	}
+	s.fields[s.active] = *f
+	return s, true
+}
+
+// resetFilterFields zeroes every filter-form field to its empty value.
+// preFilter stays intact so a subsequent esc still restores the
+// at-open snapshot — ctrl+r is a "start over inside the form" gesture,
+// not "discard the form."
+func (s inputState) resetFilterFields() inputState {
+	if s.kind != inputFilterForm || len(s.fields) < 3 {
+		return s
+	}
+	s.fields[0].radio.set("all")
+	s.fields[1].input.SetValue("")
+	s.fields[2].input.SetValue("")
+	return s
 }
 
 // ctrlEAllowed reports whether the current form should treat ctrl+e
 // as an $EDITOR handoff. Single-field forms (edit-body, comment) are
 // always allowed; the multi-field new-issue form only honors ctrl+e
-// when the body textarea owns focus.
+// when the body textarea owns focus; the filter form has no body
+// field at all so $EDITOR is never offered.
 func (s inputState) ctrlEAllowed() bool {
-	if s.kind != inputNewIssueForm {
-		return true
+	switch s.kind {
+	case inputFilterForm:
+		return false
+	case inputNewIssueForm:
+		return s.active == newIssueFormBodyIndex
 	}
-	return s.active == newIssueFormBodyIndex
+	return true
 }
 
 // shouldCycleFields reports whether tab/shift+tab on this form should
-// advance to the next field rather than insert a literal tab. Today
-// only the multi-field new-issue form cycles; single-field forms let
-// tab fall through to the textarea so users can indent body text.
+// advance to the next field rather than insert a literal tab. The
+// multi-field new-issue form cycles, and so does the filter form
+// (Status/Owner/Search). Single-field forms let tab fall through to
+// the textarea so users can indent body text.
 func (s inputState) shouldCycleFields() bool {
-	return s.kind == inputNewIssueForm && len(s.fields) > 1
+	if len(s.fields) <= 1 {
+		return false
+	}
+	return s.kind == inputNewIssueForm || s.kind == inputFilterForm
 }
 
 // shouldAdvanceOnEnter reports whether enter on the active single-
-// line field should advance to the next field. The body field stays
-// as a newline-insert (textarea native behavior); other fields treat
-// enter as "next field." Commit is reserved for ctrl+s.
+// line field should advance to the next field. The body field on the
+// new-issue form stays as a newline-insert (textarea native
+// behavior); other fields treat enter as "next field." Commit is
+// reserved for ctrl+s. The filter form has no multi-line field, so
+// every field advances on enter.
 func (s inputState) shouldAdvanceOnEnter() bool {
-	if s.kind != inputNewIssueForm || len(s.fields) <= 1 {
+	if len(s.fields) <= 1 {
 		return false
 	}
-	return s.active != newIssueFormBodyIndex
+	switch s.kind {
+	case inputFilterForm:
+		return true
+	case inputNewIssueForm:
+		return s.active != newIssueFormBodyIndex
+	}
+	return false
 }
 
 // advanceField cycles s.active by delta with wrap. Blurs the
@@ -366,21 +525,27 @@ func (s inputState) advanceField(delta int) inputState {
 
 // delegateToField forwards a key into the active field's bubbles
 // model so paste, cursor motion, backspace, arrow keys all work.
+// fieldRadio carries no bubbles model (the navigation/cycling keys
+// are intercepted upstream by handleRadioKey) so the call is a no-op
+// for that kind.
 func (s inputState) delegateToField(msg tea.KeyMsg) (inputState, inputAction) {
 	f := s.activeField()
 	if f == nil {
 		return s, actionNone
 	}
-	if f.kind == fieldMultiLine {
+	switch f.kind {
+	case fieldMultiLine:
 		var cmd tea.Cmd
 		f.area, cmd = f.area.Update(msg)
 		_ = cmd
-		s.fields[s.active] = *f
+	case fieldRadio:
+		// no bubbles model to delegate to.
 		return s, actionNone
+	default:
+		var cmd tea.Cmd
+		f.input, cmd = f.input.Update(msg)
+		_ = cmd
 	}
-	var cmd tea.Cmd
-	f.input, cmd = f.input.Update(msg)
-	_ = cmd
 	s.fields[s.active] = *f
 	return s, actionNone
 }
@@ -397,20 +562,6 @@ func newSearchBar(current ListFilter) inputState {
 	return inputState{
 		kind:      inputSearchBar,
 		title:     "search",
-		fields:    []inputField{{kind: fieldSingleLine, input: ti}},
-		preFilter: current,
-	}
-}
-
-// newOwnerBar mirrors newSearchBar for the `o` (owner filter) key.
-func newOwnerBar(current ListFilter) inputState {
-	ti := textinput.New()
-	ti.SetValue(current.Owner)
-	ti.Focus()
-	ti.Prompt = ""
-	return inputState{
-		kind:      inputOwnerBar,
-		title:     "owner",
 		fields:    []inputField{{kind: fieldSingleLine, input: ti}},
 		preFilter: current,
 	}
@@ -510,6 +661,51 @@ func newFormTextarea(current string) inputField {
 // field (the others are single-line textinputs); enter on any other
 // field advances to the next field rather than inserting a newline.
 const newIssueFormBodyIndex = 1
+
+// filterFormStatusChoices is the canonical Status-axis choice list for
+// the filter modal. "all" maps to ListFilter.Status="" on commit so
+// the wire stays the same; the surface form uses the verbal "all" so
+// the radio reads naturally.
+var filterFormStatusChoices = []string{"all", "open", "closed"}
+
+// newFilterForm constructs the centered multi-axis filter modal opened
+// by `f` on the list view (Plan 8 commit 5a). Three axes:
+//   - Status: tri-state radio (all/open/closed) — pre-positioned on
+//     current.Status (empty maps to "all").
+//   - Owner: single-line textinput, pre-filled from current.Owner.
+//   - Search: single-line textinput, pre-filled from current.Search.
+//
+// preFilter snapshots the at-open ListFilter so esc can restore the
+// previous narrowing without re-typing. The form has no daemon
+// mutation — commit applies the filter and refetches; routing is
+// handled by Model.commitInput's explicit early branch (see the
+// load-bearing comment there).
+func newFilterForm(current ListFilter) inputState {
+	status := inputField{
+		label: "Status",
+		kind:  fieldRadio,
+		radio: radioField{choices: filterFormStatusChoices},
+	}
+	status.radio.set(current.Status)
+	owner := textinput.New()
+	owner.SetValue(current.Owner)
+	owner.Prompt = ""
+	owner.Blur()
+	search := textinput.New()
+	search.SetValue(current.Search)
+	search.Prompt = ""
+	search.Blur()
+	return inputState{
+		kind:  inputFilterForm,
+		title: "filter",
+		fields: []inputField{
+			status,
+			{kind: fieldSingleLine, input: owner, label: "Owner"},
+			{kind: fieldSingleLine, input: search, label: "Search"},
+		},
+		preFilter: current,
+	}
+}
 
 // newNewIssueForm constructs the multi-field modal opened by `n` on
 // the list view. Title is required and focused on open; Body is the

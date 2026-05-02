@@ -27,4 +27,4 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
- ↑↓ move │ ↵ open │ n new │ / search │ o owner │ s status │ c clear │ x close │ ? help │ q quit                   [1/1] 
+ ↑↓ move │ ↵ open │ n new │ / search │ f filter │ s status │ c clear │ x close │ ? help │ q quit                  [1/1] 

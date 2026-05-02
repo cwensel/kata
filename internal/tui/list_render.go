@@ -119,13 +119,18 @@ func (lm listModel) renderBodyArea(width, bodyRows int, _ viewChrome) string {
 // by one space. The `?` key still opens the full sectioned help
 // overlay for the long-form descriptions; the footer carries only the
 // most-used at-a-glance hints.
+//
+// Plan 8 commit 5a: `o owner` was retired; `f filter` opens the
+// multi-axis filter modal in its place. The cheap single-axis paths
+// (s status, / search, c clear) stay because common gestures should
+// not require a modal round trip.
 func listFooterItems() []helpRow {
 	return []helpRow{
 		{key: "↑↓", desc: "move"},
 		{key: "↵", desc: "open"},
 		{key: "n", desc: "new"},
 		{key: "/", desc: "search"},
-		{key: "o", desc: "owner"},
+		{key: "f", desc: "filter"},
 		{key: "s", desc: "status"},
 		{key: "c", desc: "clear"},
 		{key: "x", desc: "close"},
@@ -275,12 +280,11 @@ func renderListInfoLine(width int, chrome viewChrome, lm listModel, dataBudget i
 // The textinput's View() includes bubbles' own cursor-paint ANSI;
 // we keep it intact (don't sanitize — that would erase the cursor)
 // and width-clip with ansi.Truncate so escape sequences survive.
+//
+// Plan 8 commit 5a retired the owner bar; the search bar is the only
+// remaining inline command bar so the prefix is unconditionally "/".
 func renderInfoBar(s inputState, innerWidth int) string {
-	prefix := "/"
-	if s.kind == inputOwnerBar {
-		prefix = "owner:"
-	}
-	full := prefix + s.activeField().input.View()
+	full := "/" + s.activeField().input.View()
 	return ansi.Truncate(full, innerWidth, "…")
 }
 

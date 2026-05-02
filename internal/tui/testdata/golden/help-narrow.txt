@@ -16,7 +16,7 @@ enter   open detail
 n       new issue (form)
 /       search
 s       cycle status filter
-o       filter by owner
+f       filter (form)
 c       clear filters
 x       close
 r       reopen

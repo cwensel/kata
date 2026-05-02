@@ -333,24 +333,26 @@ func (lm listModel) applyFilterKey(
 	return lm, nil, false
 }
 
-// applyPromptKey opens an input shell. `/` and `o` open the inline
-// command bar (M3a); `n` opens the centered multi-field new-issue
-// form (Plan 8 commit 4 — replaces the M3.5c inline row). All three
-// hand off via openInputMsg so Model.openInput constructs the
-// inputState centrally.
+// applyPromptKey opens an input shell. `/` opens the inline search
+// command bar (M3a); `f` opens the centered filter modal (Plan 8
+// commit 5a — Status/Owner/Search axes); `n` opens the centered
+// multi-field new-issue form (Plan 8 commit 4 — replaces the M3.5c
+// inline row). All three hand off via openInputMsg so Model.openInput
+// constructs the inputState centrally.
 //
 // The new-issue form is gated to non-all-projects scopes because the
 // daemon's create endpoint is project-scoped; in all-projects mode
 // (which is itself gated until daemon support lands) we surface a
-// status hint instead of opening the form.
+// status hint instead of opening the form. The filter modal is NOT
+// gated — filter-only modals work in cross-project mode too.
 func (lm listModel) applyPromptKey(
 	msg tea.KeyMsg, km keymap, sc scope,
 ) (listModel, tea.Cmd, bool) {
 	switch {
 	case km.Search.matches(msg):
 		return lm, openInputCmd(inputSearchBar), true
-	case km.FilterOwner.matches(msg):
-		return lm, openInputCmd(inputOwnerBar), true
+	case km.FilterForm.matches(msg):
+		return lm, openInputCmd(inputFilterForm), true
 	case km.NewIssue.matches(msg):
 		if sc.allProjects {
 			lm.status = "cannot create from all-projects view; cd into a project"

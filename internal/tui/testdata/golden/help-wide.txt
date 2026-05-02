@@ -11,7 +11,7 @@ R         scope toggle (gated)pgup    page up            enter          jump to 
                               n       new issue (form)   b              add blocker             
                               /       search             L              add link                
                               s       cycle status filter+              add label               
-                              o       filter by owner    -              remove label            
+                              f       filter (form)      -              remove label            
                               c       clear filters      a              assign owner            
                               x       close              A              clear owner             
                               r       reopen                                                    

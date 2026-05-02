@@ -9,7 +9,7 @@ type keymap struct {
 	Help, Quit, ToggleScope                        key
 	Up, Down, PageUp, PageDown, Home, End          key
 	Open, NewIssue, Search                         key
-	FilterStatus, FilterOwner, ClearFilters        key
+	FilterStatus, FilterForm, ClearFilters         key
 	Close, Reopen                                  key
 	NextTab, PrevTab, JumpRef, Back                key
 	EditBody, NewComment                           key
@@ -40,12 +40,15 @@ func newKeymap() keymap {
 		NewIssue:     key{Keys: []string{"n"}, Help: "new issue (form)"},
 		Search:       key{Keys: []string{"/"}, Help: "search"},
 		FilterStatus: key{Keys: []string{"s"}, Help: "cycle status filter"},
-		FilterOwner:  key{Keys: []string{"o"}, Help: "filter by owner"},
-		// Label filter is intentionally absent: the Issue projection
-		// drops Labels (Task 3 wire-vs-spec adaptation #1), so a TUI
-		// label filter could not actually narrow the displayed list.
-		// Re-add the binding once the wire carries Labels and
-		// matchesFilter knows how to use them.
+		FilterForm:   key{Keys: []string{"f"}, Help: "filter (form)"},
+		// Plan 8 commit 5a: the o key (filter by owner) was subsumed
+		// by the f filter modal. The s/ /c keys stay as cheap paths
+		// for common single-axis gestures (Q6 hybrid).
+		// Label filter is intentionally absent from v1 of the modal:
+		// the Issue projection drops Labels (Task 3 wire-vs-spec
+		// adaptation #1), so a TUI label filter could not actually
+		// narrow the displayed list. Plan 8 commit 5b will add the
+		// daemon LabelsByIssues hook + the Labels axis.
 		ClearFilters: key{Keys: []string{"c"}, Help: "clear filters"},
 		Close:        key{Keys: []string{"x"}, Help: "close"},
 		Reopen:       key{Keys: []string{"r"}, Help: "reopen"},

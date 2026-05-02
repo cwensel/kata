@@ -335,28 +335,17 @@ func TestList_NewIssueCreateSeedsSelectionToNewIssue(t *testing.T) {
 	}
 }
 
-// TestList_OwnerPrompt_AccumulatesAndCommits drives `o`, "claude",
-// Enter through the M3a inline command bar. Owner filter is
-// client-side so no API refetch fires; the bar mirrors live into
-// filter.Owner each keystroke.
-func TestList_OwnerPrompt_AccumulatesAndCommits(t *testing.T) {
+// TestList_OKey_NoLongerOpensOwnerBar (Plan 8 commit 5a): pressing
+// `o` from the list view must NOT open any input shell. The owner
+// bar was retired when `f` (filter modal) subsumed the owner-by-itself
+// gesture; `o` is now a plain unhandled key on the list. Regression
+// catch for accidentally re-binding `o` to inputSearchBar or any other
+// shell.
+func TestList_OKey_NoLongerOpensOwnerBar(t *testing.T) {
 	m := mFixtureForBar()
-	m = openBarFromCmd(t, m, 'o')
-	if m.input.kind != inputOwnerBar {
-		t.Fatalf("expected inputOwnerBar active, got kind=%v", m.input.kind)
-	}
-	for _, r := range "claude" {
-		m, _ = stepModel(m, runeKey(r))
-	}
-	if m.list.filter.Owner != "claude" {
-		t.Fatalf("filter.Owner = %q, want claude (live mirror)", m.list.filter.Owner)
-	}
-	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = stepModel(m, runeKey('o'))
 	if m.input.kind != inputNone {
-		t.Fatal("input.kind must be inputNone after Enter commit")
-	}
-	if m.list.filter.Owner != "claude" {
-		t.Fatalf("filter.Owner = %q, want claude (preserved on commit)", m.list.filter.Owner)
+		t.Fatalf("'o' opened input shell: kind=%v", m.input.kind)
 	}
 }
 

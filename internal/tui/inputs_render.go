@@ -68,17 +68,109 @@ func renderPanelPrompt(s inputState, width int) string {
 //
 // Dispatches on s.kind: the multi-field new-issue form has its own
 // renderer that lays out four labeled fields stacked vertically;
-// single-field forms (edit-body, comment) keep the M4 layout.
+// single-field forms (edit-body, comment) keep the M4 layout. Plan 8
+// commit 5a added the filter modal, which is multi-field but uses a
+// radio for the Status axis instead of a textinput.
 func renderCenteredForm(s inputState, width, height int) string {
 	if width < formMinWidth || height < formMinHeight {
 		return renderTinyFormFallback(s)
 	}
 	innerW := formInnerWidth(width)
 	innerH := formInnerHeight(height)
-	if s.kind == inputNewIssueForm {
+	switch s.kind {
+	case inputNewIssueForm:
 		return renderNewIssueForm(s, innerW, innerH)
+	case inputFilterForm:
+		return renderFilterForm(s, innerW)
 	}
 	return renderSingleFieldForm(s, innerW, innerH)
+}
+
+// renderFilterForm lays out the three filter axes: Status (radio),
+// Owner (textinput), Search (textinput). No body field, so the form
+// reads compactly — title strip, three labeled rows, footer hint
+// inside the panel. ctrl+r is added to the footer hint so the reset
+// gesture is discoverable; ctrl+e is omitted (no $EDITOR for this
+// form).
+func renderFilterForm(s inputState, innerW int) string {
+	if len(s.fields) < 3 {
+		return ""
+	}
+	statusLine := renderFormStatus(s)
+	footer := renderFilterFormFooter(s)
+	parts := []string{titleStyle.Render(s.title)}
+	parts = append(parts, renderFilterField(s, 0, innerW))
+	parts = append(parts, renderFilterField(s, 1, innerW))
+	parts = append(parts, renderFilterField(s, 2, innerW))
+	if statusLine != "" {
+		parts = append(parts, statusLine)
+	}
+	parts = append(parts, footer)
+	return modalBoxStyle.Width(innerW).Padding(0, 1).Render(strings.Join(parts, "\n"))
+}
+
+// renderFilterField renders one row of the filter form: bold label
+// when active, the field's view beneath. Status field renders the
+// radio glyphs; Owner/Search render the textinput view (resized to
+// the inner width).
+func renderFilterField(s inputState, idx, innerW int) string {
+	f := &s.fields[idx]
+	label := f.label
+	if idx == s.active {
+		label = titleStyle.Render(label)
+	} else {
+		label = subtleStyle.Render(label)
+	}
+	var view string
+	if f.kind == fieldRadio {
+		view = renderRadio(f.radio, idx == s.active)
+	} else {
+		f.input.Width = innerW - 2
+		view = f.input.View()
+	}
+	return label + "\n" + view
+}
+
+// renderRadio formats the radio choices as a single line. The
+// selected choice gets a filled glyph; the others get empty. Under
+// KATA_COLOR_MODE=none we fall back to ASCII so the snapshot
+// fixtures stay deterministic across UTF-8-aware terminals. The
+// active form field gets a bolded label upstream; we don't bold the
+// choices themselves so the row reads like a single statement.
+func renderRadio(r radioField, _ bool) string {
+	filled, empty := radioGlyphs()
+	parts := make([]string, len(r.choices))
+	for i, c := range r.choices {
+		glyph := empty
+		if i == r.index {
+			glyph = filled
+		}
+		parts[i] = glyph + " " + c
+	}
+	return strings.Join(parts, "   ")
+}
+
+// radioGlyphs returns the (filled, empty) glyph pair for radio
+// rendering. ASCII fallback under KATA_COLOR_MODE=none keeps the
+// snapshot bytes deterministic on terminals whose default font may
+// or may not include the ◉/◯ codepoints.
+func radioGlyphs() (string, string) {
+	if resolveColorMode() == colorNone {
+		return "[X]", "[ ]"
+	}
+	return "◉", "○"
+}
+
+// renderFilterFormFooter is the footer hint for the filter form.
+// ctrl+e is intentionally absent (this form has no body field). The
+// reset gesture (ctrl+r) is surfaced so users can clear all axes
+// without leaving the form.
+func renderFilterFormFooter(s inputState) string {
+	if s.saving {
+		return statusStyle.Render("saving…")
+	}
+	hint := "ctrl+s apply · esc cancel · tab next · ctrl+r reset"
+	return subtleStyle.Render(hint)
 }
 
 // renderSingleFieldForm renders the M4 single-textarea forms

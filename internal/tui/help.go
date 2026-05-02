@@ -25,7 +25,7 @@ func helpSections(km keymap) []helpSection {
 		{"List", []helpRow{
 			r(km.Up), r(km.Down), r(km.PageUp), r(km.PageDown), r(km.Home),
 			r(km.End), r(km.Open), r(km.NewIssue), r(km.Search),
-			r(km.FilterStatus), r(km.FilterOwner),
+			r(km.FilterStatus), r(km.FilterForm),
 			r(km.ClearFilters), r(km.Close), r(km.Reopen),
 		}},
 		{"Detail", []helpRow{
