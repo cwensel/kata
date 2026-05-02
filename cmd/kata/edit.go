@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -33,6 +34,17 @@ func newEditCmd() *cobra.Command {
 		}
 		payload := map[string]any{}
 		if cmd.Flags().Changed("title") {
+			// Mirror create's title-non-empty gate so we don't forward
+			// a blank/whitespace-only title to the daemon and surface a
+			// raw SQLite CHECK-constraint error to the user
+			// (hammer-test finding #4).
+			if strings.TrimSpace(title) == "" {
+				return &cliError{
+					Message:  "--title must not be empty (omit the flag to keep the existing title)",
+					Kind:     kindValidation,
+					ExitCode: ExitValidation,
+				}
+			}
 			payload["title"] = title
 		}
 		if cmd.Flags().Changed("body") {
