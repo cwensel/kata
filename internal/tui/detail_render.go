@@ -12,12 +12,13 @@ import (
 // View renders the detail view under the M3.5 chrome layer:
 //
 //   - line 1:    title bar (kata かた · project: $name · version)
-//   - line 2:    detail header strip (#N · status · author · timestamps)
-//   - line 3:    issue title row (bold, full-width)
-//   - line 4:    body separator rule
-//   - lines 5..: body (scrollable, padded so the tab strip pins
-//     under the body); tab strip; tab content; padding
-//     so the info+footer pin to the bottom
+//   - line 2:    meta row (#N · status · author · timestamps)
+//   - line 3:    assignment row (Owner: <name>           label chips)
+//   - line 4:    issue title row (bold, full-width)
+//   - line 5:    labeled body rule (── body ─────)
+//   - lines 6..: body (scrollable, padded so the activity rule pins
+//     under the body); labeled activity rule; tab strip; tab content;
+//     padding so the info+footer pin to the bottom
 //   - line H-1:  info line (panel prompt OR scroll/flash text)
 //   - line H:    footer help row
 //
@@ -34,15 +35,22 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 		return dm.renderTinyFallback(width)
 	}
 	title := renderTitleBar(width, chrome.scope, chrome.version)
-	header := dm.renderHeader(width)
-	titleRow := dm.renderTitleRow(width)
+	meta := renderHeaderMeta(*dm.issue)
+	assign := renderHeaderAssignment(width, *dm.issue)
+	titleRow := renderHeaderTitle(width, *dm.issue)
+	bodyRule := renderLabeledRule("body", width)
+	activityRule := renderLabeledRule("activity", width)
 	tabs := dm.renderTabStrip()
 	footer := renderFooterBar(width, detailFooterItemsFor(chrome.input), 0, nil, ListFilter{})
 
-	// Reserve: header (1) + detail-header (1) + title-row (1) +
-	// body-rule (1) + tab-rule (1) + info (1) + footer (1) = 7 fixed.
-	// Whatever remains is split body 2/3, tab content 1/3.
-	avail := height - 7
+	// Reserve nine fixed rows:
+	//   title bar (1) + meta (1) + assignment (1) + title row (1) +
+	//   body rule (1) + activity rule (1) + tab strip (1) +
+	//   info (1) + footer (1) = 9.
+	// (variable: body content + tab content split 2/3 / 1/3 of slack)
+	// No separate "tab rule" — the activity rule above the tab strip
+	// is the only horizontal divider in the activity panel.
+	avail := height - 9
 	if avail < detailMinSplit {
 		avail = detailMinSplit
 	}
@@ -56,15 +64,14 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	}
 	body := dm.renderBody(width, bodyA)
 	tabContent := dm.renderActiveTab(width, tabA)
-	rule := separatorRuleStyle.Render(strings.Repeat("─", width))
 	bodyArea := dm.padArea(body, bodyA, width)
 	tabArea := dm.padArea(tabContent, tabA, width)
 	// Info line uses the real tabA budget so the scroll indicator
 	// fires correctly (roborev #107 finding 1).
 	infoLine := dm.renderInfoLine(width, chrome, tabA)
 	return strings.Join([]string{
-		title, header, titleRow, rule, bodyArea, tabs, tabArea,
-		infoLine, footer,
+		title, meta, assign, titleRow, bodyRule, bodyArea,
+		activityRule, tabs, tabArea, infoLine, footer,
 	}, "\n")
 }
 
@@ -154,13 +161,10 @@ const (
 	detailMinTabRows  = 3
 )
 
-// renderHeader builds the detail header strip:
+// renderHeaderMeta builds the first detail-header row:
 // `#N · status · author · created Xago · updated Yago`. Sanitized
-// agent text only — author flows through sanitizeForDisplay. Width
-// is currently unused (the header wraps via the surrounding render
-// chain) but kept on the signature for future right-aligned bits.
-func (dm detailModel) renderHeader(_ int) string {
-	iss := *dm.issue
+// agent text only — author flows through sanitizeForDisplay.
+func renderHeaderMeta(iss Issue) string {
 	left := fmt.Sprintf("#%d", iss.Number) + " · " + statusChip(iss)
 	bits := []string{}
 	if iss.Author != "" {
@@ -179,12 +183,58 @@ func (dm detailModel) renderHeader(_ int) string {
 	return left + " · " + right
 }
 
-// renderTitleRow is the bold full-width title line below the header
-// strip. Sanitized + truncated so the rendered cell never overflows
-// or carries control sequences.
-func (dm detailModel) renderTitleRow(width int) string {
-	t := sanitizeForDisplay(dm.issue.Title)
+// renderHeaderAssignment builds the second header row: owner on the
+// left, label chips packed on the right. Width-aware so the chip
+// strip surrenders cells to the owner half rather than overflowing.
+// Owner placeholder `Owner: —` keeps the row's visible weight when
+// no owner is set.
+func renderHeaderAssignment(width int, iss Issue) string {
+	left := "Owner: " + ownerDisplay(iss.Owner)
+	leftCells := runewidth.StringWidth(left)
+	// Right side gets whatever remains after the owner half plus a
+	// 1-cell separator. Floor at 1 so renderLabelChips doesn't get a
+	// negative budget on tiny terminals — its own ultra-narrow path
+	// will degrade gracefully.
+	rightBudget := width - leftCells - 1
+	if rightBudget < 1 {
+		rightBudget = 1
+	}
+	right := renderLabelChips(iss.Labels, rightBudget)
+	return padLeftRightInside(left, right, width)
+}
+
+// ownerDisplay returns the rendered owner text, sanitized for display.
+// Nil or empty owner renders as the em-dash placeholder so the row
+// keeps its visible weight (`Owner: —`).
+func ownerDisplay(owner *string) string {
+	if owner == nil || *owner == "" {
+		return "—"
+	}
+	return sanitizeForDisplay(*owner)
+}
+
+// renderHeaderTitle is the bold full-width title row below the
+// assignment row. Sanitized + truncated so the rendered cell never
+// overflows or carries control sequences.
+func renderHeaderTitle(width int, iss Issue) string {
+	t := sanitizeForDisplay(iss.Title)
 	return titleStyle.Render(truncate(t, max(20, width)))
+}
+
+// renderLabeledRule produces `── <label> ──` padded to width with
+// dashes. Falls back to a plain dash run when the label prefix is
+// wider than the available width — defensive against tiny terminals
+// so we never call strings.Repeat with a negative count.
+func renderLabeledRule(label string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	prefix := "── " + label + " ──"
+	prefixW := runewidth.StringWidth(prefix)
+	if prefixW > width {
+		return separatorRuleStyle.Render(strings.Repeat("─", width))
+	}
+	return separatorRuleStyle.Render(prefix + strings.Repeat("─", width-prefixW))
 }
 
 // activeTabLabel returns the singular noun for the active tab so the

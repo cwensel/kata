@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -747,6 +748,97 @@ func renderChips(f ListFilter) string {
 		return ""
 	}
 	return strings.Join(chips, "  ")
+}
+
+// renderLabelChips packs label chips into `available` cells for the
+// detail header's right-side label strip. Chips render alphabetically;
+// trailing chips that don't fit collapse into a `+N` suffix. When even
+// one chip would overflow `available`, the entire row degrades to the
+// fixed-width `[N labels]` token so the header stays informative on
+// tiny terminals. Empty input yields a `(no labels)` placeholder so the
+// row keeps its visible weight when an issue carries no labels.
+//
+// Sanitization runs BEFORE both width measurement and rendering: a
+// caller that measured the stripped form but rendered the raw label
+// would still leak ANSI / Cf control runes into the header. The
+// sanitized text is the single source of truth used for both.
+//
+// Width math: each chip is `[<sanitized-label>]` plus one space
+// separator before the next chip. The +N overflow token reserves
+// up to 4 cells (` +99` worst case) inside `available` so packing
+// never blows the budget by failing to leave room for the suffix.
+func renderLabelChips(labels []string, available int) string {
+	if len(labels) == 0 {
+		return subtleStyle.Render("(no labels)")
+	}
+	clean := sanitizeAndSortLabels(labels)
+	// Reserve worst-case +N width inside `available` so the suffix
+	// always fits when packing drops chips. ` +99` is 4 cells.
+	const overflowReserve = 4
+	packed, dropped := packChips(clean, available, overflowReserve)
+	if len(packed) == 0 {
+		return ultraNarrowChipFallback(len(clean))
+	}
+	out := strings.Join(packed, " ")
+	if dropped > 0 {
+		out += " " + chipStyle.Render(fmt.Sprintf("+%d", dropped))
+	}
+	return out
+}
+
+// sanitizeAndSortLabels returns labels with each entry sanitized
+// through textsafe.Block (ANSI / control / Cf stripped) and the slice
+// sorted in ascending byte order. Sort lives here so renderLabelChips
+// stays focused on the packing math.
+func sanitizeAndSortLabels(labels []string) []string {
+	clean := make([]string, len(labels))
+	for i, l := range labels {
+		clean[i] = textsafe.Block(l)
+	}
+	sort.Strings(clean)
+	return clean
+}
+
+// chipMinSlot returns the cell width of one rendered chip including
+// the surrounding brackets — the unit packChips advances on per chip.
+func chipMinSlot(label string) int {
+	return runewidth.StringWidth(label) + 2 // brackets
+}
+
+// packChips greedily fits chips into `available` cells, leaving
+// `overflowReserve` cells free at the tail so a `+N` token can be
+// appended without overflow. Returns the rendered chip slice and the
+// number of dropped tail labels.
+func packChips(clean []string, available, overflowReserve int) ([]string, int) {
+	out := make([]string, 0, len(clean))
+	used := 0
+	for i, l := range clean {
+		chip := chipStyle.Render("[" + l + "]")
+		w := chipMinSlot(l)
+		// Separator between chips (not before the first chip).
+		if len(out) > 0 {
+			w++
+		}
+		// Reserve overflow room for any chips after this one.
+		remaining := len(clean) - i - 1
+		needTail := 0
+		if remaining > 0 {
+			needTail = overflowReserve
+		}
+		if used+w+needTail > available {
+			return out, len(clean) - len(out)
+		}
+		out = append(out, chip)
+		used += w
+	}
+	return out, 0
+}
+
+// ultraNarrowChipFallback is the degraded `[N labels]` token used when
+// `available` is too small to fit even one chip plus the overflow
+// reserve. Keeps the header informative without overflowing.
+func ultraNarrowChipFallback(n int) string {
+	return chipStyle.Render(fmt.Sprintf("[%d labels]", n))
 }
 
 // joinNonEmpty assembles a view from its non-empty sections.

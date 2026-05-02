@@ -1,7 +1,8 @@
  Project: —                                                                                                   kata かた 
 #42 · open · wesm
+Owner: —                                                                                                     (no labels)
 fix login bug on Safari
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+── body ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Reproduces in Safari 17 only.
 Click the login button twice.
                                                                                                                         
@@ -16,7 +17,7 @@ Click the login button twice.
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
+── activity ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 [ Comments (30) ]  Events (2)  Links (1)
 [actor-14] 2026-04-30 10:13
   comment body 14
@@ -24,7 +25,6 @@ Click the login button twice.
 [actor-15] 2026-04-30 10:14
   comment body 15
 
-                                                                                                                        
                                                                                                                         
                                                                                                  [14-15 of 30 comments] 
  ↑↓ move │ ↹ tab │ ↵ jump │ esc back │ e edit │ c comment │ x close │ + label │ a owner │ ? help │ q quit               

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -375,6 +376,39 @@ func TestSnapshot_Detail_LinksTab(t *testing.T) {
 	dm.activeTab = tabLinks
 	got := dm.View(120, 30, viewChrome{})
 	assertGolden(t, "detail-links-tab", got)
+}
+
+// TestSnapshot_Detail_WithLabels exercises the assignment row's chip
+// strip on a wide terminal: owner left, three sorted chips right.
+func TestSnapshot_Detail_WithLabels(t *testing.T) {
+	defer snapshotInit(t)()
+	dm := snapDetailFixture()
+	dm.issue.Owner = ptrString("alice")
+	dm.issue.Labels = []string{"prio-1", "bug", "needs-design"}
+	got := dm.View(120, 30, viewChrome{})
+	assertGolden(t, "detail-with-labels", got)
+}
+
+// TestSnapshot_Detail_LabelsNarrow_OverflowAndDegrade verifies the
+// chip strip degrades gracefully on narrow terminals: at 60 cells
+// the +N overflow appears; at 30 cells the strip collapses to the
+// `[N labels]` ultra-narrow fallback.
+func TestSnapshot_Detail_LabelsNarrow_OverflowAndDegrade(t *testing.T) {
+	defer snapshotInit(t)()
+	dm := snapDetailFixture()
+	dm.issue.Owner = ptrString("alice")
+	dm.issue.Labels = []string{
+		"alpha-pretty-long", "beta-pretty-long", "gamma-pretty-long",
+		"delta-pretty-long", "epsilon-pretty-long",
+	}
+	overflow := dm.View(60, 24, viewChrome{})
+	if !strings.Contains(overflow, "+") {
+		t.Fatalf("expected +N overflow at width 60, got:\n%s", overflow)
+	}
+	degrade := dm.View(30, 24, viewChrome{})
+	if !strings.Contains(degrade, "labels]") {
+		t.Fatalf("expected [N labels] degrade at width 30, got:\n%s", degrade)
+	}
 }
 
 // TestSnapshot_Help_Narrow renders help at width 60 (helpColumnCount=1).

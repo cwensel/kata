@@ -1,7 +1,8 @@
  Project: —                                                                                                   kata かた 
 #42 · open · wesm
+Owner: —                                                                                                     (no labels)
 fix login bug on Safari
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+── body ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Reproduces in Safari 17 only.
 Click the login button twice.
                                                                                                                         
@@ -16,11 +17,10 @@ Click the login button twice.
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
+── activity ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Comments (2)  [ Events (2) ]  Links (1)
 [issue.created] 2026-04-30 10:00 alice — created
 [issue.commented] 2026-04-30 11:00 bob — added comment
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

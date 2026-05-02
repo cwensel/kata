@@ -1,6 +1,6 @@
  Project: —                                                                                                   kata かた 
 #42 · open · wesm
-Owner: —                                                                                                     (no labels)
+Owner: alice                                                                               [bug] [needs-design] [prio-1]
 fix login bug on Safari
 ── body ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Reproduces in Safari 17 only.
