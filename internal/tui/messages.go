@@ -151,6 +151,13 @@ type editorReturnedMsg struct {
 type eventReceivedMsg struct {
 	eventType              string
 	projectID, issueNumber int64
+	link                   *linkPayload
+}
+
+type linkPayload struct {
+	Type       string `json:"type"`
+	FromNumber int64  `json:"from_number"`
+	ToNumber   int64  `json:"to_number"`
 }
 
 // labelsFetchedMsg carries the result of an api.ListLabels call. pid

@@ -1515,14 +1515,14 @@ func (m Model) maybeRefetchOpenDetail(msg eventReceivedMsg) tea.Cmd {
 	if m.detail.issue == nil {
 		return nil
 	}
-	if msg.issueNumber == 0 || msg.issueNumber != m.detail.issue.Number {
-		return nil
-	}
 	if msg.projectID != m.detail.scopePID {
 		return nil
 	}
 	pid := m.detail.scopePID
 	num := m.detail.issue.Number
+	if !msg.matchesIssueNumber(num) {
+		return nil
+	}
 	gen := m.detail.gen
 	return tea.Batch(
 		fetchIssue(m.api, pid, num, gen),
@@ -1530,6 +1530,27 @@ func (m Model) maybeRefetchOpenDetail(msg eventReceivedMsg) tea.Cmd {
 		fetchEvents(m.api, pid, num, gen),
 		fetchLinks(m.api, pid, num, gen),
 	)
+}
+
+func (msg eventReceivedMsg) matchesIssueNumber(number int64) bool {
+	if msg.issueNumber != 0 && msg.issueNumber == number {
+		return true
+	}
+	from, to, ok := msg.parentLinkEndpoints()
+	return ok && (from == number || to == number)
+}
+
+func (msg eventReceivedMsg) parentLinkEndpoints() (from, to int64, ok bool) {
+	if msg.eventType != "issue.linked" && msg.eventType != "issue.unlinked" {
+		return 0, 0, false
+	}
+	if msg.link == nil || msg.link.Type != "parent" {
+		return 0, 0, false
+	}
+	if msg.link.FromNumber == 0 || msg.link.ToNumber == 0 {
+		return 0, 0, false
+	}
+	return msg.link.FromNumber, msg.link.ToNumber, true
 }
 
 // handleRefetchTick fires after the debounce window. Clears the

@@ -169,6 +169,84 @@ func TestHandleEventReceived_DetailViewSingleIssueRefetch(t *testing.T) {
 	}
 }
 
+func TestHandleEventReceived_ParentLinkInvalidatesQueue(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 42}})
+	out, cmd := m.handleEventReceived(eventReceivedMsg{
+		eventType: "issue.linked",
+		projectID: 7,
+		link:      &linkPayload{Type: "parent", FromNumber: 43, ToNumber: 42},
+	})
+	nm := out.(Model)
+	if !nm.cache.isStale() {
+		t.Fatal("parent link event must mark queue cache stale")
+	}
+	if cmd == nil {
+		t.Fatal("parent link event must schedule queue refetch")
+	}
+}
+
+func TestHandleEventReceived_ParentLinkRefetchesOpenParentDetail(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	m.detail.scopePID = 7
+	m.detail.gen = 5
+
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:   "issue.linked",
+		projectID:   7,
+		issueNumber: 43,
+		link:        &linkPayload{Type: "parent", FromNumber: 43, ToNumber: 42},
+	})
+	if cmd == nil {
+		t.Fatal("parent detail must refetch when a child is linked to it")
+	}
+}
+
+func TestHandleEventReceived_ParentLinkRefetchesOpenChildDetail(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	m.detail.issue = &Issue{ProjectID: 7, Number: 43, Status: "open"}
+	m.detail.scopePID = 7
+	m.detail.gen = 5
+
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:   "issue.linked",
+		projectID:   7,
+		issueNumber: 42,
+		link:        &linkPayload{Type: "parent", FromNumber: 43, ToNumber: 42},
+	})
+	if cmd == nil {
+		t.Fatal("child detail must refetch when its parent link changes")
+	}
+}
+
+func TestHandleEventReceived_NonParentLinkDoesNotRefetchForHierarchy(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	m.detail.scopePID = 7
+	m.detail.gen = 5
+
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:   "issue.linked",
+		projectID:   7,
+		issueNumber: 99,
+		link:        &linkPayload{Type: "blocks", FromNumber: 43, ToNumber: 42},
+	})
+	if cmd != nil {
+		t.Fatalf("non-parent link should not refetch for hierarchy, got %T", cmd)
+	}
+}
+
 // TestHandleEventReceived_DetailViewRefetchesAllTabs: a matching SSE
 // event must batch the four detail fetches (issue + comments + events
 // + links) so every tab is refreshed regardless of event-kind. Earlier

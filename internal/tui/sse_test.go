@@ -129,6 +129,25 @@ func TestSSEParser_DecodeEventReceived_NilIssueNumber(t *testing.T) {
 	}
 }
 
+func TestSSEParser_LinkPayloadType(t *testing.T) {
+	body := []byte(`{
+		"type":"issue.linked",
+		"project_id":7,
+		"issue_number":43,
+		"payload":{"type":"parent","from_number":43,"to_number":42}
+	}`)
+	got := decodeEventReceived(frame{kind: frameEvent, data: body})
+	if got.eventType != "issue.linked" {
+		t.Fatalf("eventType = %q, want issue.linked", got.eventType)
+	}
+	if got.link == nil {
+		t.Fatal("link payload was not decoded")
+	}
+	if got.link.Type != "parent" || got.link.FromNumber != 43 || got.link.ToNumber != 42 {
+		t.Fatalf("link payload = %+v, want parent 43->42", got.link)
+	}
+}
+
 // TestNextBackoff_Doubles_Caps: doubles each call until the ceiling,
 // then stays at ceiling.
 func TestNextBackoff_Doubles_Caps(t *testing.T) {

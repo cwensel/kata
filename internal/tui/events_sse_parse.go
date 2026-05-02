@@ -35,9 +35,10 @@ type frame struct {
 // inspects. Lives here so the parser does not pull internal/api into
 // the TUI tree.
 type sseEventPayload struct {
-	Type        string `json:"type"`
-	ProjectID   int64  `json:"project_id"`
-	IssueNumber *int64 `json:"issue_number,omitempty"`
+	Type        string          `json:"type"`
+	ProjectID   int64           `json:"project_id"`
+	IssueNumber *int64          `json:"issue_number,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
 }
 
 // errSSEEOF is the sentinel readNextFrame returns when the underlying
@@ -130,6 +131,12 @@ func decodeEventReceived(f frame) eventReceivedMsg {
 	out := eventReceivedMsg{eventType: p.Type, projectID: p.ProjectID}
 	if p.IssueNumber != nil {
 		out.issueNumber = *p.IssueNumber
+	}
+	if p.Type == "issue.linked" || p.Type == "issue.unlinked" {
+		var link linkPayload
+		if len(p.Payload) > 0 && json.Unmarshal(p.Payload, &link) == nil {
+			out.link = &link
+		}
 	}
 	return out
 }
