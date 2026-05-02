@@ -275,3 +275,34 @@ func TestList_ShowsOwnerInParens(t *testing.T) {
 	assert.NotContains(t, out, "(x)",
 		"list must not show author in parens (would disagree with ready)")
 }
+
+// TestNegativePositional_ProducesUsefulError covers hammer-test #9:
+// a positional that looks like a negative integer (kata show -1)
+// used to produce "unknown shorthand flag: '1' in -1" — useless.
+// Now translated into a kindUsage cliError pointing the user at
+// the `--` separator workaround.
+func TestNegativePositional_ProducesUsefulError(t *testing.T) {
+	for _, args := range [][]string{
+		{"show", "-1"},
+		{"delete", "-1"},
+		{"link", "-1", "blocks", "3"},
+	} {
+		resetFlags(t)
+		cmd := newRootCmd()
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs(args)
+		cmd.SetContext(context.Background())
+
+		err := cmd.Execute()
+		require.Errorf(t, err, "args %v should error", args)
+		var ce *cliError
+		require.True(t, errors.As(err, &ce),
+			"expected *cliError for args %v, got %T: %v", args, err, err)
+		assert.Equal(t, ExitUsage, ce.ExitCode)
+		assert.Equal(t, kindUsage, ce.Kind)
+		assert.Contains(t, ce.Message, "--",
+			"useful error must mention the `--` separator workaround")
+	}
+}

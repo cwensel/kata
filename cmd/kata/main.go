@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -44,6 +45,14 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVarP(&flags.Quiet, "quiet", "q", false, "suppress non-essential output")
 	cmd.PersistentFlags().StringVar(&flags.As, "as", "", "override actor (default: $KATA_AUTHOR > git > anonymous)")
 	cmd.PersistentFlags().StringVar(&flags.Workspace, "workspace", "", "path used for project resolution (default: cwd)")
+	// Catch the cobra/pflag pitfall where a positional that looks like
+	// a negative integer (kata show -1, kata delete -1) is parsed as
+	// a flag and produces "unknown shorthand flag: '1' in -1" — useless
+	// to humans and to agents. Translate the cryptic pflag message into
+	// a kindUsage cliError that points at the `--` separator workaround
+	// (hammer-test finding #9). Applies to every subcommand because
+	// FlagErrorFunc is inherited from the root.
+	cmd.SetFlagErrorFunc(translateFlagError)
 
 	subs := []*cobra.Command{
 		newDaemonCmd(),
@@ -157,6 +166,40 @@ func exitCodeForErr(err error, runEReached bool) int {
 	}
 	return exitCodeFor(err, runEReached)
 }
+
+// translateFlagError rewrites pflag's "unknown shorthand flag: 'N' in
+// -N..." message into a useful cliError when N is a digit, so users
+// who typed `kata show -1` get a clear pointer at the `--` separator
+// workaround (hammer-test finding #9) instead of a cryptic flag-parse
+// trace. All other flag errors pass through unchanged.
+//
+// The detection is intentionally narrow: we look for a leading digit
+// after the dash because that's the exact pflag message shape for the
+// negative-integer-as-positional case. Other "-x" flag typos still
+// produce pflag's regular message.
+func translateFlagError(_ *cobra.Command, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	const prefix = "unknown shorthand flag: '"
+	idx := strings.Index(msg, prefix)
+	if idx < 0 {
+		return err
+	}
+	rest := msg[idx+len(prefix):]
+	if rest == "" || !isDigit(rest[0]) {
+		return err
+	}
+	return &cliError{
+		Message: "negative numbers in positional args need the `--` " +
+			"separator (e.g. `kata show -- -1`)",
+		Kind:     kindUsage,
+		ExitCode: ExitUsage,
+	}
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 // exitCodeFor maps a non-cliError ExecuteContext error to a CLI exit code
 // based on whether RunE was reached. PersistentPreRunE flips runEEntered to
