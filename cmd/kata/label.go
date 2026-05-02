@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/kata/internal/textsafe"
 )
 
 func newLabelCmd() *cobra.Command {
@@ -190,10 +191,12 @@ func printLabelMutation(cmd *cobra.Command, bs []byte) error {
 		return nil
 	}
 	if !b.Changed {
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d already labeled %q (no-op)\n", b.Issue.Number, b.Label.Label)
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d already labeled %q (no-op)\n",
+			b.Issue.Number, textsafe.Line(b.Label.Label))
 		return err
 	}
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d labeled %q\n", b.Issue.Number, b.Label.Label)
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d labeled %q\n",
+		b.Issue.Number, textsafe.Line(b.Label.Label))
 	return err
 }
 

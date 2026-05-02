@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/kata/internal/textsafe"
 )
 
 func newCreateCmd() *cobra.Command {
@@ -164,6 +165,7 @@ func printMutation(cmd *cobra.Command, bs []byte) error {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), b.Issue.Number)
 		return err
 	}
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d %s [%s]\n", b.Issue.Number, b.Issue.Title, b.Issue.Status)
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d %s [%s]\n",
+		b.Issue.Number, textsafe.Line(b.Issue.Title), b.Issue.Status)
 	return err
 }

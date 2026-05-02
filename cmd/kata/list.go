@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/kata/internal/textsafe"
 )
 
 func newListCmd() *cobra.Command {
@@ -70,7 +71,9 @@ func newListCmd() *cobra.Command {
 				return err
 			}
 			for _, i := range b.Issues {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "#%-4d  %-8s  %s  (%s)\n", i.Number, i.Status, i.Title, i.Author); err != nil {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "#%-4d  %-8s  %s  (%s)\n",
+					i.Number, i.Status,
+					textsafe.Line(i.Title), textsafe.Line(i.Author)); err != nil {
 					return err
 				}
 			}

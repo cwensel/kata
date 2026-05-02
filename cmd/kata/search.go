@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/kata/internal/textsafe"
 )
 
 // newSearchCmd returns the cobra.Command for `kata search`. It calls the
@@ -111,7 +112,8 @@ func printSearchResults(cmd *cobra.Command, bs []byte) error {
 	}
 	for _, r := range b.Results {
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "#%-4d  %.2f  %-8s  %s  (%s)\n",
-			r.Issue.Number, r.Score, r.Issue.Status, r.Issue.Title,
+			r.Issue.Number, r.Score, r.Issue.Status,
+			textsafe.Line(r.Issue.Title),
 			strings.Join(r.MatchedIn, ",")); err != nil {
 			return err
 		}

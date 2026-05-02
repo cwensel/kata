@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/kata/internal/textsafe"
 )
 
 func newShowCmd() *cobra.Command {
@@ -80,14 +81,17 @@ func newShowCmd() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if _, err := fmt.Fprintf(out, "#%d  %s  [%s]  by %s\n",
-				b.Issue.Number, b.Issue.Title, b.Issue.Status, b.Issue.Author); err != nil {
+				b.Issue.Number,
+				textsafe.Line(b.Issue.Title),
+				b.Issue.Status,
+				textsafe.Line(b.Issue.Author)); err != nil {
 				return err
 			}
 			if b.Issue.Body != "" {
 				if _, err := fmt.Fprintln(out); err != nil {
 					return err
 				}
-				if _, err := fmt.Fprintln(out, b.Issue.Body); err != nil {
+				if _, err := fmt.Fprintln(out, textsafe.Block(b.Issue.Body)); err != nil {
 					return err
 				}
 			}
@@ -96,7 +100,8 @@ func newShowCmd() *cobra.Command {
 					return err
 				}
 				for _, c := range b.Comments {
-					if _, err := fmt.Fprintf(out, "%s: %s\n", c.Author, c.Body); err != nil {
+					if _, err := fmt.Fprintf(out, "%s: %s\n",
+						textsafe.Line(c.Author), textsafe.Block(c.Body)); err != nil {
 						return err
 					}
 				}
@@ -107,7 +112,7 @@ func newShowCmd() *cobra.Command {
 				}
 				parts := make([]string, 0, len(b.Labels))
 				for _, l := range b.Labels {
-					parts = append(parts, l.Label)
+					parts = append(parts, textsafe.Line(l.Label))
 				}
 				if _, err := fmt.Fprintln(out, strings.Join(parts, ", ")); err != nil {
 					return err

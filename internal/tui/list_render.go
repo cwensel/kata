@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
+	"github.com/wesm/kata/internal/textsafe"
 )
 
 // viewChrome carries the cross-cutting render inputs that lm.View
@@ -497,11 +498,10 @@ func padToWidth(s string, width int) string {
 }
 
 // stripANSI removes ANSI escape sequences from s for width math (so
-// padding accounts for visible runes only). Reuses the sanitize
-// pattern from sanitize.go so the algorithms stay consistent.
-func stripANSI(s string) string {
-	return ansiEscapePattern.ReplaceAllString(s, "")
-}
+// padding accounts for visible runes only). Thin alias over
+// textsafe.StripANSI so width helpers and the sanitizer share the
+// same regex.
+func stripANSI(s string) string { return textsafe.StripANSI(s) }
 
 // issueCounts derives the per-status counts from the unfiltered
 // lm.issues slice. Used by the title bar.
