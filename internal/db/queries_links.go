@@ -110,6 +110,162 @@ func (d *DB) ParentOf(ctx context.Context, childIssueID int64) (Link, error) {
 	return scanLink(row)
 }
 
+const relationshipChunkSize = labelsByIssuesChunkSize
+
+// ParentNumbersByIssues returns child issue ID -> parent issue number for
+// parent links inside projectID.
+func (d *DB) ParentNumbersByIssues(
+	ctx context.Context, projectID int64, issueIDs []int64,
+) (map[int64]int64, error) {
+	out := map[int64]int64{}
+	if len(issueIDs) == 0 {
+		return out, nil
+	}
+	for i := 0; i < len(issueIDs); i += relationshipChunkSize {
+		end := i + relationshipChunkSize
+		if end > len(issueIDs) {
+			end = len(issueIDs)
+		}
+		if err := d.appendParentNumbersForChunk(ctx, projectID, issueIDs[i:end], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (d *DB) appendParentNumbersForChunk(
+	ctx context.Context, projectID int64, chunk []int64, out map[int64]int64,
+) error {
+	placeholders, args := relationshipChunkPlaceholders(projectID, chunk)
+	query := `SELECT l.from_issue_id, parent.number
+	          FROM links l
+	          JOIN issues child ON child.id = l.from_issue_id
+	          JOIN issues parent ON parent.id = l.to_issue_id
+	          WHERE l.project_id = ?
+	            AND child.project_id = ?
+	            AND parent.project_id = ?
+	            AND l.type = 'parent'
+	            AND l.from_issue_id IN (` + placeholders + `)
+	          ORDER BY l.from_issue_id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("parent numbers by issues: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var childID, parentNumber int64
+		if err := rows.Scan(&childID, &parentNumber); err != nil {
+			return fmt.Errorf("scan parent numbers by issues: %w", err)
+		}
+		out[childID] = parentNumber
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate parent numbers by issues: %w", err)
+	}
+	return nil
+}
+
+// ChildCountsByParents returns direct-child open/total counts keyed by parent
+// issue ID inside projectID.
+func (d *DB) ChildCountsByParents(
+	ctx context.Context, projectID int64, parentIssueIDs []int64,
+) (map[int64]ChildCounts, error) {
+	out := map[int64]ChildCounts{}
+	if len(parentIssueIDs) == 0 {
+		return out, nil
+	}
+	for i := 0; i < len(parentIssueIDs); i += relationshipChunkSize {
+		end := i + relationshipChunkSize
+		if end > len(parentIssueIDs) {
+			end = len(parentIssueIDs)
+		}
+		if err := d.appendChildCountsForChunk(ctx, projectID, parentIssueIDs[i:end], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// ChildrenOfIssue returns direct, non-deleted children for parentIssueID in
+// the same order as ListIssues.
+func (d *DB) ChildrenOfIssue(ctx context.Context, projectID, parentIssueID int64) ([]Issue, error) {
+	query := issueSelect + `
+		JOIN links l ON l.from_issue_id = i.id
+		JOIN issues parent ON parent.id = l.to_issue_id
+		WHERE l.project_id = ?
+		  AND i.project_id = ?
+		  AND parent.project_id = ?
+		  AND l.type = 'parent'
+		  AND l.to_issue_id = ?
+		  AND i.deleted_at IS NULL
+		ORDER BY i.updated_at DESC, i.id DESC`
+	rows, err := d.QueryContext(ctx, query, projectID, projectID, projectID, parentIssueID)
+	if err != nil {
+		return nil, fmt.Errorf("children of issue: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Issue
+	for rows.Next() {
+		issue, err := scanIssue(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate children of issue: %w", err)
+	}
+	return out, nil
+}
+
+func (d *DB) appendChildCountsForChunk(
+	ctx context.Context, projectID int64, chunk []int64, out map[int64]ChildCounts,
+) error {
+	placeholders, args := relationshipChunkPlaceholders(projectID, chunk)
+	query := `SELECT l.to_issue_id,
+	                 SUM(CASE WHEN child.status = 'open' THEN 1 ELSE 0 END) AS open_count,
+	                 COUNT(*) AS total_count
+	          FROM links l
+	          JOIN issues child ON child.id = l.from_issue_id
+	          JOIN issues parent ON parent.id = l.to_issue_id
+	          WHERE l.project_id = ?
+	            AND child.project_id = ?
+	            AND parent.project_id = ?
+	            AND l.type = 'parent'
+	            AND child.deleted_at IS NULL
+	            AND l.to_issue_id IN (` + placeholders + `)
+	          GROUP BY l.to_issue_id
+	          ORDER BY l.to_issue_id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("child counts by parents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var parentID int64
+		var counts ChildCounts
+		if err := rows.Scan(&parentID, &counts.Open, &counts.Total); err != nil {
+			return fmt.Errorf("scan child counts by parents: %w", err)
+		}
+		out[parentID] = counts
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate child counts by parents: %w", err)
+	}
+	return nil
+}
+
+func relationshipChunkPlaceholders(projectID int64, chunk []int64) (string, []any) {
+	placeholders := make([]string, len(chunk))
+	args := make([]any, 0, len(chunk)+3)
+	args = append(args, projectID, projectID, projectID)
+	for i, id := range chunk {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	return strings.Join(placeholders, ","), args
+}
+
 // LinksByIssue returns every link involving issueID (either endpoint), ordered
 // by id ASC. Used to build the show-issue response and to back `kata unlink`'s
 // list-then-delete flow.

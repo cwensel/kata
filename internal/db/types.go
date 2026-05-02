@@ -87,6 +87,12 @@ type LabelCount struct {
 	Count int64  `json:"count"`
 }
 
+// ChildCounts is the direct-child aggregate for one parent issue.
+type ChildCounts struct {
+	Open  int `json:"open"`
+	Total int `json:"total"`
+}
+
 // SearchCandidate is one row from SearchFTS: an issue, a BM25 score (lower is
 // better in raw form; we negate so higher = better), and the columns where
 // the query matched. MatchedIn is the basis for the wire response's matched_in.

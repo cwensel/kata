@@ -196,6 +196,169 @@ func TestParentOf_ReturnsErrNotFoundWhenAbsent(t *testing.T) {
 	assert.True(t, errors.Is(err, db.ErrNotFound))
 }
 
+func TestParentNumbersByIssues_EmptyInput(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	got, err := d.ParentNumbersByIssues(ctx, p.ID, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, got)
+	assert.Empty(t, got)
+
+	got, err = d.ParentNumbersByIssues(ctx, p.ID, []int64{})
+	require.NoError(t, err)
+	assert.NotNil(t, got)
+	assert.Empty(t, got)
+}
+
+func TestChildCountsByParents_EmptyInput(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	got, err := d.ChildCountsByParents(ctx, p.ID, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, got)
+	assert.Empty(t, got)
+
+	got, err = d.ChildCountsByParents(ctx, p.ID, []int64{})
+	require.NoError(t, err)
+	assert.NotNil(t, got)
+	assert.Empty(t, got)
+}
+
+func TestParentNumbersByIssues_ReturnsImmediateParents(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
+	child1 := makeIssue(t, ctx, d, p.ID, "child 1", "tester")
+	child2 := makeIssue(t, ctx, d, p.ID, "child 2", "tester")
+	unrelated := makeIssue(t, ctx, d, p.ID, "unrelated", "tester")
+
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: child1.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: child2.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.ParentNumbersByIssues(ctx, p.ID, []int64{child1.ID, child2.ID, unrelated.ID})
+	require.NoError(t, err)
+	assert.Equal(t, parent.Number, got[child1.ID])
+	assert.Equal(t, parent.Number, got[child2.ID])
+	assert.NotContains(t, got, unrelated.ID)
+}
+
+func TestParentNumbersByIssues_ConstrainsProject(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	pa, err := d.CreateProject(ctx, "a", "a")
+	require.NoError(t, err)
+	pb, err := d.CreateProject(ctx, "b", "b")
+	require.NoError(t, err)
+	parentA := makeIssue(t, ctx, d, pa.ID, "parent a", "tester")
+	childA := makeIssue(t, ctx, d, pa.ID, "child a", "tester")
+	parentB := makeIssue(t, ctx, d, pb.ID, "parent b", "tester")
+	childB := makeIssue(t, ctx, d, pb.ID, "child b", "tester")
+
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: pa.ID, FromIssueID: childA.ID, ToIssueID: parentA.ID, Type: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: pb.ID, FromIssueID: childB.ID, ToIssueID: parentB.ID, Type: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.ParentNumbersByIssues(ctx, pa.ID, []int64{childA.ID, childB.ID})
+	require.NoError(t, err)
+	assert.Equal(t, parentA.Number, got[childA.ID])
+	assert.NotContains(t, got, childB.ID)
+}
+
+func TestChildCountsByParents_ReturnsOpenAndTotalDirectChildren(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
+	child1 := makeIssue(t, ctx, d, p.ID, "child 1", "tester")
+	child2 := makeIssue(t, ctx, d, p.ID, "child 2", "tester")
+	child3 := makeIssue(t, ctx, d, p.ID, "child 3", "tester")
+	for _, child := range []db.Issue{child1, child2, child3} {
+		_, err = d.CreateLink(ctx, db.CreateLinkParams{
+			ProjectID: p.ID, FromIssueID: child.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
+		})
+		require.NoError(t, err)
+	}
+	_, _, _, err = d.CloseIssue(ctx, child2.ID, "done", "tester")
+	require.NoError(t, err)
+
+	got, err := d.ChildCountsByParents(ctx, p.ID, []int64{parent.ID})
+	require.NoError(t, err)
+	assert.Equal(t, db.ChildCounts{Open: 2, Total: 3}, got[parent.ID])
+}
+
+func TestChildrenOfIssue_ReturnsDirectChildrenOnly(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
+	child1 := makeIssue(t, ctx, d, p.ID, "child 1", "tester")
+	child2 := makeIssue(t, ctx, d, p.ID, "child 2", "tester")
+	grandchild := makeIssue(t, ctx, d, p.ID, "grandchild", "tester")
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: child1.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: child2.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: grandchild.ID, ToIssueID: child1.ID, Type: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.ChildrenOfIssue(ctx, p.ID, parent.ID)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, child2.ID, got[0].ID)
+	assert.Equal(t, child1.ID, got[1].ID)
+}
+
+func TestChildCountsByParents_ChunksLargeInputs(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	const parentCount = 501
+	parentIDs := make([]int64, 0, parentCount)
+	for i := 0; i < parentCount; i++ {
+		parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
+		parentIDs = append(parentIDs, parent.ID)
+	}
+	child := makeIssue(t, ctx, d, p.ID, "child", "tester")
+	_, err = d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: child.ID, ToIssueID: parentIDs[parentCount-1], Type: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.ChildCountsByParents(ctx, p.ID, parentIDs)
+	require.NoError(t, err, "large parent batches must be chunked under SQLite parameter limits")
+	assert.Equal(t, db.ChildCounts{Open: 1, Total: 1}, got[parentIDs[parentCount-1]])
+	assert.NotContains(t, got, parentIDs[0])
+}
+
 func TestDeleteLinkByID_RemovesRow(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
