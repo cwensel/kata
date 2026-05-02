@@ -422,11 +422,16 @@ func batchLabelRefresh(
 // Detail-side mutations carry it via dm.scopePID; list-side via the
 // response's Issue.ProjectID; falls back to the active scope's
 // projectID for shapes that omit it.
+//
+// Uses detailIsActive() so the dm.scopePID fallback fires in M6 split
+// layout when the user is on focusDetail (m.view is still viewList in
+// split). Without the helper a label-cache refresh on a detail-pane
+// mutation could miss its project id and key off the active scope.
 func projectIDFromMutation(m Model, mut mutationDoneMsg) int64 {
 	if mut.resp != nil && mut.resp.Issue != nil && mut.resp.Issue.ProjectID != 0 {
 		return mut.resp.Issue.ProjectID
 	}
-	if m.view == viewDetail && m.detail.scopePID != 0 {
+	if m.detailIsActive() && m.detail.scopePID != 0 {
 		return m.detail.scopePID
 	}
 	return m.scope.projectID
@@ -1709,8 +1714,14 @@ func (m Model) handleJumpDetail(msg jumpDetailMsg) (tea.Model, tea.Cmd) {
 	// open — between the keypress and Model.Update seeing the message.
 	// Without this guard the queued jump would mutate hidden detail
 	// state and dispatch four fetches against an issue the user is no
-	// longer looking at. View check first; navStack cap second.
-	if m.view != viewDetail {
+	// longer looking at. Active-pane check first; navStack cap second.
+	//
+	// Use detailIsActive() (not m.view==viewDetail) so the gate is
+	// correct in M6 split layout: scheduleDetailFollow retargets
+	// m.detail.issue synchronously without touching m.view, so after
+	// j/k followed by Tab the user is on focusDetail while m.view is
+	// still viewList. A bare m.view check would silently drop the jump.
+	if !m.detailIsActive() {
 		return m, nil
 	}
 	if len(m.detail.navStack) >= detailNavCap {

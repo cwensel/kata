@@ -286,3 +286,154 @@ func TestSplit_LayoutFlip_FromStackedToSplitFromList(t *testing.T) {
 		t.Errorf("selectedNumber=%d want 7", m.list.selectedNumber)
 	}
 }
+
+// TestSplit_JumpDetail_SurvivesCursorFollowFocusDetail pins C1 from
+// the M6 review (codex). The bug: handleJumpDetail's m.view !=
+// viewDetail gate dropped the jump in split mode after cursor-follow
+// because m.view stays viewList while m.focus advances to focusDetail.
+// scheduleDetailFollow retargets m.detail.issue synchronously without
+// touching m.view; the stale view check then silently dropped the
+// jump. Fixed by switching the gate to !m.detailIsActive() — the
+// existing helper that abstracts over both layouts (stacked checks
+// m.view; split checks m.focus).
+func TestSplit_JumpDetail_SurvivesCursorFollowFocusDetail(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	// api must be non-nil for handleJumpDetail to dispatch the fetch.
+	m.api = &Client{}
+	// Press j to retarget detail via cursor-follow; m.view stays viewList.
+	out, _ := m.Update(runeKey('j'))
+	m = out.(Model)
+	if m.detail.issue == nil {
+		t.Fatal("setup: cursor-follow did not retarget m.detail.issue")
+	}
+	if m.view != viewList {
+		t.Fatalf("setup: m.view=%v want viewList (cursor-follow must not change m.view)", m.view)
+	}
+	// Tab advances focus to focusDetail; m.view still viewList.
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = out.(Model)
+	if m.focus != focusDetail {
+		t.Fatalf("setup: m.focus=%v want focusDetail after Tab", m.focus)
+	}
+	if m.view != viewList {
+		t.Fatalf("setup: m.view=%v want viewList (Tab must not change m.view)", m.view)
+	}
+	// jumpDetailMsg must NOT be dropped — pre-fix this returned nil cmd
+	// because the stale m.view==viewList misled the gate.
+	_, cmd := m.Update(jumpDetailMsg{number: 42})
+	if cmd == nil {
+		t.Fatal("jumpDetailMsg dropped — handleJumpDetail's view gate misfires in split mode")
+	}
+}
+
+// TestSplit_ListMutation_LandsOnListWhileFocusDetail covers the
+// cross-focus mutation routing (I2 from M6 review): in split mode
+// with focus=focusDetail, a list-originated mutation must still
+// update lm.status. The dispatch goes via routeMutation which uses
+// listIsActive() — split mode keeps focusDetail "active for detail"
+// so list is not active, and the !listIsActive() branch fires the
+// direct applyMutation path on the list.
+func TestSplit_ListMutation_LandsOnListWhileFocusDetail(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.api = &Client{}
+	m.list.actor = "tester"
+	iss := m.list.issues[0]
+	m.detail.issue = &iss
+	m.detail.scopePID = 7
+	m.focus = focusDetail
+	if m.listIsActive() {
+		t.Fatalf("setup: listIsActive=true with focusDetail, want false")
+	}
+	mut := mutationDoneMsg{
+		origin: "list", kind: "close",
+		resp: &MutationResp{Issue: &Issue{Number: 42, Status: "closed"}},
+	}
+	out, _ := m.Update(mut)
+	nm := out.(Model)
+	if nm.list.status == "" {
+		t.Fatal("list.status empty — list-origin mutation dropped while focusDetail")
+	}
+	if !strings.Contains(nm.list.status, "closed #42") {
+		t.Errorf("list.status = %q, want hint about closed #42", nm.list.status)
+	}
+}
+
+// TestSplit_DetailMutation_LandsOnDetailWhileFocusList covers the
+// reverse (I2 from M6 review): a detail-originated mutation in split
+// mode with focus=focusList still updates the detail pane (which is
+// visible alongside the list). routeMutation sees !detailIsActive()
+// and routes directly to dm.applyMutation; the gen match is
+// preserved so the dm.status hint lands.
+func TestSplit_DetailMutation_LandsOnDetailWhileFocusList(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.api = &Client{}
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Title: "to edit"}
+	m.detail.scopePID = 7
+	m.detail.gen = 5
+	m.focus = focusList
+	if m.detailIsActive() {
+		t.Fatalf("setup: detailIsActive=true with focusList, want false")
+	}
+	mut := mutationDoneMsg{
+		origin: "detail", gen: 5, kind: "body.edit",
+		resp: &MutationResp{Issue: &Issue{Number: 42, Body: "new"}},
+	}
+	out, _ := m.Update(mut)
+	nm := out.(Model)
+	if nm.detail.status == "" {
+		t.Fatal("detail.status empty — detail-origin mutation dropped while focusList")
+	}
+	if !strings.Contains(nm.detail.status, "#42") {
+		t.Errorf("detail.status = %q, want hint mentioning #42", nm.detail.status)
+	}
+}
+
+// TestSplit_SuggestionMenuClampActuallyFires_AtMinSplit covers the
+// clamp-branch in overlaySuggestMenu (I3 from M6 review). The
+// existing TestSplit_SuggestionMenuClampedToDetailPane only verifies
+// the natural anchor lands inside the detail pane, but at 160x40
+// with a small menu that's already true without the clamp. To
+// exercise the clamp itself we'd need a menu wider than width -
+// splitListPaneWidth - 1; with suggestMenuMaxWidth=40 and
+// splitMinWidth=140 the natural anchor is 140-40-1=99, comfortably
+// to the right of splitListPaneWidth+1=69. So the clamp branch as
+// written is defensive — it cannot fire under realistic constants.
+//
+// To still cover the helper's clamp logic, we drive overlayAtCorner
+// with an out-of-range anchorCol and assert the column-clamping
+// path in spliceRow keeps the panel inside the visible width. This
+// is the underlying primitive overlaySuggestMenu's split-mode minCol
+// guards against (anchor too far left); together with the comment
+// in overlaySuggestMenu it documents that the M6 minCol is
+// future-proofing in case suggestMenuMaxWidth grows or
+// splitListPaneWidth shrinks past the breakpoint.
+func TestSplit_SuggestionMenuClampActuallyFires_AtMinSplit(t *testing.T) {
+	// Confirm the documented invariant: at the minimum split
+	// breakpoint with the maximum menu width, the natural anchor
+	// is still right of the list-pane boundary, so the clamp is
+	// defensive.
+	naturalAnchor := splitMinWidth - suggestMenuMaxWidth - 1
+	if naturalAnchor < splitListPaneWidth+1 {
+		t.Fatalf("constants drifted: at width=%d max-menu=%d "+
+			"naturalAnchor=%d, want >= splitListPaneWidth+1=%d "+
+			"(if this fires, overlaySuggestMenu's minCol clamp is "+
+			"now load-bearing and needs an end-to-end test)",
+			splitMinWidth, suggestMenuMaxWidth, naturalAnchor,
+			splitListPaneWidth+1)
+	}
+	// Exercise the underlying overlay-clamp primitive directly: pass
+	// an anchorCol left of zero and assert the panel still renders
+	// fully (clamped to col=0). This is the same column-bounds path
+	// overlaySuggestMenu's split-mode branch funnels into.
+	bg := strings.Repeat(strings.Repeat(" ", 40)+"\n", 5)
+	bg = strings.TrimRight(bg, "\n")
+	panel := "ABCDE\nFGHIJ"
+	got := overlayAtCorner(bg, panel, 40, 5, 0, -10)
+	firstLine := strings.SplitN(got, "\n", 2)[0]
+	if !strings.HasPrefix(firstLine, "ABCDE") {
+		t.Errorf("clamp did not pin panel to col=0: first line %q", firstLine)
+	}
+}
