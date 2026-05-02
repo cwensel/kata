@@ -48,7 +48,7 @@ Longer term, kata is intended to support a shared server mode for teams, CI,
 and multiple agents. That mode should be a real authenticated deployment, not
 the local daemon exposed on a public interface.
 
-## Why kata, and how is it different from Beads?
+## Why kata, and how is it different from Beads or git-bug?
 
 kata is intentionally small. It is not a project-management suite, a git
 workflow engine, or an agent worker pool. It is a durable task ledger that
@@ -74,6 +74,17 @@ integration, and agent workflow machinery. kata is deliberately smaller: one
 daemon, one local store, one HTTP API, one TUI, and a narrow issue model that
 should stay easy to understand, operate, and teach to agents.
 
+[git-bug](https://github.com/git-bug/git-bug) takes the most git-native
+approach of the three: it stores issues, comments, and identities as git
+objects under custom refs in the repository itself, and distributes them
+through ordinary `git push` / `git pull`. Every clone carries the full issue
+history offline, and bridges sync with GitHub, GitLab, and Jira. kata sits at
+the other end of that spectrum — issue state lives outside git entirely, so
+the workspace stays clean, non-git workspaces work identically, and issue
+history is not interleaved with code history. The trade-off is that kata
+cannot piggyback on git remotes for sharing; that is what the future
+authenticated server is for.
+
 | Design choice | Beads | kata |
 |---|---|---|
 | Storage boundary | Project-local `.beads/` Dolt database by default | User-local `KATA_HOME` SQLite database behind a daemon |
@@ -83,12 +94,14 @@ should stay easy to understand, operate, and teach to agents.
 | Workflow shape | Rich graph tasks, priorities, claiming, messages, dependencies | Deliberately small issue ledger: status, comments, labels, owner, links, events |
 | Git relationship | Git integration is optional but first-class; commit conventions and doctor checks can connect code history to issues | Git can help identify workspaces; kata does not infer issue state from commits |
 
-Both approaches are useful. Beads is strongest when you want distributed,
-database-versioned task memory that can travel with a project and merge across
-branches or agents. kata is aimed at a smaller, API-first issue system that
-can span workspaces and eventually teams without forcing every user and agent
-to understand the repository, git remote, or distributed database that carries
-the issue state.
+All three approaches are useful. Beads is strongest when you want
+distributed, database-versioned task memory that can travel with a project and
+merge across branches or agents. git-bug is strongest when you want issue
+state to live inside the repository's own git history and ride the same
+remotes the code does. kata is aimed at a smaller, API-first issue system
+that can span workspaces and eventually teams without forcing every user and
+agent to understand the repository, git remote, or distributed database that
+carries the issue state.
 
 ## Install
 
