@@ -329,6 +329,24 @@ func TestDetailFetch_PopulatesIssueLabelsOnOpen(t *testing.T) {
 	}
 }
 
+func TestDetailApplyFetched_PopulatesParentAndChildren(t *testing.T) {
+	dm := detailModel{gen: 1}
+	msg := detailFetchedMsg{
+		gen:      1,
+		issue:    &Issue{Number: 42, Title: "parented"},
+		parent:   &IssueRef{Number: 7, Title: "workspace", Status: "open"},
+		children: []Issue{{Number: 43, Title: "child"}},
+	}
+
+	out := dm.applyFetched(msg)
+	if out.parent == nil || out.parent.Number != 7 {
+		t.Fatalf("parent = %+v, want #7", out.parent)
+	}
+	if len(out.children) != 1 || out.children[0].Number != 43 {
+		t.Fatalf("children = %+v, want #43", out.children)
+	}
+}
+
 // TestDetail_OpenDetail_SeedsLoadingFlags: opening detail through the
 // model-level handler seeds all three per-tab loading flags so the
 // initial render shows "(loading…)" until the tab fetches return.
@@ -798,6 +816,87 @@ func TestDetail_TabSwitch_ResetsCursor(t *testing.T) {
 	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
 	if dm.tabCursor != 0 {
 		t.Fatalf("after tab switch: tabCursor = %d, want 0", dm.tabCursor)
+	}
+}
+
+func TestDetailFocus_TabCyclesChildrenCommentsEventsLinks(t *testing.T) {
+	dm := detailFixture()
+	dm.children = []Issue{{Number: 43}}
+	km := newKeymap()
+
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyShiftTab}, km, nil)
+	if dm.detailFocus != focusChildren {
+		t.Fatalf("shift+tab from comments focus = %v, want children", dm.detailFocus)
+	}
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
+	if dm.detailFocus != focusActivity || dm.activeTab != tabComments {
+		t.Fatalf("tab from children focus/tab = %v/%v, want activity/comments", dm.detailFocus, dm.activeTab)
+	}
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
+	if dm.activeTab != tabEvents {
+		t.Fatalf("tab from comments activeTab = %v, want events", dm.activeTab)
+	}
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
+	if dm.activeTab != tabLinks {
+		t.Fatalf("tab from events activeTab = %v, want links", dm.activeTab)
+	}
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
+	if dm.detailFocus != focusChildren {
+		t.Fatalf("tab from links focus = %v, want children", dm.detailFocus)
+	}
+}
+
+func TestDetailFocus_SkipsChildrenWhenEmpty(t *testing.T) {
+	dm := detailFixture()
+	km := newKeymap()
+
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
+	if dm.detailFocus != focusActivity || dm.activeTab != tabEvents {
+		t.Fatalf("tab with no children focus/tab = %v/%v, want activity/events", dm.detailFocus, dm.activeTab)
+	}
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyShiftTab}, km, nil)
+	if dm.detailFocus != focusActivity || dm.activeTab != tabComments {
+		t.Fatalf("shift+tab with no children focus/tab = %v/%v, want activity/comments", dm.detailFocus, dm.activeTab)
+	}
+}
+
+func TestDetailChildren_JKMovesChildCursor(t *testing.T) {
+	dm := detailFixture()
+	dm.children = []Issue{{Number: 43}, {Number: 44}}
+	dm.detailFocus = focusChildren
+	km := newKeymap()
+
+	dm, _ = dm.Update(runeKey('j'), km, nil)
+	if dm.childCursor != 1 {
+		t.Fatalf("after j childCursor = %d, want 1", dm.childCursor)
+	}
+	dm, _ = dm.Update(runeKey('j'), km, nil)
+	if dm.childCursor != 1 {
+		t.Fatalf("after second j childCursor = %d, want clamp 1", dm.childCursor)
+	}
+	dm, _ = dm.Update(runeKey('k'), km, nil)
+	if dm.childCursor != 0 {
+		t.Fatalf("after k childCursor = %d, want 0", dm.childCursor)
+	}
+}
+
+func TestDetailChildren_EnterJumpsToChild(t *testing.T) {
+	dm := detailFixture()
+	dm.children = []Issue{{Number: 43}, {Number: 44}}
+	dm.detailFocus = focusChildren
+	dm.childCursor = 1
+	km := newKeymap()
+
+	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, &fakeDetailAPI{})
+	if cmd == nil {
+		t.Fatal("enter on focused child should emit jump command")
+	}
+	jm, ok := cmd().(jumpDetailMsg)
+	if !ok {
+		t.Fatalf("expected jumpDetailMsg, got %T", cmd())
+	}
+	if jm.number != 44 {
+		t.Fatalf("jumpDetailMsg.number = %d, want 44", jm.number)
 	}
 }
 

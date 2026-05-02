@@ -19,6 +19,13 @@ const (
 // detailTabCount is the modulus for the tab cycle.
 const detailTabCount = 3
 
+type detailFocus int
+
+const (
+	focusActivity detailFocus = iota
+	focusChildren
+)
+
 // detailNavCap caps the nav stack at 1 prior entry — current + prior =
 // 2 levels per the plan's "2-element stack." Jumping from level 2 is
 // a no-op; Esc still pops back to level 1.
@@ -73,12 +80,16 @@ type detailAPI interface {
 // daemon still working or a real failure they should react to.
 type detailModel struct {
 	issue           *Issue
+	parent          *IssueRef
+	children        []Issue
+	detailFocus     detailFocus
 	loading         bool
 	err             error
 	gen             int64
 	activeTab       detailTab
 	scroll          int // body scroll offset in lines
 	tabCursor       int // active-tab row cursor
+	childCursor     int
 	comments        []CommentEntry
 	events          []EventLogEntry
 	links           []LinkEntry
@@ -133,6 +144,9 @@ func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
 		if m.issue != nil {
 			dm.issue = m.issue
 		}
+		dm.parent = m.parent
+		dm.children = m.children
+		dm = dm.clampChildFocus()
 		dm.err = mergeErr(dm.err, m.err)
 	case commentsFetchedMsg:
 		if m.gen != dm.gen {
@@ -193,11 +207,9 @@ func (dm detailModel) handleNavKey(
 ) (detailModel, tea.Cmd, bool) {
 	switch {
 	case km.NextTab.matches(msg):
-		dm.activeTab = (dm.activeTab + 1) % detailTabCount
-		dm.tabCursor = 0
+		dm = dm.cycleDetailFocus(1)
 	case km.PrevTab.matches(msg):
-		dm.activeTab = (dm.activeTab + detailTabCount - 1) % detailTabCount
-		dm.tabCursor = 0
+		dm = dm.cycleDetailFocus(-1)
 	case km.Up.matches(msg):
 		return dm.handleUp(), nil, true
 	case km.Down.matches(msg):
@@ -217,6 +229,12 @@ func (dm detailModel) handleNavKey(
 // handleUp moves the tab cursor up when the active tab has rows;
 // otherwise scrolls the body. Both clamp at zero.
 func (dm detailModel) handleUp() detailModel {
+	if dm.detailFocus == focusChildren {
+		if dm.childCursor > 0 {
+			dm.childCursor--
+		}
+		return dm
+	}
 	if dm.activeRowCount() > 0 {
 		if dm.tabCursor > 0 {
 			dm.tabCursor--
@@ -233,6 +251,12 @@ func (dm detailModel) handleUp() detailModel {
 // scrolls the body when the tab is empty. Body scroll's upper bound
 // is clamped in the renderer.
 func (dm detailModel) handleDown() detailModel {
+	if dm.detailFocus == focusChildren {
+		if dm.childCursor < len(dm.children)-1 {
+			dm.childCursor++
+		}
+		return dm
+	}
 	if n := dm.activeRowCount(); n > 0 {
 		if dm.tabCursor < n-1 {
 			dm.tabCursor++
@@ -267,11 +291,89 @@ func (dm detailModel) handleEnter(api detailAPI) (detailModel, tea.Cmd) {
 	if api == nil || len(dm.navStack) >= detailNavCap {
 		return dm, nil
 	}
+	if dm.detailFocus == focusChildren {
+		if dm.childCursor < 0 || dm.childCursor >= len(dm.children) {
+			return dm, nil
+		}
+		return dm, jumpDetailCmd(dm.children[dm.childCursor].Number)
+	}
 	target, ok := dm.jumpTarget()
 	if !ok {
 		return dm, nil
 	}
 	return dm, jumpDetailCmd(target)
+}
+
+type detailFocusSlot struct {
+	focus detailFocus
+	tab   detailTab
+}
+
+func (dm detailModel) cycleDetailFocus(delta int) detailModel {
+	slots := dm.detailFocusSlots()
+	if len(slots) == 0 {
+		return dm
+	}
+	idx := dm.currentFocusSlotIndex(slots)
+	idx = (idx + delta + len(slots)) % len(slots)
+	slot := slots[idx]
+	dm.detailFocus = slot.focus
+	if slot.focus == focusActivity {
+		dm.activeTab = slot.tab
+		dm.tabCursor = 0
+	} else {
+		dm.childCursor = clampInt(dm.childCursor, 0, len(dm.children)-1)
+	}
+	return dm
+}
+
+func (dm detailModel) detailFocusSlots() []detailFocusSlot {
+	slots := make([]detailFocusSlot, 0, 4)
+	if len(dm.children) > 0 {
+		slots = append(slots, detailFocusSlot{focus: focusChildren})
+	}
+	return append(slots,
+		detailFocusSlot{focus: focusActivity, tab: tabComments},
+		detailFocusSlot{focus: focusActivity, tab: tabEvents},
+		detailFocusSlot{focus: focusActivity, tab: tabLinks},
+	)
+}
+
+func (dm detailModel) currentFocusSlotIndex(slots []detailFocusSlot) int {
+	for i, slot := range slots {
+		if slot.focus == focusChildren && dm.detailFocus == focusChildren {
+			return i
+		}
+		if slot.focus == focusActivity && dm.detailFocus == focusActivity && slot.tab == dm.activeTab {
+			return i
+		}
+	}
+	return 0
+}
+
+func (dm detailModel) clampChildFocus() detailModel {
+	if len(dm.children) == 0 {
+		dm.childCursor = 0
+		if dm.detailFocus == focusChildren {
+			dm.detailFocus = focusActivity
+		}
+		return dm
+	}
+	dm.childCursor = clampInt(dm.childCursor, 0, len(dm.children)-1)
+	return dm
+}
+
+func clampInt(v, lo, hi int) int {
+	if hi < lo {
+		return lo
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // jumpDetailCmd emits a jumpDetailMsg so Model.handleJumpDetail can

@@ -29,9 +29,11 @@ type refetchedMsg struct {
 // dm.gen so a fetch in flight when the user pops/jumps cannot pollute
 // the new view with stale data.
 type detailFetchedMsg struct {
-	gen   int64
-	issue *Issue
-	err   error
+	gen      int64
+	issue    *Issue
+	parent   *IssueRef
+	children []Issue
+	err      error
 }
 
 // commentsFetchedMsg, eventsFetchedMsg, and linksFetchedMsg carry the

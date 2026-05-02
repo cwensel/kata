@@ -18,10 +18,14 @@ func fetchIssue(api detailAPI, projectID, number, gen int64) tea.Cmd {
 		defer cancel()
 		detail, err := api.GetIssueDetail(ctx, projectID, number)
 		var issue *Issue
+		var parent *IssueRef
+		var children []Issue
 		if detail != nil {
 			issue = detail.Issue
+			parent = detail.Parent
+			children = detail.Children
 		}
-		return detailFetchedMsg{gen: gen, issue: issue, err: err}
+		return detailFetchedMsg{gen: gen, issue: issue, parent: parent, children: children, err: err}
 	}
 }
 
