@@ -1626,6 +1626,16 @@ func (m Model) dispatchToView(msg tea.Msg) (tea.Model, tea.Cmd) {
 // strings in the steady state so the view does not gain spurious blank
 // lines.
 func (m Model) View() string {
+	// M5: degraded full-screen hint when the terminal is below the
+	// threshold for clean chrome rendering. Short-circuit BEFORE the
+	// regular dispatch so we don't render a cropped/torn frame. The
+	// `m.width > 0` gate avoids tripping the hint before the first
+	// WindowSizeMsg arrives (initial state has width=0). q / ctrl+c
+	// still route through routeGlobalKey, so the user can quit from
+	// the hint without resizing first.
+	if m.width > 0 && (m.width < 80 || m.height < 16) {
+		return renderTooNarrow(m.width, m.height)
+	}
 	body := m.viewBody()
 	if m.view != viewList && m.view != viewDetail {
 		extras := []string{}

@@ -49,3 +49,32 @@ func renderEmpty(width, height int) string {
 	}
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, body)
 }
+
+// renderTooNarrow is the degraded full-screen hint shown when the
+// terminal can't fit the chrome. The chrome's fixed-row budget is 9
+// rows on detail (commit 2 of plan 8); width math assumes >=80 cells
+// for table columns + chip strip. Below either threshold we surface
+// a centered hint instead of a partial render that could crop
+// confusingly.
+//
+// q / ctrl+c still route through Model.routeGlobalKey, so the user
+// can quit from the hint screen without resizing first.
+func renderTooNarrow(width, height int) string {
+	msg := strings.Join([]string{
+		"kata tui needs more space",
+		"",
+		">=80 columns wide and >=16 rows tall",
+		"resize your terminal and try again",
+		"",
+		"press q to quit",
+	}, "\n")
+	body := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(panelActiveBorder).
+		Padding(1, 2).
+		Render(msg)
+	if width <= 0 || height <= 0 {
+		return body
+	}
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, body)
+}

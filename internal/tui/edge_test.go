@@ -11,10 +11,12 @@ import (
 
 // TestEdge_WindowResize_NoPanic feeds a wide-then-narrow WindowSizeMsg
 // pair through Model.Update and verifies the list still renders without
-// panic at the smaller width. This exercises the row-truncation path
-// with a 40-cell terminal where the title column flexes to its 20-cell
-// floor. The fixture is the same three-row mix used by snapshot tests
-// so the comparison stays deterministic.
+// panic at the smaller width. We exercise the row-truncation path at
+// 80 cells — the M5 narrow-hint threshold — where the title column
+// flexes to its 20-cell floor. Below 80, View short-circuits to the
+// narrow hint (covered by narrow_terminal_test.go). The fixture is
+// the same three-row mix used by snapshot tests so the comparison
+// stays deterministic.
 func TestEdge_WindowResize_NoPanic(t *testing.T) {
 	t.Setenv("KATA_COLOR_MODE", "none")
 	applyDefaultColorMode(io.Discard)
@@ -33,20 +35,19 @@ func TestEdge_WindowResize_NoPanic(t *testing.T) {
 		t.Fatalf("wide render missing full title:\n%s", wide)
 	}
 
-	out, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 30})
+	out, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = out.(Model)
-	if m.width != 40 || m.height != 30 {
+	if m.width != 80 || m.height != 30 {
 		t.Fatalf("resize not applied: width=%d height=%d", m.width, m.height)
 	}
 	narrow := m.View()
-	// At 40 cols the title column flexes to 20 (floor) and titles get
-	// truncated to roughly 20 cells with an ellipsis. We don't pin the
-	// exact truncation length (the table inserts column padding) but the
-	// row marker for the second row must still be present.
+	// At 80 cols the title column flexes to 20 (floor: fixed cols sum
+	// to 42, leaving 38 — less than the wide render's title width).
+	// The cursor marker must still be present.
 	if !strings.Contains(narrow, "▶") {
 		t.Fatalf("narrow render missing cursor marker:\n%s", narrow)
 	}
-	// The full title would not fit at width=40 — the truncate helper
+	// The full title would not fit at width=80 — the truncate helper
 	// either replaces the tail with "…" or leaves the row narrower than
 	// the wide render's row. We assert the ellipsis to lock in the
 	// truncation behavior — if the renderer ever stops truncating, this

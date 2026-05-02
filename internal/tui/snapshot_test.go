@@ -397,6 +397,16 @@ func TestSnapshot_Empty(t *testing.T) {
 	assertGolden(t, "empty-state", got)
 }
 
+// TestSnapshot_NarrowTerminalHint locks the M5 degraded hint at the
+// canonical narrow fixture (60x24 — below the 80-cell width
+// threshold). The bordered panel sits centered; q/ctrl+c routing is
+// unaffected (covered by narrow_terminal_test.go).
+func TestSnapshot_NarrowTerminalHint(t *testing.T) {
+	defer snapshotInit(t)()
+	got := renderTooNarrow(60, 24)
+	assertGolden(t, "narrow-terminal-hint", got)
+}
+
 // TestSnapshot_LabelPrompt_MenuOpen renders the autocomplete menu
 // for a `+` label prompt with 5 suggestions and the highlight on
 // the first row. Pinned to 120x30 like the other detail snapshots.
