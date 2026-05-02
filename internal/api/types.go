@@ -137,7 +137,9 @@ type ListIssuesRequest struct {
 // projects.
 type IssueOut struct {
 	db.Issue
-	Labels []string `json:"labels,omitempty"`
+	Labels       []string        `json:"labels,omitempty"`
+	ParentNumber *int64          `json:"parent_number,omitempty"`
+	ChildCounts  *db.ChildCounts `json:"child_counts,omitempty"`
 }
 
 // ListIssuesResponse is the list payload. Plan 8 commit 5b: each row
@@ -147,6 +149,13 @@ type ListIssuesResponse struct {
 	Body struct {
 		Issues []IssueOut `json:"issues"`
 	}
+}
+
+// IssueRef is the compact issue identity used for parent context.
+type IssueRef struct {
+	Number int64  `json:"number"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 // ShowIssueRequest is GET /api/v1/projects/{id}/issues/{number}.
@@ -165,6 +174,8 @@ type ShowIssueResponse struct {
 		Comments []db.Comment    `json:"comments"`
 		Links    []LinkOut       `json:"links"`
 		Labels   []db.IssueLabel `json:"labels"`
+		Parent   *IssueRef       `json:"parent,omitempty"`
+		Children []IssueOut      `json:"children,omitempty"`
 	}
 }
 

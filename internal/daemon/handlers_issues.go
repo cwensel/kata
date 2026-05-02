@@ -111,19 +111,12 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		ids := make([]int64, len(issues))
-		for i, iss := range issues {
-			ids[i] = iss.ID
-		}
-		labelsByID, err := cfg.DB.LabelsByIssues(ctx, in.ProjectID, ids)
+		issueOuts, err := hydrateIssueOuts(ctx, cfg.DB, in.ProjectID, issues)
+		out := &api.ListIssuesResponse{}
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		out := &api.ListIssuesResponse{}
-		out.Body.Issues = make([]api.IssueOut, len(issues))
-		for i, iss := range issues {
-			out.Body.Issues[i] = api.IssueOut{Issue: iss, Labels: labelsByID[iss.ID]}
-		}
+		out.Body.Issues = issueOuts
 		return out, nil
 	})
 
@@ -157,11 +150,25 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+		parent, err := loadParentRef(ctx, cfg.DB, issue)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		children, err := cfg.DB.ChildrenOfIssue(ctx, in.ProjectID, issue.ID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		childOuts, err := hydrateIssueOuts(ctx, cfg.DB, in.ProjectID, children)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
 		out := &api.ShowIssueResponse{}
 		out.Body.Issue = issue
 		out.Body.Comments = comments
 		out.Body.Links = links
 		out.Body.Labels = labels
+		out.Body.Parent = parent
+		out.Body.Children = childOuts
 		return out, nil
 	})
 
@@ -203,6 +210,57 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		out.Body.Changed = changed
 		return out, nil
 	})
+}
+
+func issueRefFromDB(iss db.Issue) api.IssueRef {
+	return api.IssueRef{Number: iss.Number, Title: iss.Title, Status: iss.Status}
+}
+
+func loadParentRef(ctx context.Context, store *db.DB, issue db.Issue) (*api.IssueRef, error) {
+	link, err := store.ParentOf(ctx, issue.ID)
+	if errors.Is(err, db.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	parent, err := store.IssueByID(ctx, link.ToIssueID)
+	if err != nil {
+		return nil, err
+	}
+	ref := issueRefFromDB(parent)
+	return &ref, nil
+}
+
+func hydrateIssueOuts(ctx context.Context, store *db.DB, projectID int64, issues []db.Issue) ([]api.IssueOut, error) {
+	ids := make([]int64, len(issues))
+	for i, iss := range issues {
+		ids[i] = iss.ID
+	}
+	labelsByID, err := store.LabelsByIssues(ctx, projectID, ids)
+	if err != nil {
+		return nil, err
+	}
+	parentNumbers, err := store.ParentNumbersByIssues(ctx, projectID, ids)
+	if err != nil {
+		return nil, err
+	}
+	childCounts, err := store.ChildCountsByParents(ctx, projectID, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]api.IssueOut, len(issues))
+	for i, iss := range issues {
+		row := api.IssueOut{Issue: iss, Labels: labelsByID[iss.ID]}
+		if parentNumber, ok := parentNumbers[iss.ID]; ok {
+			row.ParentNumber = &parentNumber
+		}
+		if counts := childCounts[iss.ID]; counts.Total > 0 {
+			row.ChildCounts = &counts
+		}
+		out[i] = row
+	}
+	return out, nil
 }
 
 // loadLinkOuts fetches every link involving issueID, resolving both endpoint

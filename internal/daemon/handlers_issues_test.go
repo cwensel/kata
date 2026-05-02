@@ -417,6 +417,53 @@ func TestListIssues_HydratesLabels(t *testing.T) {
 	assert.Equal(t, []string{"enhancement"}, byNumber[second])
 }
 
+func TestListIssues_IncludesHierarchyMetadata(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	parent := createIssueViaHTTP(t, env, pid, "parent")
+	child := createIssueViaHTTP(t, env, pid, "child")
+	postLink(t, env, pid, child, "parent", parent)
+
+	resp, err := env.HTTP.Get(env.URL +
+		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var out struct {
+		Issues []struct {
+			Number       int64  `json:"number"`
+			ParentNumber *int64 `json:"parent_number"`
+			ChildCounts  *struct {
+				Open  int `json:"open"`
+				Total int `json:"total"`
+			} `json:"child_counts"`
+		} `json:"issues"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.Len(t, out.Issues, 2)
+	byNumber := map[int64]struct {
+		ParentNumber *int64
+		ChildCounts  *struct {
+			Open  int `json:"open"`
+			Total int `json:"total"`
+		}
+	}{}
+	for _, iss := range out.Issues {
+		byNumber[iss.Number] = struct {
+			ParentNumber *int64
+			ChildCounts  *struct {
+				Open  int `json:"open"`
+				Total int `json:"total"`
+			}
+		}{ParentNumber: iss.ParentNumber, ChildCounts: iss.ChildCounts}
+	}
+	require.NotNil(t, byNumber[parent].ChildCounts)
+	assert.Equal(t, 1, byNumber[parent].ChildCounts.Open)
+	assert.Equal(t, 1, byNumber[parent].ChildCounts.Total)
+	require.NotNil(t, byNumber[child].ParentNumber)
+	assert.Equal(t, parent, *byNumber[child].ParentNumber)
+}
+
 func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	env := testenv.New(t)
 	pid, parent, child := setupTwoIssues(t, env)
@@ -446,4 +493,50 @@ func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	assert.Equal(t, parent, out.Links[0].ToNumber)
 	require.Len(t, out.Labels, 1)
 	assert.Equal(t, "bug", out.Labels[0].Label)
+}
+
+func TestShowIssue_IncludesParentAndChildren(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	parent := createIssueViaHTTP(t, env, pid, "parent")
+	child := createIssueViaHTTP(t, env, pid, "child")
+	grandchild := createIssueViaHTTP(t, env, pid, "grandchild")
+	greatGrandchild := createIssueViaHTTP(t, env, pid, "great grandchild")
+	postLink(t, env, pid, child, "parent", parent)
+	postLink(t, env, pid, grandchild, "parent", child)
+	postLink(t, env, pid, greatGrandchild, "parent", grandchild)
+	postLabel(t, env, pid, grandchild, "bug")
+
+	resp, err := env.HTTP.Get(env.URL +
+		"/api/v1/projects/" + strconv.FormatInt(pid, 10) +
+		"/issues/" + strconv.FormatInt(child, 10))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var out struct {
+		Parent *struct {
+			Number int64  `json:"number"`
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		} `json:"parent"`
+		Children []struct {
+			Number      int64    `json:"number"`
+			Labels      []string `json:"labels"`
+			ChildCounts *struct {
+				Open  int `json:"open"`
+				Total int `json:"total"`
+			} `json:"child_counts"`
+		} `json:"children"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.NotNil(t, out.Parent)
+	assert.Equal(t, parent, out.Parent.Number)
+	assert.Equal(t, "parent", out.Parent.Title)
+	assert.Equal(t, "open", out.Parent.Status)
+	require.Len(t, out.Children, 1)
+	assert.Equal(t, grandchild, out.Children[0].Number)
+	assert.Equal(t, []string{"bug"}, out.Children[0].Labels)
+	require.NotNil(t, out.Children[0].ChildCounts)
+	assert.Equal(t, 1, out.Children[0].ChildCounts.Open)
+	assert.Equal(t, 1, out.Children[0].ChildCounts.Total)
 }
