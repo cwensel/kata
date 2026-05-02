@@ -82,6 +82,7 @@ func newRootCmd() *cobra.Command {
 		newUnassignCmd(),
 		newReadyCmd(),
 		newEventsCmd(),
+		newQuickstartCmd(),
 		newWhoamiCmd(),
 		newHealthCmd(),
 		newProjectsCmd(),

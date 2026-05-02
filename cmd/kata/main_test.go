@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/testenv"
@@ -117,6 +118,17 @@ func TestRoot_Plan3VerbsAdvertised(t *testing.T) {
 		_, ok := registered[verb]
 		assert.Truef(t, ok, "root must register subcommand %q", verb)
 	}
+}
+
+func TestRoot_QuickstartAdvertised(t *testing.T) {
+	cmd := newRootCmd()
+	registered := make(map[string]*cobra.Command, len(cmd.Commands()))
+	for _, sub := range cmd.Commands() {
+		registered[sub.Name()] = sub
+	}
+	quickstart, ok := registered["quickstart"]
+	require.True(t, ok, "root must register quickstart")
+	assert.Contains(t, quickstart.Aliases, "agent-instructions")
 }
 
 // resetRunEEntered restores the package-level sentinel via t.Cleanup so tests

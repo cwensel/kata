@@ -45,9 +45,7 @@ kata is designed around three priorities:
 
 Longer term, kata should support a shared server mode for teams, CI, and
 multiple agents. That future mode should be a real authenticated deployment,
-not the local daemon exposed on a public interface. See
-[`docs/superpowers/specs/2026-04-29-kata-shared-server-mode.md`](docs/superpowers/specs/2026-04-29-kata-shared-server-mode.md)
-for the design notes.
+not the local daemon exposed on a public interface.
 
 ## Install
 
@@ -163,7 +161,7 @@ kata purge <number> --force --confirm "PURGE #<number>"
 
 `delete` is reversible. `purge` is not.
 
-Daemon and diagnostics:
+Daemon, diagnostics, and agent instructions:
 
 ```sh
 kata daemon status
@@ -172,13 +170,20 @@ kata daemon reload
 kata daemon logs --hooks [--tail]
 kata health
 kata whoami
+kata quickstart
 kata tui
 ```
 
 ## Agent Quickstart
 
 This is the short version to give any coding agent, regardless of whether that
-agent supports skills, memories, or custom instructions.
+agent supports skills, memories, or custom instructions. It is also shipped with
+the CLI:
+
+```sh
+kata quickstart
+kata agent-instructions   # alias
+```
 
 1. Run from the project workspace, or pass `--workspace <path>`.
 2. Set `KATA_AUTHOR` once at session start.
@@ -252,7 +257,7 @@ Skills still make sense as an optional layer for agents that support them. A
 good skill can remind the agent to use `--json`, search before create, set
 `KATA_AUTHOR`, and avoid destructive commands. But skills should package the
 same rules as the quickstart, not replace it. The durable source of truth should
-stay in this README or, later, a generated `kata agent-instructions` command.
+stay in this README and the installed `kata quickstart` command.
 
 ## Sharing and multi-user workflows
 
@@ -338,10 +343,3 @@ name = "product"
 
 Commit `.kata.toml` when multiple agents, clones, or worktrees should resolve
 to the same kata project.
-
-## Design Docs
-
-- [`docs/superpowers/specs/2026-04-29-kata-design.md`](docs/superpowers/specs/2026-04-29-kata-design.md)
-- [`docs/superpowers/specs/2026-04-29-kata-shared-server-mode.md`](docs/superpowers/specs/2026-04-29-kata-shared-server-mode.md)
-- [`docs/superpowers/specs/2026-04-30-kata-events-design.md`](docs/superpowers/specs/2026-04-30-kata-events-design.md)
-- [`docs/superpowers/specs/2026-04-30-kata-hooks-design.md`](docs/superpowers/specs/2026-04-30-kata-hooks-design.md)
