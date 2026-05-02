@@ -106,6 +106,35 @@ func TestLabelsByIssues_MultiIssue_HappyPath(t *testing.T) {
 	assert.Equal(t, []string{"prio-1", "wontfix"}, got[i3.ID])
 }
 
+// TestLabelsByIssues_LargeBatch_ChunksUnderSQLiteLimit verifies that the
+// query stays under SQLite's default bound-parameter limit (999) when
+// the caller passes more than ~1000 issue IDs. This was roborev job 246:
+// a list page with limit=0 on a >999-issue project produced a 500
+// because the IN clause exceeded the bound-parameter cap. The function
+// now chunks the IN clause into groups of <=500 IDs and merges results.
+func TestLabelsByIssues_LargeBatch_ChunksUnderSQLiteLimit(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	const n = 1500
+	ids := make([]int64, 0, n)
+	for i := 0; i < n; i++ {
+		issue := makeIssue(t, ctx, d, p.ID, "i", "tester")
+		_, err := d.AddLabel(ctx, issue.ID, "bug", "tester")
+		require.NoError(t, err)
+		ids = append(ids, issue.ID)
+	}
+
+	got, err := d.LabelsByIssues(ctx, p.ID, ids)
+	require.NoError(t, err, "1500-issue batch must not exceed SQLite parameter limit")
+	assert.Len(t, got, n, "every issue's labels must be returned, regardless of chunking")
+	for _, id := range ids {
+		assert.Equal(t, []string{"bug"}, got[id])
+	}
+}
+
 // TestLabelsByIssues_IssueWithNoLabelsAbsent verifies the contract that
 // issues with no labels are absent from the map. Callers treat a
 // missing key as "no labels"; this prevents allocation noise on the

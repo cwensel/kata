@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+// labelsByIssuesChunkSize bounds the IN-clause width per query. SQLite's
+// SQLITE_LIMIT_VARIABLE_NUMBER defaults to 32766 in modern builds and as
+// low as 999 in older ones; 500 stays comfortably under both with one
+// extra parameter slot for project_id. Chunking trades one query for
+// ceil(N/500) queries on large projects in exchange for safety against
+// 500-class errors on list pages with limit=0 / unbounded results.
+const labelsByIssuesChunkSize = 500
+
 // LabelsByIssues returns a map of issueID → []label for every issue in
 // issueIDs that belongs to projectID. Labels per issue are sorted
 // alphabetically; issues with no labels are absent from the map (callers
@@ -19,22 +27,43 @@ import (
 // column (see migrations/0001_init.sql) — projection has to go through
 // issues.project_id.
 //
-// One backend round-trip per list page (vs N for per-issue LabelsByIssue
-// calls) so the daemon's list handler stays cheap under high-issue-count
-// workloads. The composite ORDER BY (issue_id ASC, label ASC) sorts on
-// the primary key index of issue_labels and so should not require a
-// filesort even on large projects; defer index-tuning to a follow-up if
-// EXPLAIN QUERY PLAN reports otherwise.
+// Chunked into groups of labelsByIssuesChunkSize to stay under SQLite's
+// bound-parameter limit (roborev job 246). The list endpoint allows
+// limit=0 / unbounded results, so callers can pass arbitrarily many IDs;
+// the previous single-shot IN clause turned a >999-issue list page into
+// a 500 on builds with the older SQLITE_LIMIT_VARIABLE_NUMBER default.
+// Per-issue ordering is preserved by sorting on (issue_id, label) within
+// each chunk and by appending into the same map across chunks.
 func (d *DB) LabelsByIssues(
 	ctx context.Context, projectID int64, issueIDs []int64,
 ) (map[int64][]string, error) {
+	out := map[int64][]string{}
 	if len(issueIDs) == 0 {
-		return map[int64][]string{}, nil
+		return out, nil
 	}
-	placeholders := make([]string, len(issueIDs))
-	args := make([]interface{}, 0, len(issueIDs)+1)
+	for i := 0; i < len(issueIDs); i += labelsByIssuesChunkSize {
+		end := i + labelsByIssuesChunkSize
+		if end > len(issueIDs) {
+			end = len(issueIDs)
+		}
+		if err := d.appendLabelsForChunk(ctx, projectID, issueIDs[i:end], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// appendLabelsForChunk runs the LabelsByIssues query for one chunk of
+// issue IDs and merges results into out. Extracted to keep the chunking
+// loop readable and to bound function complexity per the project's
+// 8-cyclomatic / 100-line limits.
+func (d *DB) appendLabelsForChunk(
+	ctx context.Context, projectID int64, chunk []int64, out map[int64][]string,
+) error {
+	placeholders := make([]string, len(chunk))
+	args := make([]interface{}, 0, len(chunk)+1)
 	args = append(args, projectID)
-	for i, id := range issueIDs {
+	for i, id := range chunk {
 		placeholders[i] = "?"
 		args = append(args, id)
 	}
@@ -46,22 +75,21 @@ func (d *DB) LabelsByIssues(
 	          ORDER BY il.issue_id ASC, il.label ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("labels by issues: %w", err)
+		return fmt.Errorf("labels by issues: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := map[int64][]string{}
 	for rows.Next() {
 		var (
 			issueID int64
 			label   string
 		)
 		if err := rows.Scan(&issueID, &label); err != nil {
-			return nil, fmt.Errorf("scan labels by issues: %w", err)
+			return fmt.Errorf("scan labels by issues: %w", err)
 		}
 		out[issueID] = append(out[issueID], label)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate labels by issues: %w", err)
+		return fmt.Errorf("iterate labels by issues: %w", err)
 	}
-	return out, nil
+	return nil
 }
