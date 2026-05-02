@@ -21,6 +21,7 @@ These companion mockups are local design artifacts, not production assets. They 
 4. **Show hierarchy in detail too.** Detail view always shows parent context when present and a dedicated Children section for direct children.
 5. **Complete contextual hint bars.** Every main screen, pane focus, tab, form, prompt, and modal must render a complete relevant hint row. `?` remains the full help screen, but the footer must not be incomplete.
 6. **Use in-app input as the primary flow.** `$EDITOR` remains available only as an escape hatch for long body/comment fields.
+7. **There is no flat queue mode in this design.** The expandable hierarchical queue is the queue. A future flat/debug view can be added later if real usage proves it necessary.
 
 ## Problems To Fix
 
@@ -43,7 +44,7 @@ The redesigned TUI has four core surfaces.
 Every main view renders the same frame:
 
 1. **Top title strip:** `kata / project <name>` on the left, counts and version on the right.
-2. **State strip:** live/SSE state, last sync age, actor, active view mode, and filter chips.
+2. **State strip:** live/SSE state, last sync age, actor, queue/filter state, and filter chips.
 3. **Body:** list, split panes, detail, empty state, or help overlay.
 4. **Info line:** flash, error, reconnect state, stale/refetch state, scroll range, or active prompt.
 5. **Footer hint row:** context-specific key hints for the focused pane or active input.
@@ -63,6 +64,7 @@ Default queue behavior:
 - Cursor movement treats visible parent and child rows as a single flat visible row list.
 - Selection remains identity-based, not index-based. The identity is `(project_id, issue_number)`.
 - Parent expansion state is keyed by `(project_id, issue_number)` and survives refetches while the issue still exists.
+- The queue has no user-visible flat/tree toggle in v1. The disclosure column is always present.
 
 Suggested columns:
 
@@ -93,8 +95,10 @@ Child progress:
 
 Filtering:
 
-- Tree mode should fetch an all-status working set for the current project and apply status/search/owner/label filters client-side. Ancestor context cannot be rendered correctly if the daemon returns only open rows and a matching child's parent is closed.
-- Filtering applies to issue rows, but ancestors of matched children should remain visible as context when tree mode is active.
+- The queue fetches an all-status working set for the current project and applies status/search/owner/label filters client-side. Status still narrows the rendered rows; it is no longer sent as a server-side query filter from the TUI queue path.
+- The working set is capped at 2,000 rows in v1, ordered by the daemon's existing `updated_at DESC, id DESC` list order. When the cap is hit, the info/footer line must show a truncation notice such as `showing first 2000 issues; refine filters`.
+- Ancestor context is guaranteed only inside the returned working set. If the 2,000-row cap excludes a matched row's ancestor, render the nearest known row normally and keep the truncation notice visible.
+- Filtering applies to issue rows, but ancestors of matched children should remain visible as context when the ancestor exists in the working set.
 - If a child matches a search/filter but its parent does not, render the parent as a context row and auto-expand enough to show the match.
 - Context rows should be visually subdued if they do not themselves match.
 - `c clear` resets filters, not expansion state.
@@ -120,7 +124,7 @@ x/r                close/reopen selected issue
 q                  quit
 ```
 
-`N new child` should open the same new issue form, prefilled with an initial parent link to the selected issue. The form title should read `new child issue`.
+`N new child` should open the same new issue form, prefilled with an initial parent link to the selected issue. The form title should read `new child issue`. If the visible queue is empty or no row is selected, `N` is a no-op and the footer must not render the `N new child` hint.
 
 ### Split Mode
 
@@ -137,7 +141,7 @@ Split mode remains the wide-terminal experience:
 Pane chrome:
 
 - Both panes get titles.
-- List pane title: `issues` plus `tree focus` or `list focus`.
+- List pane title: `issues` plus `queue focus`.
 - Detail pane title: `#42 · open · owner wesm` plus updated age.
 - Use a visible gutter between panes. Do not let borders touch.
 
@@ -173,7 +177,11 @@ The Children section:
 - Shows direct children of the current issue.
 - Appears between body and activity.
 - Uses a compact table with issue number, status, title, owner, updated, and optional child progress.
-- Has its own cursor when focused through the detail pane's row navigation.
+- Has its own cursor and explicit detail focus state.
+- `tab` cycles detail focus through `Children`, `Comments`, `Events`, and `Links`; skip `Children` when there are no children.
+- `shift+tab` cycles focus backward through the same sequence.
+- When focus is `Children`, `j/k` move the child cursor.
+- When focus is `Comments`, `Events`, or `Links`, `j/k` keep the current activity-tab cursor behavior.
 - `enter` on a child jumps to that child detail, using the existing detail navigation stack.
 - Empty state reads `(no child issues)`, but only if vertical space allows; otherwise omit the section body and keep the parent/children summary in the header.
 
@@ -183,6 +191,7 @@ Activity tabs:
 - Links tab remains the generic relationship escape hatch.
 - Parent and children are promoted out of Links because they are core structure, not miscellaneous links.
 - The Links tab still shows `parent`, `blocks`, and `related` raw link rows for complete auditability until a future relationship-specific UI replaces it.
+- The Children section is not derived from the Links tab; it renders only from `show issue`'s `Children` field.
 
 Footer hints must change by tab and focus:
 
@@ -198,7 +207,7 @@ Forms must look and behave like part of the app:
 - Centered forms for new issue, new child, edit body, and comment.
 - Panel-local or info-line prompts for short actions like add label, remove label, assign owner, set parent, add blocker, add link.
 - Inline command bar for search.
-- Filter form for status, owner, search, and labels.
+- Filter form for status, owner, search, and labels. The labels field is in scope for this redesign and filters client-side against the labels already hydrated on list rows.
 
 New issue form fields:
 
@@ -214,7 +223,21 @@ For `n new issue`, Parent is empty by default.
 
 For `N new child`, Parent is prefilled with the selected issue and shown as a fixed field unless the user explicitly clears it. If the current selection is itself a child, this still creates a child under the selected issue, not under the selected issue's parent.
 
-The existing create endpoint already supports initial links. The TUI `CreateIssueBody` should grow a `Links []CreateInitialLinkBody` or equivalent client-side DTO so `N` can create the child and parent link in one request.
+The existing daemon create endpoint already supports initial links. The TUI `CreateIssueBody` should grow the client-side equivalent only:
+
+```go
+type CreateInitialLinkBody struct {
+    Type string `json:"type"`
+    ToNumber int64 `json:"to_number"`
+}
+
+type CreateIssueBody struct {
+    // existing fields...
+    Links []CreateInitialLinkBody `json:"links,omitempty"`
+}
+```
+
+`N new child` submits a single create request with `Links: []CreateInitialLinkBody{{Type: "parent", ToNumber: selected.Number}}`.
 
 ## Data And API Implications
 
@@ -224,6 +247,8 @@ Current state:
 - Each child has at most one parent.
 - `show issue` returns links touching the issue.
 - The list endpoint is flat but now includes labels.
+- The daemon already supports initial links on create through `api.CreateInitialLinkBody`; only the TUI client DTO needs to expose that field for `N new child`.
+- Soft-deleted rows remain out of the queue because the daemon list query excludes `deleted_at IS NOT NULL` rows today.
 
 The queue needs relationship metadata without per-row N+1 detail fetches.
 
@@ -233,7 +258,7 @@ Preferred daemon addition:
 type IssueOut struct {
     db.Issue
     Labels []string `json:"labels,omitempty"`
-    Parent *IssueRef `json:"parent,omitempty"`
+    ParentNumber *int64 `json:"parent_number,omitempty"`
     ChildCounts *ChildCounts `json:"child_counts,omitempty"`
 }
 
@@ -256,7 +281,7 @@ This keeps the existing list response flat while giving the TUI enough data to:
 - show disclosure glyphs
 - render direct child progress
 - preserve expansion across refetches
-- filter tree rows client-side while keeping ancestor context
+- filter queue rows client-side while keeping ancestor context by walking the in-memory `ParentNumber` chain
 
 Detail needs direct child rows. Preferred addition to `show issue`:
 
@@ -273,18 +298,15 @@ type ShowIssueResponse struct {
 }
 ```
 
-If daemon changes are too large for the first implementation, acceptable fallback:
-
-- Build tree metadata client-side from list rows only after adding `ParentNumber` to list rows.
-- Keep the detail Children section behind the `Links` data initially, but only as a short-lived bridge. Do not fetch every linked issue one-by-one in the steady-state renderer.
+The Children section must render only from the new `Children` field. Do not derive it by filtering `Links`, and do not add per-child detail fetches in the steady-state renderer. The Links tab remains raw relationship audit data; hierarchy rendering uses the hierarchy fields above.
 
 DB helpers likely needed:
 
-- `ParentRefsByIssues(ctx, projectID, issueIDs []int64) map[int64]IssueRef`
+- `ParentNumbersByIssues(ctx, projectID, issueIDs []int64) map[int64]int64`
 - `ChildCountsByParents(ctx, projectID, parentIssueIDs []int64) map[int64]ChildCounts`
 - `ChildrenOfIssue(ctx, projectID, parentIssueID int64) []IssueOut`
 
-All helpers must constrain by `project_id`.
+All helpers are net-new. They must constrain by `project_id`; helpers that use `IN (...)` must use the same chunking pattern as `LabelsByIssues` so large list pages do not exceed SQLite's bound-parameter limit.
 
 SSE invalidation:
 
@@ -292,6 +314,7 @@ SSE invalidation:
 - Parent link changes for the open detail issue refetch detail.
 - Parent link changes where the open detail issue is the parent also refetch detail, so the Children section stays fresh.
 - Existing list refetch debounce remains; do not add per-child ad hoc refetch loops.
+- This is new TUI work. The daemon already emits `issue.linked`/`issue.unlinked` with link type in the event payload; the TUI event router must parse the payload and route parent-link events to queue/detail hierarchy invalidation.
 
 ## Visual Language
 
@@ -306,7 +329,6 @@ Status colors:
 
 - open: green
 - closed: cyan
-- deleted: muted red
 - live/synced: green dot
 - reconnecting/stale: gold
 - errors: red
@@ -323,7 +345,8 @@ No-color mode:
 
 - Active row must still show `>` or `›`.
 - Active tab must still use brackets.
-- Expanded/collapsed state must use visible glyphs or ASCII fallback.
+- Expanded/collapsed state uses Unicode `▸` collapsed and `▾` expanded when color/UTF-8 glyph rendering is enabled.
+- Under `NO_COLOR` / `KATA_COLOR_MODE=none`, the disclosure fallback is `+` for collapsed and `-` for expanded. Do not reuse `>` because it is already the active-row marker.
 - Focused pane must have textual title/focus indication, not only colored border.
 
 ## Help System
@@ -333,49 +356,52 @@ The keymap and help screen must be treated as a contract.
 Requirements:
 
 - Add a focused-pane/footer help matrix and test every context.
-- The full `?` help screen must group keys by Global, Queue, Tree, Detail, Children, Forms, and Filters.
+- The full `?` help screen must group keys by Global, Queue, Detail, Children, Forms, and Filters.
 - The persistent footer is not a subset generated by hand in each renderer. It should come from context-aware helpers so new bindings do not drift.
-- Snapshot tests should cover list, split list focus, split detail focus, detail comments, detail children, label prompt, parent prompt, new issue form, new child form, and filter form.
+- Snapshot tests should cover list collapsed, list expanded, list auto-expanded on child match, list context row, split list focus, split detail focus, detail comments, detail children, label prompt, parent prompt, new issue form, new child form, filter form, narrow viewport, and `NO_COLOR`.
 
 ## Suggested Implementation Phases
 
 These phases are intentionally larger than the eventual implementation plan tasks. The plan doc should split each phase into test-first commits.
 
-1. **Frame and visual system pass**
-   - Normalize title strip, state strip, info line, footer row, pane titles, split gutter, and focus treatment.
-   - Introduce a context-aware footer hint helper.
-   - Update help screen structure.
+1. **Daemon hierarchy DTOs and DB helpers**
+   - Add `ParentNumber`, `ChildCounts`, `Parent`, and `Children` wire fields.
+   - Implement relationship helper queries with project scoping and IN-clause chunking.
+   - Add daemon and DB tests before touching TUI rendering.
 
-2. **Queue row model and tree metadata**
-   - Add relationship metadata to list DTOs.
-   - Build visible queue rows from flat issue data plus expansion state.
-   - Preserve cursor identity and expansion state through refetches.
+2. **TUI client and queue model**
+   - Add TUI client fields for parent number, child counts, show parent, show children, create initial links, and list limit.
+   - Build visible queue rows from the all-status capped working set plus expansion state.
+   - Preserve cursor identity and expansion state through refetches, parent insertions, and filter changes.
 
-3. **Expandable queue rendering and input**
-   - Render disclosure glyphs, indentation, child progress, context rows for filtered children, and footer hints.
-   - Add `space` expand/collapse and `N` new child.
-
-4. **Detail hierarchy**
-   - Add parent and children data to show issue response.
-   - Render parent summary and Children section.
+3. **Detail hierarchy model**
+   - Store parent and direct children on detail state.
+   - Add explicit detail focus for Children versus activity tabs.
    - Add child row navigation and enter-to-jump.
 
-5. **Forms and prompts polish**
+4. **Context-aware footer and help system**
+   - Introduce a single context-aware footer hint helper.
+   - Update the full help screen groups.
+   - Use unit tests for footer matrices before snapshot churn.
+
+5. **Rendering and forms**
+   - Normalize title strip, state strip, info line, pane titles, split gutter, and focus treatment.
+   - Render disclosure glyphs, indentation, child progress, context rows, parent summary, and Children section.
    - Add Parent field to new issue form.
    - Make `N` prefill parent link and submit through create-with-initial-link.
-   - Audit every prompt and footer hint.
+   - Convert any remaining inline comment input to the centered comment form.
+   - Update golden snapshots once for this visual/rendering phase.
 
 6. **Aesthetic final pass**
-   - Update golden snapshots.
    - Verify no text overlap at narrow, normal, and wide sizes.
-   - Run color-none snapshots.
+   - Run `NO_COLOR` snapshots.
    - Manually compare against the visual companion mockups.
+   - Adjust spacing/palette after data-backed screens exist, avoiding a second broad golden rewrite.
 
 ## Acceptance Criteria
 
 The redesign is complete when:
 
-- The queue feels like the primary workspace, not a raw list.
 - Parent issues with children can be expanded and collapsed in the queue.
 - Child progress counts render without N+1 detail fetches.
 - Detail shows parent context and direct children without forcing users into the Links tab.
@@ -384,13 +410,19 @@ The redesign is complete when:
 - Forms are in-app by default and visually consistent.
 - No rendered agent/user text can inject terminal control sequences.
 - No tested viewport has overlapping text, clipped controls, or footer drift.
+- Snapshot tests cover collapsed tree, expanded tree, auto-expanded child match, context row, narrow viewport, split list focus, split detail focus, detail children, `NO_COLOR`, and ASCII disclosure fallback.
+- Behavioral tests cover cursor preservation across refetch, parent insertion, expansion toggles, and filter changes.
+- DB tests cover parent-number hydration, child-count aggregation, direct-children listing, project scoping, empty inputs, and chunked large inputs.
+- SSE tests cover `issue.linked` and `issue.unlinked` parent payloads invalidating the queue and open detail hierarchy state.
 - `go test ./internal/tui ./internal/daemon ./internal/db ./cmd/kata` passes before the implementation branch is considered ready.
 
-## Open Questions For The Implementation Plan
+## Resolved Planning Decisions
 
-1. Exact daemon DTO shape for parent and child count metadata.
-2. Whether `Parent` in the new issue form is editable in the first pass or fixed only for `N new child`.
-3. Whether detail Children section gets its own explicit focus mode or shares the active tab cursor machinery.
-4. Whether filtered child matches auto-expand parents immediately or render a separate "matched children" mode.
-
-Recommendation for the plan: resolve these conservatively. Prefer direct children only, fixed prefilled parent for `N`, and reuse existing detail cursor/windowing primitives where possible.
+- The queue is hierarchical-only in v1; no flat mode.
+- The queue fetches all statuses with a 2,000-row cap and applies status/search/owner/label filters client-side.
+- List rows carry `ParentNumber`; the TUI walks the in-memory parent chain for ancestor context.
+- Detail Children render only from `show issue`'s `Children` field.
+- `N` is no-op with no selected row and is hidden from the footer when not applicable.
+- The new issue form's Parent field is editable for `n`; `N` prefills it with the selected issue and submits a parent initial link unless the user clears the field.
+- Children get explicit detail focus, cycled with `tab`/`shift+tab` alongside Comments, Events, and Links.
+- Filtered child matches auto-expand their available ancestor chain.
