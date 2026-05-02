@@ -1280,8 +1280,3 @@ func (m Model) chrome() viewChrome {
 		input:     m.input,
 	}
 }
-
-// kataVersion is the build-time version string used by the title bar.
-// Hardcoded today; a future plan can wire `-ldflags
-// -X`-style injection through an internal/version package.
-const kataVersion = "v0.1.0"
