@@ -1,6 +1,6 @@
 # kata かた
 
-Small issue tracking for humans and agents working on code.
+Local-first issue tracking for humans and coding agents.
 
 kata is a local-first issue tracker for AI-assisted software work. It gives
 agents a structured place to record tasks, decisions, links, comments, and state
