@@ -57,20 +57,16 @@ func TestCache_MarkStaleIdempotent(t *testing.T) {
 	}
 }
 
-// TestCache_FilterChange_ReplacesSlot: a filter change replaces the
-// slot rather than evicting; the old data is no longer reachable but
-// the cache is not empty.
-func TestCache_FilterChange_ReplacesSlot(t *testing.T) {
-	c := newIssueCache()
-	c.put(cacheKey{projectID: 7, filter: ListFilter{Status: "open"}},
-		[]Issue{{Number: 1}})
-	c.put(cacheKey{projectID: 7, filter: ListFilter{Status: "closed"}},
-		[]Issue{{Number: 99}})
-	if c.key.filter.Status != "closed" {
-		t.Fatalf("key.filter.Status = %q, want closed", c.key.filter.Status)
+func TestCache_RenderFilterDoesNotChangeSlotKey(t *testing.T) {
+	m := Model{
+		scope: scope{projectID: 7},
+		list: listModel{filter: ListFilter{
+			Status: "open", Owner: "alice", Search: "bug", Labels: []string{"prio-1"},
+		}},
 	}
-	if len(c.data) != 1 || c.data[0].Number != 99 {
-		t.Fatalf("data = %+v, want [{Number:99}]", c.data)
+	want := cacheKey{projectID: 7, limit: queueFetchLimit}
+	if !cacheKeysEqual(m.currentCacheKey(), want) {
+		t.Fatalf("currentCacheKey = %+v, want %+v", m.currentCacheKey(), want)
 	}
 }
 

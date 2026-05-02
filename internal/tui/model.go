@@ -207,9 +207,9 @@ func (m Model) waitForSSE() tea.Cmd {
 // filter since dispatch so a slow initial fetch can't clobber a fresh
 // post-toggle list.
 func (m Model) fetchInitial() tea.Cmd {
-	api, sc, filter := m.api, m.scope, initialFilter(m.opts)
+	api, sc, filter := m.api, m.scope, queueFetchFilter()
 	dispatchKey := cacheKey{
-		allProjects: sc.allProjects, projectID: sc.projectID, filter: filter,
+		allProjects: sc.allProjects, projectID: sc.projectID, limit: filter.Limit,
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1005,9 +1005,8 @@ func (m Model) commitInput() (Model, tea.Cmd) {
 // row (the prior selection may no longer match the new filter, and
 // a clamp would be less predictable than starting at the top); the
 // status line clears so any prior mutation hint doesn't linger over
-// the new view. A refetch is dispatched to pick up the daemon-side
-// Status filter (Owner/Search are client-side); the form clears in
-// one step (no saving=true, no daemon round-trip).
+// the new view. The form clears in one step; all filters are applied
+// client-side over the cached all-status working set.
 //
 // Mirrors the s/c convention in applyFilterKey — explicit "I changed
 // the filter" intent overrides the implicit "follow the same issue
@@ -1031,7 +1030,7 @@ func (m Model) commitFilterForm(form inputState) (Model, tea.Cmd) {
 	m.list.selectedNumber = 0
 	m.list.status = ""
 	m.input = inputState{}
-	return m, m.list.refetchCmd(m.api, m.scope)
+	return m, nil
 }
 
 // commitFormInput handles ctrl+s on a centered form. The form stays
@@ -1340,19 +1339,20 @@ func (m Model) routeSSE(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 func (m Model) populateCache(msg tea.Msg) Model {
 	_, issues, err := fetchPayload(msg)
 	if err == nil && m.cache != nil {
+		issues, _ = trimQueueWorkingSet(issues)
 		m.cache.put(m.currentCacheKey(), issues)
 	}
 	m.list = m.list.applyFetched(msg)
 	return m
 }
 
-// currentCacheKey is the cacheKey for the current scope/filter — the
+// currentCacheKey is the cacheKey for the current queue working set — the
 // authority for "is this fetch still relevant" comparisons.
 func (m Model) currentCacheKey() cacheKey {
 	return cacheKey{
 		allProjects: m.scope.allProjects,
 		projectID:   m.scope.projectID,
-		filter:      m.list.filter,
+		limit:       queueFetchLimit,
 	}
 }
 
@@ -1369,27 +1369,12 @@ func fetchPayload(msg tea.Msg) (cacheKey, []Issue, error) {
 	return cacheKey{}, nil, nil
 }
 
-// cacheKeysEqual reports whether two cacheKeys denote the same
-// scope+filter. cacheKey can't be compared with == because filter.Labels
-// is a slice — Go's spec disallows slice equality outside reflect.
+// cacheKeysEqual reports whether two cacheKeys denote the same queue
+// working set.
 func cacheKeysEqual(a, b cacheKey) bool {
-	if a.allProjects != b.allProjects || a.projectID != b.projectID {
-		return false
-	}
-	af, bf := a.filter, b.filter
-	if af.Status != bf.Status || af.Owner != bf.Owner ||
-		af.Author != bf.Author || af.Search != bf.Search {
-		return false
-	}
-	if len(af.Labels) != len(bf.Labels) {
-		return false
-	}
-	for i := range af.Labels {
-		if af.Labels[i] != bf.Labels[i] {
-			return false
-		}
-	}
-	return true
+	return a.allProjects == b.allProjects &&
+		a.projectID == b.projectID &&
+		a.limit == b.limit
 }
 
 // handleEventReceived marks the cache stale, kicks off (or coalesces

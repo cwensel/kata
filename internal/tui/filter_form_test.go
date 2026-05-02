@@ -144,8 +144,8 @@ func TestFilterForm_StatusFieldRadioCycle_LeftRightSpace(t *testing.T) {
 // TestFilterForm_CommitUsesDedicatedPath (load-bearing): commit goes
 // through commitFilterForm, NOT applyLiveBarFilter or commitFormInput.
 // Sets Status=open, Owner=alice, Search=login on the form, calls
-// commitInput, asserts the full ListFilter lands in lm.filter and a
-// refetch cmd is dispatched.
+// commitInput, and asserts the full ListFilter lands in lm.filter without
+// dispatching a refetch.
 //
 // applyLiveBarFilter would only set ONE field (the active bar); the
 // dedicated path sets all three atomically.
@@ -169,8 +169,8 @@ func TestFilterForm_CommitUsesDedicatedPath(t *testing.T) {
 	// ctrl+s commits.
 	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	nm := out.(Model)
-	if cmd == nil {
-		t.Fatal("commit produced no cmd; expected refetch")
+	if cmd != nil {
+		t.Fatalf("commit produced cmd %T; filters should apply client-side", cmd)
 	}
 	want := ListFilter{Status: "open", Owner: "alice", Search: "login"}
 	if !listFilterEqual(nm.list.filter, want) {
@@ -212,15 +212,13 @@ func TestFilterForm_CommitClearsLmStatus(t *testing.T) {
 	}
 }
 
-// TestFilterForm_CommitDispatchesRefetch: commit always returns a
-// non-nil cmd that fetches the list under the new filter. Status is
-// daemon-side; Owner/Search are client-side but the refetch is
-// uniform so the cache stays warm.
-func TestFilterForm_CommitDispatchesRefetch(t *testing.T) {
+// TestFilterForm_CommitDoesNotRefetch: commit applies filters over the
+// cached all-status working set and returns no command.
+func TestFilterForm_CommitDoesNotRefetch(t *testing.T) {
 	m := openFilterForm(t, filterFormFixture())
 	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	if cmd == nil {
-		t.Fatal("expected non-nil refetch cmd")
+	if cmd != nil {
+		t.Fatalf("expected nil cmd, got %T", cmd)
 	}
 	_ = out
 }

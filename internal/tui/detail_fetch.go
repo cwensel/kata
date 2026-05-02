@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// fetchIssue wraps Client.GetIssue for the Enter-jump path. The 5s
+// fetchIssue wraps Client.GetIssueDetail for the Enter-jump path. The 5s
 // ceiling matches fetchInitial so the detail view honors the same
 // budget as every other read. gen tags the detail-open generation so
 // applyFetched can discard the result if the user jumped or popped
@@ -16,7 +16,11 @@ func fetchIssue(api detailAPI, projectID, number, gen int64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		issue, err := api.GetIssue(ctx, projectID, number)
+		detail, err := api.GetIssueDetail(ctx, projectID, number)
+		var issue *Issue
+		if detail != nil {
+			issue = detail.Issue
+		}
 		return detailFetchedMsg{gen: gen, issue: issue, err: err}
 	}
 }

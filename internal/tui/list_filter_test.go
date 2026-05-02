@@ -108,29 +108,47 @@ func drainCmd(
 	return out
 }
 
-// TestList_StatusCycle confirms `s` cycles "" → open → closed → "" and
-// each cycle dispatches a refetch. The third press lands back on "" so
-// the chip strip empties.
+// TestList_StatusCycle confirms `s` cycles "" → open → closed → "" without
+// refetching. Status now filters the cached all-status working set.
 func TestList_StatusCycle(t *testing.T) {
 	api := &fakeListAPI{}
 	km := newKeymap()
 	sc := scope{projectID: 7}
-	lm := listModel{}
+	lm := listModel{issues: []Issue{
+		{Number: 1, Status: "open"},
+		{Number: 2, Status: "closed"},
+	}}
 
-	wants := []string{"open", "closed", ""}
+	wants := []struct {
+		status  string
+		visible []int64
+	}{
+		{status: "open", visible: []int64{1}},
+		{status: "closed", visible: []int64{2}},
+		{status: "", visible: []int64{1, 2}},
+	}
 	for i, want := range wants {
 		var cmd tea.Cmd
 		lm, cmd = lm.Update(runeKey('s'), km, api, sc)
-		if lm.filter.Status != want {
-			t.Fatalf("step %d: status = %q, want %q", i, lm.filter.Status, want)
+		if lm.filter.Status != want.status {
+			t.Fatalf("step %d: status = %q, want %q", i, lm.filter.Status, want.status)
 		}
-		if cmd == nil {
-			t.Fatalf("step %d: expected refetch cmd, got nil", i)
+		if cmd != nil {
+			t.Fatalf("step %d: expected nil cmd, got %T", i, cmd)
 		}
-		_ = cmd() // execute so the fake records it
+		visible := filteredIssues(lm.issues, lm.filter)
+		if len(visible) != len(want.visible) {
+			t.Fatalf("step %d: visible = %+v, want numbers %v", i, visible, want.visible)
+		}
+		for j, wantNumber := range want.visible {
+			if visible[j].Number != wantNumber {
+				t.Fatalf("step %d row %d: visible #%d, want #%d",
+					i, j, visible[j].Number, wantNumber)
+			}
+		}
 	}
-	if api.listIssuesCalls != 3 {
-		t.Fatalf("listIssuesCalls = %d, want 3", api.listIssuesCalls)
+	if api.listIssuesCalls != 0 {
+		t.Fatalf("listIssuesCalls = %d, want 0", api.listIssuesCalls)
 	}
 }
 
@@ -231,7 +249,7 @@ func openBarFromCmd(t *testing.T, m Model, key rune) Model {
 }
 
 // TestList_ClearFilters_ZeroesEveryField: `c` zeroes every filter slot
-// and dispatches a refetch. There is no IncludeDeleted slot today (see
+// and does not dispatch a refetch. There is no IncludeDeleted slot today (see
 // ListFilter doc) so the post-state is the zero value.
 func TestList_ClearFilters_ZeroesEveryField(t *testing.T) {
 	api := &fakeListAPI{}
@@ -247,8 +265,32 @@ func TestList_ClearFilters_ZeroesEveryField(t *testing.T) {
 		len(lm.filter.Labels) != 0 {
 		t.Fatalf("filters not cleared: %+v", lm.filter)
 	}
-	if cmd == nil {
-		t.Fatal("expected refetch on clear")
+	if cmd != nil {
+		t.Fatalf("expected nil cmd on clear, got %T", cmd)
+	}
+}
+
+func TestList_ApplyFetched_SetsTruncatedAboveWorkingSetLimitAndTrims(t *testing.T) {
+	issues := make([]Issue, queueFetchLimit)
+	for i := range issues {
+		issues[i] = Issue{Number: int64(i + 1)}
+	}
+
+	lm := listModel{}.applyFetched(initialFetchMsg{issues: issues})
+	if !lm.truncated {
+		t.Fatal("truncated = false, want true for sentinel row")
+	}
+	if len(lm.issues) != queueWorkingSetLimit {
+		t.Fatalf("len(lm.issues) = %d, want %d", len(lm.issues), queueWorkingSetLimit)
+	}
+
+	exact := make([]Issue, queueWorkingSetLimit)
+	lm = listModel{}.applyFetched(initialFetchMsg{issues: exact})
+	if lm.truncated {
+		t.Fatal("truncated = true, want false when sentinel row is absent")
+	}
+	if len(lm.issues) != queueWorkingSetLimit {
+		t.Fatalf("exact len(lm.issues) = %d, want %d", len(lm.issues), queueWorkingSetLimit)
 	}
 }
 
@@ -415,13 +457,37 @@ func TestList_RefetchError_PutsErrOnModel(t *testing.T) {
 	km := newKeymap()
 	sc := scope{projectID: 7}
 
-	lm, cmd := listModel{}.Update(runeKey('s'), km, api, sc)
+	lm := listModel{}
+	cmd := lm.refetchCmd(api, sc)
 	if cmd == nil {
 		t.Fatal("expected refetch")
 	}
 	lm = drainCmd(t, lm, cmd, km, api, sc)
 	if lm.err == nil || lm.err.Error() != "boom" {
 		t.Fatalf("err = %v, want boom", lm.err)
+	}
+}
+
+func TestList_RefetchUsesQueueFetchFilter(t *testing.T) {
+	api := &fakeListAPI{}
+	sc := scope{projectID: 7}
+	lm := listModel{
+		filter: ListFilter{Status: "closed", Owner: "alice", Search: "bug", Labels: []string{"ux"}},
+	}
+
+	cmd := lm.refetchCmd(api, sc)
+	if cmd == nil {
+		t.Fatal("expected refetch cmd")
+	}
+	_ = cmd()
+	if api.lastListFilter.Limit != queueFetchLimit {
+		t.Fatalf("Limit = %d, want %d", api.lastListFilter.Limit, queueFetchLimit)
+	}
+	if api.lastListFilter.Status != "" {
+		t.Fatalf("Status = %q, want empty all-status fetch", api.lastListFilter.Status)
+	}
+	if api.lastListFilter.Owner != "" || api.lastListFilter.Search != "" || len(api.lastListFilter.Labels) != 0 {
+		t.Fatalf("render filters leaked into fetch filter: %+v", api.lastListFilter)
 	}
 }
 

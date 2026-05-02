@@ -397,7 +397,7 @@ func TestDetail_HardWrap_OversizeRune(t *testing.T) {
 
 // fakeDetailAPI is the test double for detailAPI used by the fetch-cmd
 // tests and the jump-nav tests. The exported result fields seed the
-// return values; lastGetIssue captures the most recent GetIssue call so
+// return values; lastGetIssue captures the most recent GetIssueDetail call so
 // jump tests can assert on the issue number that was fetched. The
 // mutation counters/last-* fields support the Task 9 mutation tests.
 type fakeDetailAPI struct {
@@ -433,11 +433,14 @@ type fakeDetailAPI struct {
 	mutationErr    error
 }
 
-func (f *fakeDetailAPI) GetIssue(
+func (f *fakeDetailAPI) GetIssueDetail(
 	_ context.Context, _, number int64,
-) (*Issue, error) {
+) (*IssueDetail, error) {
 	f.lastGetIssue = number
-	return f.getIssueResult, f.getIssueErr
+	if f.getIssueResult == nil {
+		return nil, f.getIssueErr
+	}
+	return &IssueDetail{Issue: f.getIssueResult}, f.getIssueErr
 }
 
 func (f *fakeDetailAPI) ListComments(

@@ -27,7 +27,7 @@ const detailNavCap = 1
 // detailAPI is the subset of *Client the detail view needs. Mirrors
 // listAPI so detail_test.go can drive Update with a fake.
 type detailAPI interface {
-	GetIssue(ctx context.Context, projectID, number int64) (*Issue, error)
+	GetIssueDetail(ctx context.Context, projectID, number int64) (*IssueDetail, error)
 	ListComments(ctx context.Context, projectID, number int64) ([]CommentEntry, error)
 	ListEvents(ctx context.Context, projectID, number int64) ([]EventLogEntry, error)
 	ListLinks(ctx context.Context, projectID, number int64) ([]LinkEntry, error)

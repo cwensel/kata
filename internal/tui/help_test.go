@@ -163,7 +163,7 @@ func TestHelp_RefetchWhileOpen_KeepsListInSync(t *testing.T) {
 	m.prevView = viewList
 	m.view = viewHelp
 	out, _ := m.Update(refetchedMsg{
-		dispatchKey: cacheKey{projectID: 1},
+		dispatchKey: cacheKey{projectID: 1, limit: queueFetchLimit},
 		issues:      []Issue{{Number: 2, Title: "new"}},
 	})
 	nm := out.(Model)
@@ -197,7 +197,7 @@ func TestHelp_InitialFetchAfterScopeToggle_KeepsListInSync(t *testing.T) {
 	m.view = viewHelp
 	// Simulate an initialFetchMsg from a scope-toggle's fetchInitial.
 	out, _ := m.Update(initialFetchMsg{
-		dispatchKey: cacheKey{projectID: 1},
+		dispatchKey: cacheKey{projectID: 1, limit: queueFetchLimit},
 		issues:      []Issue{{Number: 99, Title: "all-projects row"}},
 	})
 	nm := out.(Model)

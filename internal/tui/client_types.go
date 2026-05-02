@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,26 +14,38 @@ import (
 // keeps absence on a show response from blanking a previously-populated
 // slice. The deleted bool is derived from DeletedAt being non-nil.
 type Issue struct {
-	ID           int64      `json:"id"`
-	ProjectID    int64      `json:"project_id"`
-	Number       int64      `json:"number"`
-	Title        string     `json:"title"`
-	Body         string     `json:"body"`
-	Status       string     `json:"status"`
-	ClosedReason *string    `json:"closed_reason,omitempty"`
-	Owner        *string    `json:"owner,omitempty"`
-	Author       string     `json:"author"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	ClosedAt     *time.Time `json:"closed_at,omitempty"`
-	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
-	Labels       []string   `json:"labels,omitempty"`
+	ID           int64        `json:"id"`
+	ProjectID    int64        `json:"project_id"`
+	Number       int64        `json:"number"`
+	Title        string       `json:"title"`
+	Body         string       `json:"body"`
+	Status       string       `json:"status"`
+	ClosedReason *string      `json:"closed_reason,omitempty"`
+	Owner        *string      `json:"owner,omitempty"`
+	Author       string       `json:"author"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+	ClosedAt     *time.Time   `json:"closed_at,omitempty"`
+	DeletedAt    *time.Time   `json:"deleted_at,omitempty"`
+	Labels       []string     `json:"labels,omitempty"`
+	ParentNumber *int64       `json:"parent_number,omitempty"`
+	ChildCounts  *ChildCounts `json:"child_counts,omitempty"`
 }
 
-// ListFilter is the union of filters used by list views. Only Status is
-// sent on the wire — api.ListIssuesRequest accepts {status, limit} and
-// nothing else. Owner/Author/Labels/Search are applied client-side after
-// the daemon returns results.
+type ChildCounts struct {
+	Open  int `json:"open"`
+	Total int `json:"total"`
+}
+
+type IssueRef struct {
+	Number int64  `json:"number"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+// ListFilter is the union of filters used by list views. Limit is sent
+// on the wire for capped working-set fetches. Status/Owner/Author/
+// Labels/Search are applied client-side after the daemon returns results.
 //
 // IncludeDeleted is deliberately absent: the daemon's list endpoint
 // hard-codes deleted_at IS NULL (internal/db/queries.go::ListIssues) and
@@ -42,17 +55,25 @@ type Issue struct {
 type ListFilter struct {
 	Status, Owner, Author, Search string
 	Labels                        []string
+	Limit                         int
 }
 
-// values returns the query params the daemon honors. Status is the only
-// wire-level filter today; the rest are kept on the struct for
-// client-side filtering in later tasks.
+// values returns the query params the daemon honors for the TUI queue
+// fetch path.
 func (f ListFilter) values() url.Values {
 	v := url.Values{}
 	if f.Status != "" {
 		v.Set("status", f.Status)
 	}
+	if f.Limit > 0 {
+		v.Set("limit", strconv.Itoa(f.Limit))
+	}
 	return v
+}
+
+type CreateInitialLinkBody struct {
+	Type     string `json:"type"`
+	ToNumber int64  `json:"to_number"`
 }
 
 // CreateIssueBody is the input to CreateIssue. IdempotencyKey rides the
@@ -63,13 +84,14 @@ func (f ListFilter) values() url.Values {
 // payload when zero so an inline-row commit does not promise the daemon
 // fields it has no value for.
 type CreateIssueBody struct {
-	Title          string   `json:"title"`
-	Body           string   `json:"body,omitempty"`
-	Actor          string   `json:"actor"`
-	Owner          *string  `json:"owner,omitempty"`
-	Labels         []string `json:"labels,omitempty"`
-	ForceNew       bool     `json:"force_new,omitempty"`
-	IdempotencyKey string   `json:"-"`
+	Title          string                  `json:"title"`
+	Body           string                  `json:"body,omitempty"`
+	Actor          string                  `json:"actor"`
+	Owner          *string                 `json:"owner,omitempty"`
+	Labels         []string                `json:"labels,omitempty"`
+	Links          []CreateInitialLinkBody `json:"links,omitempty"`
+	ForceNew       bool                    `json:"force_new,omitempty"`
+	IdempotencyKey string                  `json:"-"`
 }
 
 // LinkBody is the request projection for POST /links.
@@ -172,6 +194,14 @@ type showIssueBody struct {
 	Comments []CommentEntry   `json:"comments"`
 	Links    []LinkEntry      `json:"links"`
 	Labels   []showIssueLabel `json:"labels"`
+	Parent   *IssueRef        `json:"parent,omitempty"`
+	Children []Issue          `json:"children,omitempty"`
+}
+
+type IssueDetail struct {
+	Issue    *Issue
+	Parent   *IssueRef
+	Children []Issue
 }
 
 // showIssueLabel is the per-label projection from showIssue's labels

@@ -22,7 +22,7 @@ type issueCache struct {
 type cacheKey struct {
 	allProjects bool
 	projectID   int64
-	filter      ListFilter
+	limit       int
 }
 
 func newIssueCache() *issueCache { return &issueCache{} }

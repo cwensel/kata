@@ -49,6 +49,21 @@ type listModel struct {
 	status         string
 	err            error
 	loading        bool
+	truncated      bool
+}
+
+const queueWorkingSetLimit = 2000
+const queueFetchLimit = queueWorkingSetLimit + 1
+
+func queueFetchFilter() ListFilter {
+	return ListFilter{Limit: queueFetchLimit}
+}
+
+func trimQueueWorkingSet(issues []Issue) ([]Issue, bool) {
+	if len(issues) <= queueWorkingSetLimit {
+		return issues, false
+	}
+	return issues[:queueWorkingSetLimit], true
 }
 
 // newListModel returns a listModel waiting for its first fetch. loading=true
@@ -301,11 +316,10 @@ func (lm listModel) syncSelection(rows []Issue) listModel {
 	return lm
 }
 
-// applyFilterKey handles s (cycle status) and c (clear). Both dispatch
-// a refetch so the daemon is the source of truth for status filtering.
-// The cursor is reset to 0 because the filtered-row count (and thus
-// the index space lm.cursor lives in) changes with every filter
-// adjustment.
+// applyFilterKey handles s (cycle status) and c (clear). Filters apply
+// over the cached all-status working set, so these keys do not refetch.
+// The cursor is reset to 0 because the filtered-row count (and thus the
+// index space lm.cursor lives in) changes with every filter adjustment.
 //
 // selectedNumber is also cleared on each commit so the identity-
 // based restore in applyFetched (after the refetch lands) doesn't
@@ -322,13 +336,13 @@ func (lm listModel) applyFilterKey(
 		lm.cursor = 0
 		lm.selectedNumber = 0
 		lm.status = ""
-		return lm, lm.refetchCmd(api, sc), true
+		return lm, nil, true
 	case km.ClearFilters.matches(msg):
 		lm.filter = ListFilter{}
 		lm.cursor = 0
 		lm.selectedNumber = 0
 		lm.status = ""
-		return lm, lm.refetchCmd(api, sc), true
+		return lm, nil, true
 	}
 	return lm, nil, false
 }
@@ -416,12 +430,12 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 		lm.loading = false
 		lm.err = m.err
 		if m.err == nil {
-			lm.issues = m.issues
+			lm.issues, lm.truncated = trimQueueWorkingSet(m.issues)
 		}
 	case refetchedMsg:
 		lm.err = m.err
 		if m.err == nil {
-			lm.issues = m.issues
+			lm.issues, lm.truncated = trimQueueWorkingSet(m.issues)
 		}
 	}
 	rows := filteredIssues(lm.issues, lm.filter)
@@ -536,10 +550,9 @@ func (lm listModel) dispatchCreateIssue(
 	}
 }
 
-// refetchCmd returns a tea.Cmd that re-fetches the issue list using
-// lm.filter for client-side fields while the wire still only honors
-// Status. The command path mirrors fetchInitial. Owner/Author/Search
-// narrow the result via filteredIssues at render time.
+// refetchCmd returns a tea.Cmd that re-fetches the capped all-status
+// issue working set. Render filters narrow the result via filteredIssues
+// without changing the wire request.
 //
 // dispatchKey captures the scope/filter at dispatch time;
 // Model.populateCache compares it against the current state and drops
@@ -547,9 +560,9 @@ func (lm listModel) dispatchCreateIssue(
 // the user has changed filter, switched scope, or another refetch
 // reordered ahead of it.
 func (lm listModel) refetchCmd(api listAPI, sc scope) tea.Cmd {
-	filter := lm.filter
+	filter := queueFetchFilter()
 	dispatchKey := cacheKey{
-		allProjects: sc.allProjects, projectID: sc.projectID, filter: filter,
+		allProjects: sc.allProjects, projectID: sc.projectID, limit: filter.Limit,
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -568,9 +581,7 @@ func (lm listModel) refetchCmd(api listAPI, sc scope) tea.Cmd {
 }
 
 // filteredIssues returns the subset of issues that satisfy the
-// client-side filters (Owner/Author/Search/Labels). Status is filtered
-// server-side via the daemon's status query param and is already
-// reflected in lm.issues, so it is not re-checked here. The fast path
+// client-side filters (Status/Owner/Author/Search/Labels). The fast path
 // returns the input slice unchanged when no client-side filter is set
 // — render runs every keystroke, so this matters.
 //
@@ -579,7 +590,7 @@ func (lm listModel) refetchCmd(api listAPI, sc scope) tea.Cmd {
 // len(f.Labels) == 0 check so a label-only filter no longer
 // short-circuits past matchesFilter.
 func filteredIssues(issues []Issue, f ListFilter) []Issue {
-	if f.Owner == "" && f.Author == "" && f.Search == "" && len(f.Labels) == 0 {
+	if f.Status == "" && f.Owner == "" && f.Author == "" && f.Search == "" && len(f.Labels) == 0 {
 		return issues
 	}
 	out := make([]Issue, 0, len(issues))
@@ -601,6 +612,9 @@ func filteredIssues(issues []Issue, f ListFilter) []Issue {
 // empty filter Labels slice (len == 0) is the no-filter case — every
 // issue passes that gate.
 func matchesFilter(iss Issue, f ListFilter) bool {
+	if f.Status != "" && iss.Status != f.Status {
+		return false
+	}
 	if f.Owner != "" {
 		if iss.Owner == nil || *iss.Owner != f.Owner {
 			return false

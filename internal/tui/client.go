@@ -46,13 +46,17 @@ func (c *Client) listIssuesAt(ctx context.Context, path string, f ListFilter) ([
 	return resp.Issues, nil
 }
 
-// GetIssue fetches a single issue by number.
-func (c *Client) GetIssue(ctx context.Context, projectID, number int64) (*Issue, error) {
+// GetIssueDetail fetches a single issue plus hierarchy metadata by number.
+func (c *Client) GetIssueDetail(ctx context.Context, projectID, number int64) (*IssueDetail, error) {
 	body, err := c.showIssue(ctx, projectID, number)
 	if err != nil {
 		return nil, err
 	}
-	return &body.Issue, nil
+	return &IssueDetail{
+		Issue:    &body.Issue,
+		Parent:   body.Parent,
+		Children: body.Children,
+	}, nil
 }
 
 // CreateIssue posts a new issue. body.IdempotencyKey rides the
@@ -258,6 +262,9 @@ func (c *Client) showIssue(ctx context.Context, projectID, number int64) (*showI
 		}
 		sort.Strings(labels)
 		resp.Issue.Labels = labels
+	}
+	for i := range resp.Children {
+		sort.Strings(resp.Children[i].Labels)
 	}
 	return &resp, nil
 }

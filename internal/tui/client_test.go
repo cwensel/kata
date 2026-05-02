@@ -39,7 +39,59 @@ func TestClient_ListIssues_BuildsExpectedURLAndDecodes(t *testing.T) {
 	}
 }
 
-func TestClient_GetIssue_DecodesWrappedEnvelope(t *testing.T) {
+func TestClient_ListIssues_SendsLimit(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issues":[]}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+	if _, err := c.ListIssues(context.Background(), 7, ListFilter{Limit: 2001}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQuery, "limit=2001") {
+		t.Fatalf("limit not sent: %q", gotQuery)
+	}
+	if strings.Contains(gotQuery, "status=") {
+		t.Fatalf("empty status must not be sent: %q", gotQuery)
+	}
+}
+
+func TestModel_FetchInitialUsesQueueFetchFilter(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issues":[]}`))
+	}))
+	defer srv.Close()
+	m := Model{
+		api:   NewClient(srv.URL, srv.Client()),
+		scope: scope{projectID: 7},
+		list:  listModel{filter: ListFilter{Status: "closed"}},
+	}
+	msg := m.fetchInitial()()
+	fetched, ok := msg.(initialFetchMsg)
+	if !ok {
+		t.Fatalf("fetchInitial msg = %T, want initialFetchMsg", msg)
+	}
+	if fetched.err != nil {
+		t.Fatal(fetched.err)
+	}
+	if !strings.Contains(gotQuery, "limit=2001") {
+		t.Fatalf("limit not sent: %q", gotQuery)
+	}
+	if strings.Contains(gotQuery, "status=") {
+		t.Fatalf("render status leaked into initial fetch: %q", gotQuery)
+	}
+	if !cacheKeysEqual(fetched.dispatchKey, cacheKey{projectID: 7, limit: queueFetchLimit}) {
+		t.Fatalf("dispatchKey = %+v", fetched.dispatchKey)
+	}
+}
+
+func TestClient_GetIssueDetail_DecodesWrappedEnvelope(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -53,15 +105,67 @@ func TestClient_GetIssue_DecodesWrappedEnvelope(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
-	got, err := c.GetIssue(context.Background(), 7, 42)
+	detail, err := c.GetIssueDetail(context.Background(), 7, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/api/v1/projects/7/issues/42" {
 		t.Fatalf("unexpected path: %s", gotPath)
 	}
+	got := detail.Issue
 	if got == nil || got.Number != 42 || got.Title != "fix" {
 		t.Fatalf("unexpected issue: %+v", got)
+	}
+}
+
+func TestClient_ShowIssue_DecodesHierarchy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issue": map[string]any{"number": 42, "title": "fix", "status": "open"},
+			"parent": map[string]any{
+				"number": 12, "title": "workspace polish", "status": "open",
+			},
+			"children": []map[string]any{
+				{
+					"number": 43, "title": "child", "status": "open",
+					"labels": []string{"bug", "ux"},
+					"child_counts": map[string]any{
+						"open": 1, "total": 2,
+					},
+				},
+			},
+			"comments": []any{},
+			"links":    []any{},
+			"labels": []map[string]any{
+				{"issue_id": 1, "label": "prio-1", "author": "a"},
+				{"issue_id": 1, "label": "bug", "author": "a"},
+			},
+		})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+	got, err := c.GetIssueDetail(context.Background(), 7, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Issue == nil || got.Issue.Number != 42 {
+		t.Fatalf("unexpected issue: %+v", got.Issue)
+	}
+	if got.Parent == nil || got.Parent.Number != 12 || got.Parent.Title != "workspace polish" {
+		t.Fatalf("unexpected parent: %+v", got.Parent)
+	}
+	if len(got.Children) != 1 || got.Children[0].Number != 43 {
+		t.Fatalf("unexpected children: %+v", got.Children)
+	}
+	if len(got.Children[0].Labels) != 2 || got.Children[0].Labels[0] != "bug" {
+		t.Fatalf("child labels not decoded: %+v", got.Children[0].Labels)
+	}
+	if got.Children[0].ChildCounts == nil || got.Children[0].ChildCounts.Total != 2 {
+		t.Fatalf("child counts not decoded: %+v", got.Children[0].ChildCounts)
+	}
+	if len(got.Issue.Labels) != 2 || got.Issue.Labels[0] != "bug" || got.Issue.Labels[1] != "prio-1" {
+		t.Fatalf("issue labels not sorted: %+v", got.Issue.Labels)
 	}
 }
 
@@ -98,7 +202,7 @@ func TestClient_DecodeError_ReturnsAPIError(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
-	_, err := c.GetIssue(context.Background(), 7, 42)
+	_, err := c.GetIssueDetail(context.Background(), 7, 42)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -415,7 +519,7 @@ func TestAPIError_EmptyBodyFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
-	_, err := c.GetIssue(context.Background(), 7, 42)
+	_, err := c.GetIssueDetail(context.Background(), 7, 42)
 	if err == nil {
 		t.Fatal("expected error")
 	}

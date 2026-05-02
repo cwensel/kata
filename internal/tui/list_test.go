@@ -49,7 +49,7 @@ func TestList_Render_Fixture(t *testing.T) {
 	m := initialModel(Options{})
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
-	tm.Send(initialFetchMsg{issues: listFixture()})
+	tm.Send(initialFetchMsg{dispatchKey: cacheKey{limit: queueFetchLimit}, issues: listFixture()})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		s := string(b)
 		return strings.Contains(s, "fix login bug on Safari") &&
@@ -72,7 +72,7 @@ func TestList_Cursor_DownAndUp(t *testing.T) {
 	m := initialModel(Options{})
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
-	tm.Send(initialFetchMsg{issues: listFixture()})
+	tm.Send(initialFetchMsg{dispatchKey: cacheKey{limit: queueFetchLimit}, issues: listFixture()})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		return strings.Contains(string(b), "purge stale tokens")
 	}, teatest.WithDuration(2*time.Second))

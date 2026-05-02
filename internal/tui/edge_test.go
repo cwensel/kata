@@ -306,30 +306,33 @@ func numToTag(n int) string {
 	return string(digits)
 }
 
-// TestEdge_StaleRefetch_DroppedAfterFilterChange: a refetch dispatched
-// under filter X arrives after the user has already moved to filter Y
-// (e.g. typed a search term). The stale response must NOT clobber the
-// list — populateCache compares the response's dispatchKey against the
-// current state and drops mismatches. Without this guard, the stale
-// reply's issues would overwrite the post-filter snapshot.
-func TestEdge_StaleRefetch_DroppedAfterFilterChange(t *testing.T) {
+// TestEdge_RefetchAfterRenderFilterChangeKeepsWorkingSet: render filter
+// changes no longer create cache slots. A working-set fetch dispatched
+// before a status/search/owner/labels change should still populate the
+// full list; filteredIssues narrows what renders afterward.
+func TestEdge_RefetchAfterRenderFilterChangeKeepsWorkingSet(t *testing.T) {
 	m := initialModel(Options{})
 	m.api = &Client{}
 	m.scope = scope{projectID: 7}
 	m.list.loading = false
 	m.list.issues = []Issue{{Number: 99, Title: "current-filter row"}}
-	// Current filter is Status="open"; the stale reply was dispatched
-	// when filter was empty.
 	m.list.filter = ListFilter{Status: "open"}
 
-	stale := refetchedMsg{
-		dispatchKey: cacheKey{projectID: 7, filter: ListFilter{}},
-		issues:      []Issue{{Number: 1, Title: "old-filter row"}},
+	fetched := refetchedMsg{
+		dispatchKey: cacheKey{projectID: 7, limit: queueFetchLimit},
+		issues: []Issue{
+			{Number: 1, Status: "closed", Title: "closed row"},
+			{Number: 2, Status: "open", Title: "open row"},
+		},
 	}
-	out, _ := m.Update(stale)
+	out, _ := m.Update(fetched)
 	nm := out.(Model)
-	if len(nm.list.issues) != 1 || nm.list.issues[0].Number != 99 {
-		t.Fatalf("stale refetch overwrote current filter view: %+v", nm.list.issues)
+	if len(nm.list.issues) != 2 {
+		t.Fatalf("working set was not refreshed: %+v", nm.list.issues)
+	}
+	visible := filteredIssues(nm.list.issues, nm.list.filter)
+	if len(visible) != 1 || visible[0].Number != 2 {
+		t.Fatalf("render filter did not narrow refreshed working set: %+v", visible)
 	}
 }
 
@@ -529,10 +532,10 @@ func TestEdge_JumpDetail_ViewGuard(t *testing.T) {
 
 // TestEdge_FilterChange_ClearsSelectedNumber: pressing `s` (cycle
 // status) or `c` (clear filters) must reset both cursor AND
-// selectedNumber. Otherwise the identity-restore in applyFetched
-// can pull the cursor back to the previously-selected issue if it
-// survived the new filter, defeating the explicit "I changed the
-// filter" intent. Regression for roborev #90 finding 1.
+// selectedNumber without dispatching a refetch. Otherwise the next
+// identity-restore can pull the cursor back to the previously-selected
+// issue if it survived the new filter, defeating the explicit "I changed
+// the filter" intent. Regression for roborev #90 finding 1.
 func TestEdge_FilterChange_ClearsSelectedNumber(t *testing.T) {
 	m := initialModel(Options{})
 	m.api = &Client{}
@@ -552,8 +555,8 @@ func TestEdge_FilterChange_ClearsSelectedNumber(t *testing.T) {
 		t.Fatalf("selectedNumber = %d, want 0 (filter change clears identity)",
 			nm.list.selectedNumber)
 	}
-	if cmd == nil {
-		t.Fatal("status filter change should dispatch a refetch")
+	if cmd != nil {
+		t.Fatalf("status filter change should not dispatch a refetch, got %T", cmd)
 	}
 }
 
