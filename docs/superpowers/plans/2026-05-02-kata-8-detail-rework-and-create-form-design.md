@@ -8,7 +8,7 @@
 
 Address three converging gaps in the kata TUI:
 
-1. The detail view drops labels because the TUI Issue projection has no Labels field and `handleOpenDetail` doesn't fetch the show response. Header is also unstructured (single line conflating issue number / status / author / timing) with no owner/labels visibility.
+1. The detail view drops labels because the TUI Issue projection has no Labels field and `handleOpenDetail` doesn't dispatch `fetchIssue` (the existing `fetchIssue` helper is already wired into `handleJumpDetail` but the open-from-list path only fetches comments/events/links). Header is also unstructured (single line conflating issue number / status / author / timing) with no owner/labels visibility.
 2. The new-issue workflow (M3.5c inline title row → M4 post-create body editor) is two steps for one operation. Users want a single multi-field modal that captures title + body + labels + owner in one go.
 3. The list view's filter UX is a per-axis keymap (`s` / `o` / `/`) with no consolidated entry point. Roborev's filter modal is the reference; kata wants the same shape with a Labels axis once the wire supports it.
 
@@ -18,7 +18,7 @@ Six commits in dependency order. Commits 1–5a require no daemon changes; 5b re
 
 | # | Commit | Adds | Daemon change? |
 |---|--------|------|---|
-| 1 | Decode show labels + add fetchIssue to detail-open path | `Issue.Labels`; `handleOpenDetail` dispatches fetchIssue | no |
+| 1 | Decode show labels + bring detail-open to parity with jump path | `Issue.Labels`; `handleOpenDetail` reuses existing `fetchIssue` helper | no |
 | 2 | Detail header restructure + section dividers + tab-strip polish | new chrome shape | no |
 | 3 | Project label cache + autocomplete on `+` and `-` + SSE invalidation | `m.projectLabels`; suggestion menu | no |
 | 4 | New-issue multi-field modal form; drop inline row + post-create chain | `inputNewIssueForm` | no |
@@ -95,7 +95,7 @@ Acceptance check on response:
 - `response.pid == targetPID(m)` where `targetPID(m)` = `m.detail.scopePID` when a detail is open and `m.scope.projectID` otherwise. Forward-compatible with all-projects/split-mode where the two can diverge.
 
 Cache invalidation triggers (each calls `dispatchLabelFetch(pid)`):
-- Lazy: first read from any consumer (detail `+` open, new-issue form open, filter modal Labels axis) when entry is absent.
+- Lazy: first read from a consumer that **actually uses the suggestion menu**. In commit 3 that is the detail `+` prompt; in commit 5b that is the filter modal Labels axis when not in all-projects scope. The new-issue form (commit 4) accepts free-typed comma-separated labels only and does NOT trigger a lazy fetch — the suggestion-menu wire-up for the form is deferred (see "What gets dropped / deferred" in commit 4).
 - Local mutation success: label add, label remove, create-with-labels.
 - SSE: `issue.labeled` / `issue.unlabeled` events whose project matches an entry in `byProject`. Reuses existing SSE event-routing path. **Important**: this invalidates the project label suggestion cache only — list/detail refetch on label events is a separate existing SSE behavior and shouldn't be coupled.
 
@@ -116,7 +116,23 @@ Three rows replace the current single header line. Renders inside the existing `
 
 ### Fixed-row budget
 
-`detail_render.go` fixed-row budget bumps from 7 to 9 (header meta + assignment + title + body rule + activity rule + tab strip + tab rule + info line + footer). Without this bump, the new rows push the footer off-screen.
+`detail_render.go` fixed-row budget bumps from 7 to 9. Explicit row breakdown:
+
+| Row | Content |
+|-----|---------|
+| 1 | title bar (`kata かた · …`) |
+| 2 | meta (`#42 · open · author · created · updated`) |
+| 3 | assignment (`Owner: alice          [bug] [prio-1] +N`) |
+| 4 | title row (bold, full width) |
+| 5 | body rule (`── body ──────────────`) |
+| —  | (body content, variable height) |
+| 6 | activity rule (`── activity ──────────`) |
+| 7 | tab strip (`[ Comments (4) ]  Events (2)  Links (1)`) |
+| —  | (tab content, variable height) |
+| 8 | info line (panel prompt or scroll indicator or flash) |
+| 9 | footer (help row) |
+
+Total fixed = 9 rows. Variable content (body + tab content) splits the remaining `height - 9` rows. **No separate tab rule** — the activity rule above the tab strip is the visual frame; adding a tab rule below would push the budget to 10 and isn't necessary. Without the budget bump from 7 to 9, the new rows push the footer off-screen.
 
 ### Assignment line
 
@@ -126,8 +142,8 @@ Three rows replace the current single header line. Renders inside the existing `
 ### `renderLabelChips(labels []string, available int) string`
 
 - Sort `labels` alphabetically.
-- For each label, sanitized width via `runewidth.StringWidth(textsafe.StripANSI(label))` (NOT `len(label)`); labels are user/agent-authored and may contain wide glyphs or ANSI-injected control chars.
-- Each chip = `[<label>]` with one space separator: chip width = sanitized-width + 3.
+- For each label: **rendered text uses `textsafe.Block(label)`** so terminal control chars / ANSI / Unicode-format runes never reach the header. Width measure uses `runewidth.StringWidth(textsafe.Block(label))` (sanitized first, then measured) — measuring a stripped label while rendering raw label would still leak control text into the header even if width math is correct.
+- Each chip = `[<sanitized-label>]` with one space separator: chip width = sanitized-rune-width + 3.
 - Pack until the next chip would push over `available`. The `+N` token (`+%d` chars) reserves its own width in the budget calculation so we don't loop trying to fit it.
 - If `available < shortestChipWidth`, collapse to `[N labels]` ultra-narrow degraded render.
 
@@ -197,9 +213,11 @@ Menu placeholder text:
 
 ### Layout: menu height counts against budget
 
-The menu overlays body/tab rows. Detail layout subtracts `min(menuHeight, displayedSuggestions)` from the tab/body budget so:
-- Scroll indicator reflects what's actually visible (doesn't lie about overflow).
-- The labeled `── activity ──` rule doesn't get pushed off-screen when the menu opens.
+The menu overlays body/tab rows. Detail layout subtracts the **actual rendered menu height** (including border rows top+bottom and any placeholder rows for loading/error/empty states) from the tab/body budget. NOT `min(menuHeight, displayedSuggestions)` — that would undercount by 2 (border rows) for a bordered menu and the scroll indicator would still lie about overflow by those rows.
+
+Concretely: `actualMenuHeight = topBorder(1) + max(displayedSuggestions, placeholderRows) + bottomBorder(1)`. This number is what gets subtracted. Without this:
+- Scroll indicator can lie about overflow.
+- The labeled `── activity ──` rule can get pushed off-screen when the menu opens.
 
 ## New-issue form (commit 4)
 
@@ -275,12 +293,49 @@ func (lm listModel) dispatchCreateIssue(
 ) (listModel, tea.Cmd)
 ```
 
-### Form mutation routing
+### Commit-path routing — `commitInput` and `routeFormMutation` are different layers
 
-`routeFormMutation` branches:
-1. **`inputFilterForm`** (commit 5a): branched first; calls `commitFilterForm` path (NOT `applyLiveBarFilter`).
-2. **`inputNewIssueForm`**: clear form, route through list create handling (`lm.applyMutation(kind="create", ...)` to seed `selectedNumber` + refetch). Does NOT reclassify as detail.
-3. **`inputBodyEditForm` / `inputCommentForm`**: existing M4 behavior (reclassify as detail-side mutation).
+Two different events to route, and they happen at different layers — getting this wrong was a real risk in earlier drafts. Be explicit:
+
+**Layer A: key-driven commit (`commitInput`)** — fires when the user presses `ctrl+s` (or `enter` in non-form inputs). The active `inputState` decides what to do. Branch order matters because `inputFilterForm` is in `isCenteredForm()` and would otherwise fall through to the saving/mutation path:
+
+```go
+func (m Model) commitInput() (Model, tea.Cmd) {
+    switch {
+    case m.input.kind == inputFilterForm:
+        // Filter apply — no daemon mutation; sets local filter, refetches list.
+        return m.commitFilterForm(m.input)
+    case m.input.kind.isCenteredForm():
+        // Body editor / comment form / new-issue form — has a daemon mutation;
+        // sets saving=true, dispatches mutation, awaits routeFormMutation.
+        return m.commitFormInput()
+    case m.input.kind.isPanelPrompt():
+        // Existing M3b behavior.
+        return m.commitPanelPrompt()
+    case m.input.kind.isCommandBar():
+        // Existing M3a behavior.
+        return m.commitCommandBar()
+    }
+    return m, nil
+}
+```
+
+**Layer B: mutation-response routing (`routeFormMutation`)** — fires when a `mutationDoneMsg` arrives for a form-originated mutation. Filter form has NO mutation, so it never reaches this layer. Branch order:
+
+```go
+func (m Model) routeFormMutation(mut mutationDoneMsg) (Model, tea.Cmd) {
+    switch m.input.kind {
+    case inputNewIssueForm:
+        // Clear form; route through list create handling
+        // (lm.applyMutation(kind="create") to seed selectedNumber + refetch).
+        // Does NOT reclassify as detail.
+    case inputBodyEditForm, inputCommentForm:
+        // Existing M4 behavior — reclassify as detail-side mutation.
+    }
+    // inputFilterForm intentionally absent from this switch — filter has
+    // no daemon mutation; it shouldn't arrive here.
+}
+```
 
 Post-create chain in `routeMutation` (model.go:306) **removed** — otherwise a successful create still opens `inputBodyEditPostCreate` on top of the cleared form.
 
@@ -333,10 +388,10 @@ New `inputKind`: `inputFilterForm`. Three fields, single column.
 ### Update routing
 
 - `tab` / `shift+tab`: cycle 3 fields with wrap.
-- `ctrl+s`: apply via dedicated `commitFilterForm(form inputState) (Model, tea.Cmd)` path. Sets full `lm.filter` from form fields, zeroes `selectedNumber`, clamps cursor, clears `lm.status`, dispatches `refetchCmd`. Does NOT call `applyLiveBarFilter` (which only mirrors a single active field).
+- `ctrl+s`: apply via dedicated `commitFilterForm(form inputState) (Model, tea.Cmd)` path. Sets full `lm.filter` from form fields, **resets cursor to 0 and clears `selectedNumber`** (matches existing `s` cycle / `c` clear convention — a filter change loses prior selection because the prior selected issue may no longer match), clears `lm.status`, dispatches `refetchCmd`. Does NOT call `applyLiveBarFilter` (which only mirrors a single active field). The filter-modal apply does NOT preserve cursor index — it's a deliberate filter change, treat the result list as a fresh view.
 - `ctrl+r`: reset form fields only; `s.preFilter` intact so `esc` still restores filter to its at-open snapshot.
 - `esc`: restore `lm.filter` to `preFilter`; close form.
-- `routeFormMutation` branches `inputFilterForm` BEFORE the saving/mutation-form handling, so it doesn't go through `saving=true` / mutation routing.
+- **`commitInput` branches `inputFilterForm` BEFORE the centered-form (`isCenteredForm`) check** — see "Commit-path routing" above. The filter form is in `isCenteredForm()` for render purposes (overlay panel), but its commit path is filter apply, not mutation dispatch. Without the explicit branch in `commitInput`, ctrl+s would fall into `commitFormInput` and set `saving=true`, then sit forever waiting for a mutation that never arrives.
 
 ### Keymap changes
 
@@ -372,10 +427,10 @@ Adds a fourth field to the filter modal. Depends on:
 
 ## Test surface
 
-### Commit 1 (decode + fetchIssue on detail-open)
+### Commit 1 (decode show labels + parity dispatch on detail-open)
 
 - Unit: `Client.showIssue` populates `resp.Issue.Labels` from `body.Labels`; alphabetical sort.
-- Unit: `handleOpenDetail` dispatches `fetchIssue` alongside the three tab fetches (gen-tagged).
+- Unit: `handleOpenDetail` dispatches the existing `fetchIssue` helper alongside the three tab fetches (gen-tagged), bringing it to parity with `handleJumpDetail` (which already dispatches it). Confirms no NEW fetch helper is introduced.
 - Unit: `applyFetched` on `detailFetchedMsg` replaces `dm.issue.Labels` with the show-response slice.
 - Race: stale `detailFetchedMsg` (gen mismatch) drops cleanly.
 
@@ -427,10 +482,10 @@ Adds a fourth field to the filter modal. Depends on:
 
 - Unit: `f` opens `inputFilterForm`; all-projects scope rendering still works.
 - Unit: 3 fields cycle via `tab` with wrap; `←`/`→`/`space` cycle Status tri-state.
-- Unit: `ctrl+s` builds full `ListFilter` from fields, calls dedicated `commitFilterForm` path (not `applyLiveBarFilter`); zeroes `selectedNumber`; clamps cursor; clears status; dispatches refetch.
+- Unit: `ctrl+s` builds full `ListFilter` from fields, calls dedicated `commitFilterForm` path (not `applyLiveBarFilter`); zeroes `selectedNumber`; **resets cursor to 0**; clears status; dispatches refetch.
 - Unit: `ctrl+r` resets form fields only; `preFilter` intact for `esc` restore.
 - Unit: `esc` restores `lm.filter` to `preFilter`.
-- Unit: `routeFormMutation` branches `inputFilterForm` BEFORE mutation handling (no saving=true).
+- Unit: **`commitInput` branches `inputFilterForm` BEFORE the centered-form `commitFormInput` path**, so ctrl+s on the filter modal does NOT set `saving=true`. (Distinct from `routeFormMutation` — filter form has no mutation; it never reaches that layer.)
 - Unit: `o` key gone from keymap; help screen no longer mentions it.
 - Snapshot: filter modal rendered (3 fields, status radio, footer hint).
 - Snapshot: chip strip in chrome reflects modal-applied filters.

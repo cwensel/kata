@@ -46,7 +46,7 @@ If a commit's work would require touching one of these, **port the test forward*
 
 | Invariant | Lands in | Test |
 |---|---|---|
-| `Issue.Labels` populates on first detail open via `fetchIssue` | Commit 1 | `TestDetailFetch_PopulatesIssueLabelsOnOpen` |
+| `Issue.Labels` populates on first detail open via the existing `fetchIssue` helper (parity with `handleJumpDetail`) | Commit 1 | `TestDetailFetch_PopulatesIssueLabelsOnOpen` |
 | `renderLabelChips` measures cell width with runewidth+sanitize | Commit 2 | `TestRenderLabelChips_WidthMeasureUsesRunewidth` |
 | Label cache stamps gen at dispatch (not on response) | Commit 3 | `TestLabelCache_DispatchStampsGenBeforeResponse` |
 | Label cache rejects stale gen response | Commit 3 | `TestLabelCache_StaleGenResponseDropped` |
@@ -106,15 +106,15 @@ Render, input, and routing — fair game for this plan:
 
 ---
 
-## Commit 1 — Decode show labels + add fetchIssue to detail-open path
+## Commit 1 — Decode show labels + bring detail-open to parity with jump path
 
-**Goal:** Get labels onto the detail view's data path. Two changes packaged together so labels actually appear on first detail open: extend the TUI's `Issue` projection with a `Labels []string` field, decode `body.Labels` from `showIssue`, and dispatch `fetchIssue` from `handleOpenDetail` so the show-response actually arrives.
+**Goal:** Get labels onto the detail view's data path. Two changes packaged together so labels actually appear on first detail open: extend the TUI's `Issue` projection with a `Labels []string` field, decode `body.Labels` from `showIssue`, and add a `fetchIssue` dispatch to `handleOpenDetail` (the existing `fetchIssue` helper at model.go:1188 is already wired into `handleJumpDetail`; this brings the open-from-list path to parity). **No new fetch path is introduced** — same helper, additional call site.
 
 **Files:**
 - Modify: `internal/tui/client_types.go` — add `Labels []string` field to `Issue`
 - Modify: `internal/tui/client.go` — extend `showIssue` to populate `resp.Issue.Labels` from `body.Labels`
-- Modify: `internal/tui/model.go` — `handleOpenDetail` adds `fetchIssue` to its `tea.Batch`; same for `handleJumpDetail`
-- Modify: `internal/tui/detail.go` — `applyFetched`'s `detailFetchedMsg` branch carries `Labels` through into `dm.issue`
+- Modify: `internal/tui/model.go` — `handleOpenDetail` adds `fetchIssue` to its `tea.Batch` (same helper `handleJumpDetail` already uses at model.go:1188)
+- Modify: `internal/tui/detail.go` — `applyFetched`'s `detailFetchedMsg` branch carries `Labels` through into `dm.issue` (verify; current code may already do this since it replaces `dm.issue` wholesale)
 - Test: `internal/tui/client_test.go` — show-response decode test
 - Test: `internal/tui/detail_test.go` — `handleOpenDetail` dispatches fetchIssue; applyFetched preserves labels
 
@@ -123,7 +123,7 @@ Render, input, and routing — fair game for this plan:
 - Sanitization (none — labels go through render-time sanitization in commit 2).
 
 **Hard invariants this commit pins:**
-- `Issue.Labels` populates on first detail open via `fetchIssue` (`TestDetailFetch_PopulatesIssueLabelsOnOpen`).
+- `Issue.Labels` populates on first detail open via the existing `fetchIssue` helper (`TestDetailFetch_PopulatesIssueLabelsOnOpen`).
 
 ### Steps
 
@@ -155,7 +155,7 @@ Render, input, and routing — fair game for this plan:
     ```
     Run; expected: FAIL (current code doesn't dispatch fetchIssue from handleOpenDetail).
 
-- [ ] **Step 1.6: Implement.** In `internal/tui/model.go::handleOpenDetail` (around model.go:1135), add `fetchIssue(m.api, pid, iss.Number, gen)` to the `cmds` slice. Same for `handleJumpDetail` if it doesn't already. Verify by re-reading model.go:1180–1200. Re-run; expected: PASS.
+- [ ] **Step 1.6: Implement.** In `internal/tui/model.go::handleOpenDetail` (around model.go:1135), add `fetchIssue(m.api, pid, iss.Number, gen)` to the `cmds` slice. Use the **existing** `fetchIssue` helper — same one `handleJumpDetail` already calls at model.go:1188. Do NOT introduce a parallel helper. Verify `handleJumpDetail` still works unchanged (no edit to that function). Re-run; expected: PASS.
 
 - [ ] **Step 1.7: Write the failing applyFetched test.** Add `TestDetailFetch_PopulatesIssueLabelsOnOpen`:
     ```go
@@ -172,13 +172,16 @@ Render, input, and routing — fair game for this plan:
 - [ ] **Step 1.9: Commit.**
     ```bash
     git add internal/tui/client_types.go internal/tui/client.go internal/tui/model.go internal/tui/client_test.go internal/tui/detail_test.go
-    git commit -m "feat(tui): decode show labels + dispatch fetchIssue on detail open
+    git commit -m "feat(tui): decode show labels + parity dispatch on detail open
 
 Plan 8 commit 1: extends Issue with Labels []string (json:\"labels,omitempty\"),
-populates from showIssue body.labels (alphabetical), and adds fetchIssue
-to handleOpenDetail / handleJumpDetail so the show response actually
-arrives on first open. Without the fetchIssue dispatch, dm.issue is only
-the list-row seed and Labels stays empty.
+populates from showIssue body.labels (alphabetical), and adds the
+existing fetchIssue helper to handleOpenDetail's batch so the show
+response arrives on first open. handleJumpDetail already dispatches
+fetchIssue (model.go:1188); this brings handleOpenDetail to parity.
+No new fetch helper introduced — same fetchIssue, additional call
+site. Without the dispatch, dm.issue is only the list-row seed and
+Labels stays empty until a manual refresh.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
     ```
@@ -214,7 +217,25 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ### Steps
 
-- [ ] **Step 2.1: Bump fixed-row budget.** In `internal/tui/detail_render.go::View`, the comment around line 42 says `Reserve: header (1) + detail-header (1) + title-row (1) + body-rule (1) + tab-rule (1) + info (1) + footer (1) = 7 fixed`. Update to: `header (1) + meta (1) + assignment (1) + title (1) + body-rule (1) + activity-rule (1) + tab-strip (1) + info (1) + footer (1) = 9 fixed`. Change `avail := height - 7` to `avail := height - 9`. Without this, the new rows push the footer off-screen.
+- [ ] **Step 2.1: Bump fixed-row budget.** In `internal/tui/detail_render.go::View`, the comment around line 42 says `Reserve: header (1) + detail-header (1) + title-row (1) + body-rule (1) + tab-rule (1) + info (1) + footer (1) = 7 fixed`. Update to the explicit nine-row layout:
+
+    ```
+    Reserve:
+      title bar (1) +    // kata かた · …
+      meta (1) +          // #N · status · author · created · updated
+      assignment (1) +    // Owner: alice          [bug] [prio-1] +N
+      title row (1) +     // bold full-width title
+      body rule (1) +     // ── body ─────────
+      // (variable: body content)
+      activity rule (1) + // ── activity ─────
+      tab strip (1) +     // [ Comments (4) ]  Events (2)  Links (1)
+      // (variable: tab content)
+      info line (1) +     // panel prompt or scroll indicator or flash
+      footer (1)          // help row
+      = 9 fixed
+    ```
+
+    Change `avail := height - 7` to `avail := height - 9`. **Note: no separate "tab rule" row** — the activity rule above the tab strip is the only horizontal divider in the activity panel. If a future change adds a tab rule below the strip, the budget bumps to 10. Without this bump, the new rows push the footer off-screen.
 
 - [ ] **Step 2.2: Write `renderLabelChips` tests.** In `internal/tui/list_render_test.go` (create if absent), add:
     ```go
@@ -241,14 +262,22 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
         // Label with wide-glyph "かた" (4 cells) and ANSI escape "\x1b[31m":
         // sanitize first, then runewidth.StringWidth. Verify packing math.
     }
+    func TestRenderLabelChips_RenderedTextSanitized(t *testing.T) {
+        // Hostile labels: ["bug\x1b[2J", "ok‮pad"]
+        // Rendered output must not contain ESC, U+202E, or any other Cf rune.
+        // Asserts the rendered chip text uses textsafe.Block(label), not the
+        // raw value — width measurement alone wouldn't catch this.
+    }
     ```
     Run; expected: FAIL (function doesn't exist).
 
 - [ ] **Step 2.3: Implement `renderLabelChips`.** Add to `internal/tui/list_render.go`:
     ```go
     // renderLabelChips packs label chips into `available` cells, alphabetical,
-    // dropping trailing overflow into +N. ANSI/Unicode-control labels sanitized
-    // first; cell width via runewidth. Empty labels yield "(no labels)";
+    // dropping trailing overflow into +N. ANSI/Unicode-control labels are
+    // sanitized BOTH for width measurement AND for the rendered chip text;
+    // measuring a stripped label while rendering the raw label would still
+    // leak control chars into the header. Empty labels yield "(no labels)";
     // ultra-narrow available yields "[N labels]".
     func renderLabelChips(labels []string, available int) string {
         if len(labels) == 0 {
@@ -256,10 +285,16 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
         }
         sorted := append([]string(nil), labels...)
         sort.Strings(sorted)
-        // ... pack chips, drop tail into +N, fallback to [N labels].
+        // Sanitize first; use the sanitized form for both rendering and width.
+        clean := make([]string, len(sorted))
+        for i, l := range sorted {
+            clean[i] = textsafe.Block(l)  // strips ANSI + Unicode-control + Cf
+        }
+        // ... pack chips from clean, drop tail into +N, fallback to [N labels].
+        // Chip text written from clean[i]; width from runewidth.StringWidth(clean[i]).
     }
     ```
-    Each chip = `[<label>]` + 1-space separator → width = `chipCellWidth(label) + 3`. `chipCellWidth` = `runewidth.StringWidth(textsafe.StripANSI(textsafe.Block(label)))`. Reserve `+N` width in the loop math (worst-case 4 chars: ` +99`).
+    Each chip = `[<sanitized-label>]` + 1-space separator → width = `runewidth.StringWidth(clean[i]) + 3`. Reserve `+N` width in the loop math (worst-case 4 chars: ` +99`). The crucial point: every place that emits chip text writes `clean[i]`, never `labels[i]` or `sorted[i]`.
 
 - [ ] **Step 2.4: Run tests.** All `TestRenderLabelChips_*` should pass.
 
@@ -349,7 +384,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 - Modify: `internal/tui/input.go` — autocomplete state on `inputState` (`suggestHighlight`, `suggestScroll`); generalize `formTarget` to apply to label prompts
 - Modify: `internal/tui/inputs_render.go` — render menu above the panel-prompt row, intercept ↑↓⇥ before textinput
 - Modify: `internal/tui/sse_update.go` — `issue.labeled`/`issue.unlabeled` invalidate `m.projectLabels.byProject[pid]` and dispatch refetch
-- Modify: `internal/tui/detail_render.go` — subtract menu height from tab/body budget when menu is open
+- Modify: `internal/tui/detail_render.go` — subtract **actual rendered menu height** (top border + entries OR placeholder rows + bottom border) from tab/body budget when menu is open; NOT `min(menuHeight, displayedSuggestions)` (that would undercount by the 2 border rows)
 - Test: `internal/tui/suggest_render_test.go` — menu render + scrolling
 - Test: `internal/tui/snapshot_test.go` — menu fixtures (5 suggestions, loading, error, empty, scroll)
 
@@ -534,14 +569,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
     ```
     Add `overlayAtCorner(bg, panel string, width, height, anchorRow, anchorCol int) string` placement helper that splices `panel` into `bg` at `(anchorRow, anchorCol)` using ANSI-aware row/col splicing (similar to `overlayModal` but with explicit placement, not centered).
 
-- [ ] **Step 3.17: Wire menu into Model.View.** When `m.input` is a label prompt AND suggestions are available, compute menu placement (right-anchored, bottom row = info-line row - 1), splice via `overlayAtCorner`. Subtract menu height from tab/body budget so the scroll indicator doesn't lie about overflow.
+- [ ] **Step 3.17: Wire menu into Model.View.** When `m.input` is a label prompt AND suggestions are available, compute menu placement (right-anchored, bottom row = info-line row - 1), splice via `overlayAtCorner`. Subtract **actual rendered menu height** from the tab/body budget — the value is `topBorder(1) + max(visibleEntries, placeholderRows) + bottomBorder(1)`. Do NOT use `min(menuHeight, displayedSuggestions)` — that would miss the border rows and the scroll indicator would lie by 2.
 
 - [ ] **Step 3.18: Loading/error/empty placeholder rendering.** In `renderSuggestMenu`, before the entries, check cache state:
     - `entry.fetching && len(entry.labels) == 0` → `loading…`
     - `entry.err != nil` → `(error: <message>)`
     - `len(entry.labels) == 0 && !entry.fetching` → `(no labels in project — type to add)`
 
-- [ ] **Step 3.19: Trigger fetch on prompt open.** When `+` or `-` opens the panel prompt, check `m.projectLabels.byProject[targetPID]`; if entry is absent or stale, dispatch `dispatchLabelFetch(targetPID)` (only for `+`; `-` uses attached labels and doesn't need the project cache).
+- [ ] **Step 3.19: Trigger fetch on prompt open.** When `+` opens the panel prompt, check `m.projectLabels.byProject[targetPID]`; if entry is absent, dispatch `dispatchLabelFetch(targetPID)`. Do NOT trigger from `-` (uses attached labels via `dm.issue.Labels`, no cache needed). **Do NOT trigger from the new-issue form** — commit 4's Labels field is comma-separated text only; the suggestion menu wire-up for the new-issue form is deferred. The only commit-3 lazy consumer is the `+` prompt; commit 5b adds the filter-modal Labels axis as a second lazy consumer.
 
 - [ ] **Step 3.20: Refresh cache on local mutation success.** In `routeFormMutation` and `applyMutation`, after a successful label add/remove/create-with-labels, dispatch `dispatchLabelFetch(pid)`. Counts may have changed (add introduces new labels; remove may decrement to zero).
 
@@ -837,7 +872,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify: `internal/tui/input.go` — add `inputFilterForm` kind + `newFilterForm(current ListFilter) inputState`; add to `isCenteredForm()`
 - Modify: `internal/tui/inputs_render.go` — render shape for filter form (3 fields, status radio)
-- Modify: `internal/tui/model.go` — `routeFormMutation` branches `inputFilterForm` BEFORE the saving/mutation handling; `commitFilterForm(form inputState) (Model, tea.Cmd)` dedicated path; `routeDetailFormKey` (or list-view key handler) recognizes `f`
+- Modify: `internal/tui/model.go` — `commitInput` branches `inputFilterForm` BEFORE the centered-form `commitFormInput` path (load-bearing — getting it wrong hangs the form on `saving=true`); `commitFilterForm(form inputState) (Model, tea.Cmd)` dedicated path; `routeDetailFormKey` (or list-view key handler) recognizes `f`. **No** branch added in `routeFormMutation` for `inputFilterForm` (filter has no mutation).
 - Modify: `internal/tui/list.go` — drop `o` key handling; drop `newOwnerBar` references
 - Modify: `internal/tui/keymap.go` — drop `o` keymap entry; add `f` keymap entry
 - Modify: `internal/tui/help.go` — refresh under new keymap (drop `o`, add `f`)
@@ -846,11 +881,12 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 - Update: list-view snapshot goldens (footer help text changed)
 
 **Invariants touched:**
-- Form mutation routing (`routeFormMutation` branches `inputFilterForm` first to bypass mutation logic).
+- `commitInput` routing (filter form is in `isCenteredForm()` for render but NOT for commit; new explicit branch in `commitInput` is load-bearing).
 - preFilter snapshot pattern (filter form's `s.preFilter` is populated for esc-restore).
 
 **Hard invariants this commit pins:**
 - `TestFilterForm_CommitUsesDedicatedPath` (commit goes through `commitFilterForm`, NOT `applyLiveBarFilter`).
+- `TestFilterForm_CtrlSCommitsViaCommitInputBranch_NotCommitFormInput` (filter form's ctrl+s does NOT set `saving=true`).
 
 ### Steps
 
@@ -931,31 +967,41 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
             Owner:  strings.TrimSpace(form.fields[1].input.Value()),
             Search: strings.TrimSpace(form.fields[2].input.Value()),
         }
+        // Reset cursor to 0 and clear selectedNumber — matches existing
+        // s/c convention. A filter change loses prior selection because
+        // the prior selected issue may no longer match the new filter;
+        // a fresh-view reset is more predictable than trying to preserve
+        // a cursor that may now point past the end.
+        m.list.cursor = 0
         m.list.selectedNumber = 0
-        m.list = m.list.clampCursorToFilter()
         m.list.status = ""
         m.input = inputState{}
         return m, m.list.refetchCmd(m.api, m.scope)
     }
     ```
 
-- [ ] **Step 5a.10: Branch in `routeFormMutation`.** Before the saving/mutation-form handling branch, add:
+- [ ] **Step 5a.10: Branch `inputFilterForm` in `commitInput` BEFORE `commitFormInput`.** This is the load-bearing fix; getting it wrong hangs the form on `saving=true` waiting for a mutation response that never arrives. In `model.go::commitInput`:
     ```go
-    if m.input.kind == inputFilterForm {
-        // Filter form's commit doesn't go through mutation routing — it lands
-        // here as actionCommit at the input layer instead.
-        return m, nil  // shouldn't reach this branch via mutation; safety net.
+    func (m Model) commitInput() (Model, tea.Cmd) {
+        switch {
+        case m.input.kind == inputFilterForm:
+            // Filter apply — no daemon mutation; sets local filter, refetches list.
+            return m.commitFilterForm(m.input)
+        case m.input.kind.isCenteredForm():
+            // Body editor / comment / new-issue form — has a daemon mutation.
+            // Sets saving=true; awaits routeFormMutation when response arrives.
+            return m.commitFormInput()
+        case m.input.kind.isPanelPrompt():
+            return m.commitPanelPrompt()
+        case m.input.kind.isCommandBar():
+            return m.commitCommandBar()
+        }
+        return m, nil
     }
     ```
-    Actually the filter form's `actionCommit` is intercepted before `routeFormMutation` ever sees it (in `commitInput`). The branch in `routeFormMutation` is a safety net for stray messages — it just no-ops.
+    The `inputFilterForm` case must come BEFORE the `isCenteredForm()` branch because `isCenteredForm()` includes `inputFilterForm` (so the filter form renders via the existing centered overlay). Without the explicit early branch, ctrl+s on the filter modal falls into `commitFormInput`, sets `saving=true`, and waits forever for a mutation that never comes.
 
-- [ ] **Step 5a.11: Add `actionCommit` filter branch in `commitInput`.** In `model.go::commitInput` (or wherever centered-form actionCommit lands):
-    ```go
-    if m.input.kind == inputFilterForm {
-        return m.commitFilterForm(m.input)
-    }
-    // ... existing new-issue / body-edit / comment branches
-    ```
+- [ ] **Step 5a.11: NO branch in `routeFormMutation` for `inputFilterForm`.** Filter form has no daemon mutation — it should never reach `routeFormMutation`. Do NOT add a "safety net" branch there; if a `mutationDoneMsg` somehow arrives while a filter form is open, that's a bug to surface in tests, not a no-op to hide. The new-issue / body-edit / comment form branches in `routeFormMutation` are unchanged.
 
 - [ ] **Step 5a.12: Implement `ctrl+r` reset.** In `updateForm`, when `m.input.kind == inputFilterForm`, handle `tea.KeyCtrlR`:
     ```go
@@ -981,12 +1027,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
     - `TestFilterForm_TabCyclesThreeFields_WithWrap`.
     - `TestFilterForm_StatusFieldRadioCycle_LeftRightSpace`.
     - `TestFilterForm_CommitUsesDedicatedPath` (already drafted in step 5a.8).
-    - `TestFilterForm_CommitZeroesSelectedNumberAndClampsCursor`.
+    - `TestFilterForm_CommitZeroesSelectedNumberAndResetsCursor` (cursor=0, not just clamp; matches s/c convention).
     - `TestFilterForm_CommitClearsLmStatus`.
     - `TestFilterForm_CommitDispatchesRefetch`.
     - `TestFilterForm_CtrlRResetsFieldsOnly_PreFilterIntact`.
     - `TestFilterForm_EscRestoresPreFilter`.
-    - `TestFilterForm_RouteFormMutationBranchesFirst_NoSavingTrue`.
+    - `TestFilterForm_CtrlSCommitsViaCommitInputBranch_NotCommitFormInput` — explicit assertion that ctrl+s on the filter modal does NOT set `s.saving=true` (which would happen if it fell into `commitFormInput`); instead the filter applies and the form clears in one step.
+    - `TestFilterForm_NoBranchInRouteFormMutation` — confirms a stray `mutationDoneMsg` while filter form is open is not silently absorbed (no safety-net branch).
+    - `TestFilterForm_CommitResetsCursorToZero` — explicit cursor=0 assertion (matches s/c convention; filter change loses prior selection).
     - `TestKeymap_OKeyGone` (`km.FilterOwner` no longer exists OR doesn't match the `o` rune).
     - `TestHelpScreen_NoLongerMentionsO`.
 
@@ -1006,13 +1054,21 @@ in v1: Status (tri-state radio: all/open/closed), Owner (textinput),
 Search (textinput). preFilter snapshot for esc-restore.
 
 - Dedicated commitFilterForm path: sets full ListFilter from all
-  three fields, zeroes selectedNumber, clamps cursor, clears
-  lm.status, dispatches refetch. Does NOT call applyLiveBarFilter
-  (that mirrors a single field).
+  three fields, zeroes selectedNumber, RESETS CURSOR TO 0 (matches
+  s/c convention — filter change loses prior selection because the
+  prior issue may no longer match), clears lm.status, dispatches
+  refetch. Does NOT call applyLiveBarFilter (mirrors single field).
 - ctrl+r resets fields only; preFilter intact for esc.
 - esc restores ListFilter to its at-open snapshot.
-- routeFormMutation branches inputFilterForm first to skip the
-  mutation-form / saving handling.
+- commitInput branches inputFilterForm BEFORE the centered-form
+  commitFormInput path. Filter form is in isCenteredForm() for
+  render but its commit is filter apply, not mutation dispatch.
+  Without the explicit branch, ctrl+s would fall into
+  commitFormInput, set saving=true, and wait forever for a
+  mutation that never arrives.
+- NO branch added in routeFormMutation for inputFilterForm —
+  filter has no mutation; surface stray messages as test bugs,
+  not silent no-ops.
 - o key dropped from keymap (subsumed by modal); s/ /c kept per
   Q6 hybrid (cheap paths for common gestures).
 - Footer help: 'o owner' -> 'f filter'.
