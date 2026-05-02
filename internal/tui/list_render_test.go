@@ -169,13 +169,22 @@ func TestTitleBarLeft_SanitizeEmptyFallsBackToPlaceholder(t *testing.T) {
 // is `+100` (5 cells) — wider than the legacy hard-coded 4-cell
 // reserve. The render must compute reserve from len(clean) so the
 // final width never exceeds the budget.
+//
+// Budget is tuned to the boundary where the old 4-cell reserve and
+// the new dynamic reserve diverge: with 150 "[bug]" chips (5 cells
+// each, 1-cell separator) at budget=15, the old reserve packed 2
+// chips (used=11) leaving "+148" (4 cells) for total=17 > 15 — an
+// actual budget overrun. The new reserve packs 1 chip (used=5)
+// leaving " +149" for total=10. Job 248 callout: an earlier draft
+// of this test used budget=30 where both reserves happened to pack
+// the same number of chips, so it would not catch the regression.
 func TestRenderLabelChips_LargeOverflowReservesActualWidth(t *testing.T) {
 	applyColorMode(colorNone, io.Discard)
 	labels := make([]string, 150)
 	for i := range labels {
 		labels[i] = "bug"
 	}
-	const budget = 30
+	const budget = 15
 	got := renderLabelChips(labels, budget)
 	if w := runewidth.StringWidth(got); w > budget {
 		t.Fatalf("rendered width %d exceeds budget %d: %q", w, budget, got)
