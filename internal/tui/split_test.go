@@ -437,3 +437,53 @@ func TestSplit_SuggestionMenuClampActuallyFires_AtMinSplit(t *testing.T) {
 		t.Errorf("clamp did not pin panel to col=0: first line %q", firstLine)
 	}
 }
+
+// TestSplit_CursorFollow_RetargetsOnSameNumberDifferentProject covers
+// roborev #251 finding 1: in all-projects mode (currently gated off
+// but the dispatch path is forward-looking), two rows can share the
+// same Number across different projects. dispatchListKey's pre-fix
+// trigger compared selectedNumber alone, which would treat the move
+// from row A (Number=1, ProjectID=7) to row B (Number=1, ProjectID=8)
+// as a no-op and never retarget the detail pane. Composite identity
+// (project_id, number) detects the cross-project change correctly.
+func TestSplit_CursorFollow_RetargetsOnSameNumberDifferentProject(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	// Two rows with same Number but different ProjectID — the
+	// cross-project case all-projects mode would surface.
+	m.scope = scope{allProjects: true}
+	m.list.issues = []Issue{
+		{ProjectID: 7, Number: 1, Title: "row A in proj 7", Status: "open"},
+		{ProjectID: 8, Number: 1, Title: "row B in proj 8", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedNumber = m.list.issues[0].Number
+	// Position detail on row A explicitly so the test asserts the
+	// post-j retarget moved it to row B (not just that something
+	// landed on row B by coincidence).
+	rowA := m.list.issues[0]
+	m.detail.issue = &rowA
+	startGen := m.nextDetailFollowGen
+	// Press j — cursor moves to row 1; selectedNumber stays 1 because
+	// both rows share Number. Pre-fix this was a silent no-op.
+	out, _ := m.Update(runeKey('j'))
+	m = out.(Model)
+	if m.list.cursor != 1 {
+		t.Fatalf("setup failed: cursor=%d after j, want 1", m.list.cursor)
+	}
+	if m.detail.issue == nil {
+		t.Fatal("detail.issue nil after cursor move; retarget did not fire")
+	}
+	if m.detail.issue.ProjectID != 8 {
+		t.Errorf("detail.issue.ProjectID=%d after j, want 8 (row B); "+
+			"selectedNumber-only check missed cross-project move",
+			m.detail.issue.ProjectID)
+	}
+	if m.detail.issue.Number != 1 {
+		t.Errorf("detail.issue.Number=%d, want 1", m.detail.issue.Number)
+	}
+	if m.nextDetailFollowGen <= startGen {
+		t.Errorf("nextDetailFollowGen did not advance; debounce tick not scheduled "+
+			"(gen=%d, start=%d)", m.nextDetailFollowGen, startGen)
+	}
+}

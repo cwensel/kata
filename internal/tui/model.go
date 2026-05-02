@@ -1814,21 +1814,29 @@ func (m Model) dispatchToSplitPane(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // dispatchListKey routes a key into the list pane and, when the
-// resulting cursor moved, retargets the detail pane onto the new
-// row + schedules a 75ms-debounced detail fetch. This is the
-// detail-follows-cursor mechanism that makes the split layout feel
-// responsive: the user moves up/down in the list and the detail
-// repaints synchronously with the highlighted issue's metadata,
-// then the debounced fetch fills in the four detail fetches.
+// resulting highlighted row changed, retargets the detail pane onto
+// the new row + schedules a 75ms-debounced detail fetch. This is
+// the detail-follows-cursor mechanism that makes the split layout
+// feel responsive: the user moves up/down in the list and the
+// detail repaints synchronously with the highlighted issue's
+// metadata, then the debounced fetch fills in the four detail
+// fetches.
+//
+// "Highlighted row changed" is the composite (project_id, number)
+// identity returned by pickHighlightedIssue — comparing
+// selectedNumber alone would miss the case where two rows share a
+// Number across projects (in all-projects mode, currently gated off
+// but the code is forward-looking). roborev #251 finding 1.
 func (m Model) dispatchListKey(msg tea.Msg) (Model, tea.Cmd) {
-	prevSel := m.list.selectedNumber
+	prevPID, prevNum, prevHas := highlightedIdentity(m.list)
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg, m.keymap, m.api, m.scope)
-	if m.list.selectedNumber == prevSel {
+	newPID, newNum, newHas := highlightedIdentity(m.list)
+	if prevHas == newHas && prevPID == newPID && prevNum == newNum {
 		return m, cmd
 	}
-	// Cursor moved (or selection initialized). Retarget detail
-	// immediately so the pane never lags the list.
+	// Highlighted row changed. Retarget detail immediately so the
+	// pane never lags the list.
 	m, followCmd := m.scheduleDetailFollow()
 	if followCmd == nil {
 		return m, cmd
@@ -1837,6 +1845,18 @@ func (m Model) dispatchListKey(msg tea.Msg) (Model, tea.Cmd) {
 		return m, followCmd
 	}
 	return m, tea.Batch(cmd, followCmd)
+}
+
+// highlightedIdentity returns the composite (project_id, number) of
+// the row currently under lm.cursor. has=false when the filtered
+// list is empty. Used by dispatchListKey to detect cross-project
+// row changes that issue.Number alone would conflate.
+func highlightedIdentity(lm listModel) (pid, number int64, has bool) {
+	iss, ok := pickHighlightedIssue(lm)
+	if !ok {
+		return 0, 0, false
+	}
+	return iss.ProjectID, iss.Number, true
 }
 
 // isDetailFetchMsg reports whether msg is one of the four detail
@@ -1936,8 +1956,22 @@ func (m Model) View() string {
 	// WindowSizeMsg arrives (initial state has width=0). q / ctrl+c
 	// still route through routeGlobalKey, so the user can quit from
 	// the hint without resizing first.
+	//
+	// Active modal overlays (quit-confirm, centered forms) layer on
+	// top of the hint so a modal opened at full width stays visible
+	// after a resize below threshold (roborev #250). Without this the
+	// modal would silently disappear and the user would be stuck —
+	// pressing q again would only re-trigger the (invisible) modal.
 	if m.width > 0 && (m.width < 80 || m.height < 16) {
-		return renderTooNarrow(m.width, m.height)
+		body := renderTooNarrow(m.width, m.height)
+		if m.modal == modalQuitConfirm {
+			return overlayModal(body, renderQuitConfirmModal(), m.width, m.height)
+		}
+		if m.input.kind.isCenteredForm() {
+			form := renderCenteredForm(m.input, m.width, m.height)
+			return overlayModal(body, form, m.width, m.height)
+		}
+		return body
 	}
 	body := m.viewBody()
 	if m.view != viewList && m.view != viewDetail {

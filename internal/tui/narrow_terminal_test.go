@@ -151,3 +151,47 @@ func TestNarrowTerminal_ZeroWidthBeforeFirstResize_DoesNotShowHint(t *testing.T)
 			got)
 	}
 }
+
+// TestNarrowTerminal_QuitConfirmModalOverlaysHint covers roborev #250:
+// when the user opens the quit-confirm modal then resizes below the
+// chrome threshold, the modal must remain visible on top of the hint
+// (not silently swallowed by the short-circuit). Without the overlay
+// the user would be stuck — pressing q would only re-open the
+// invisible modal and ctrl+c would be the only escape.
+//
+// Both centered on the same axis, the modal's text covers the hint
+// text, but the hint's normal-border outline (┌/└) shows around the
+// modal's rounded-border (╭/╰), so the user knows both layers are
+// present. We assert on the rounded corner ╭ as the modal-only
+// marker (the hint uses sharp corners), and on the hint's sharp
+// corner ┌ which still pokes out around the smaller modal.
+func TestNarrowTerminal_QuitConfirmModalOverlaysHint(t *testing.T) {
+	m, cleanup := narrowTestSetup(t)
+	defer cleanup()
+	// Resize to full width and open quit-confirm.
+	out, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = out.(Model)
+	out, _ = m.Update(runeKey('q'))
+	m = out.(Model)
+	if m.modal != modalQuitConfirm {
+		t.Fatalf("modal = %v after q at full width, want modalQuitConfirm", m.modal)
+	}
+	// Now resize below threshold while the modal is still open.
+	out, _ = m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	m = out.(Model)
+	view := m.View()
+	if !strings.Contains(view, "[Y]") {
+		t.Fatalf("quit-confirm modal hidden by narrow short-circuit; got:\n%s", view)
+	}
+	if !strings.Contains(view, "Quit kata?") {
+		t.Fatalf("modal title missing after narrow resize; got:\n%s", view)
+	}
+	// The hint's sharp top corner ┌ pokes out next to the modal's
+	// rounded ╭, so both layers are visible to the user.
+	if !strings.Contains(view, "┌") {
+		t.Fatalf("narrow hint border missing under modal; got:\n%s", view)
+	}
+	if !strings.Contains(view, "╭") {
+		t.Fatalf("modal rounded border missing; got:\n%s", view)
+	}
+}
