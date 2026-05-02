@@ -162,13 +162,7 @@ func splitInfoBody(m Model) string {
 // position indicator only renders for the list pane (the detail pane
 // has its own per-tab indicator on the info line above).
 func renderSplitFooter(width int, m Model) string {
-	chrome := m.chrome()
-	var items []helpRow
-	if m.focus == focusList {
-		items = listFooterItemsFor(chrome.input)
-	} else {
-		items = detailFooterItemsFor(chrome.input)
-	}
+	items := footerHints(splitFooterContext(m))
 	left := joinHelpItems(items)
 	right := splitFooterRight(m)
 	body := padLeftRightInside(left, right, titleBarInnerWidth(width))

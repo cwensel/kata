@@ -41,7 +41,7 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	bodyRule := renderLabeledRule("body", width)
 	activityRule := renderLabeledRule("activity", width)
 	tabs := dm.renderTabStrip()
-	footer := renderFooterBar(width, detailFooterItemsFor(chrome.input), 0, nil, ListFilter{})
+	footer := renderFooterBar(width, footerHints(detailFooterContext(dm, chrome)), 0, nil, ListFilter{})
 
 	// Reserve nine fixed rows:
 	//   title bar (1) + meta (1) + assignment (1) + title row (1) +
@@ -262,41 +262,6 @@ func (dm detailModel) activeTabLabel() string {
 		return "links"
 	}
 	return ""
-}
-
-// detailFooterItems is the persistent footer help row for the
-// detail view's default state. M3b's panel-local prompts swap in
-// their own help row via detailFooterItemsFor when active.
-//
-// Labels are msgvault-style short tokens; `?` opens the full
-// sectioned help overlay for the long-form descriptions.
-func detailFooterItems() []helpRow {
-	return []helpRow{
-		{key: "↑↓", desc: "move"},
-		{key: "↹", desc: "tab"},
-		{key: "↵", desc: "jump"},
-		{key: "esc", desc: "back"},
-		{key: "e", desc: "edit"},
-		{key: "c", desc: "comment"},
-		{key: "x", desc: "close"},
-		{key: "+", desc: "label"},
-		{key: "a", desc: "owner"},
-		{key: "?", desc: "help"},
-		{key: "q", desc: "quit"},
-	}
-}
-
-// detailFooterItemsFor returns the footer items given the active
-// input. Panel prompts get the prompt's commit/cancel hints; otherwise
-// the default detail keys render.
-func detailFooterItemsFor(input inputState) []helpRow {
-	if input.kind.isPanelPrompt() {
-		return []helpRow{
-			{key: "enter", desc: "commit"},
-			{key: "esc", desc: "cancel"},
-		}
-	}
-	return detailFooterItems()
 }
 
 // renderBody splits the issue body on newlines, hard-wraps each line,

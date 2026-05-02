@@ -22,17 +22,32 @@ func helpSections(km keymap) []helpSection {
 	r := func(k key) helpRow { return helpRow{keyDisplay(k), k.Help} }
 	return []helpSection{
 		{"Global", []helpRow{r(km.Help), r(km.Quit), r(km.ToggleScope)}},
-		{"List", []helpRow{
+		{"Queue", []helpRow{
 			r(km.Up), r(km.Down), r(km.PageUp), r(km.PageDown), r(km.Home),
 			r(km.End), r(km.Open), r(km.ExpandCollapse), r(km.NewIssue),
-			r(km.NewChild), r(km.Search), r(km.FilterStatus), r(km.FilterForm),
-			r(km.ClearFilters), r(km.Close), r(km.Reopen),
+			r(km.Close), r(km.Reopen),
 		}},
 		{"Detail", []helpRow{
 			r(km.NextTab), r(km.PrevTab), r(km.JumpRef), r(km.Back),
 			r(km.EditBody), r(km.NewComment), r(km.SetParent),
 			r(km.AddBlocker), r(km.AddLink), r(km.AddLabel),
 			r(km.RemoveLabel), r(km.AssignOwner), r(km.ClearOwner),
+		}},
+		{"Children", []helpRow{
+			r(km.NewChild),
+			{key: "↑↓", desc: "move child cursor"},
+			{key: "enter", desc: "open child"},
+		}},
+		{"Forms", []helpRow{
+			{key: "ctrl+s", desc: "save or apply"},
+			{key: "esc", desc: "cancel"},
+			{key: "tab/shift+tab", desc: "change field"},
+			{key: "ctrl+e", desc: "open editor"},
+			{key: "ctrl+u", desc: "clear prompt"},
+		}},
+		{"Filters", []helpRow{
+			r(km.Search), r(km.FilterStatus), r(km.FilterForm), r(km.ClearFilters),
+			{key: "ctrl+r", desc: "reset filter form"},
 		}},
 	}
 }

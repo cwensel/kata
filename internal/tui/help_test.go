@@ -47,7 +47,7 @@ func TestHelpSections_AllBindingsCovered(t *testing.T) {
 // regression that drops Detail (or any other section) is caught.
 func TestRenderHelp_NarrowWidth(t *testing.T) {
 	out := renderHelp(newKeymap(), 40, ListFilter{})
-	for _, want := range []string{"Global", "List", "Detail"} {
+	for _, want := range []string{"Global", "Queue", "Detail", "Children", "Forms", "Filters"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("narrow help missing section %q\n%s", want, out)
 		}
@@ -65,7 +65,9 @@ func TestRenderHelp_WideWidth(t *testing.T) {
 		t.Fatalf("helpColumnCount(130)=%d, want 3", helpColumnCount(130))
 	}
 	out := renderHelp(newKeymap(), 130, ListFilter{})
-	for _, want := range []string{"Global", "List", "Detail", "kata — keybindings"} {
+	for _, want := range []string{
+		"Global", "Queue", "Detail", "Children", "Forms", "Filters", "kata — keybindings",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("wide help missing %q\n%s", want, out)
 		}

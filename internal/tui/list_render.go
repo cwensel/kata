@@ -66,7 +66,7 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	}
 	title := renderTitleBar(width, chrome.scope, chrome.version)
 	stats := renderStatsLine(width, chrome.scope, lm.issueCounts(), lm.filter)
-	footer := renderFooterBar(width, listFooterItemsFor(chrome.input), lm.cursor, lm.issues, lm.filter)
+	footer := renderFooterBar(width, footerHints(listFooterContext(lm, chrome)), lm.cursor, lm.issues, lm.filter)
 
 	// Body area: everything between header (lines 1-2) and the
 	// info+footer (last 2 lines). bodyRows is computed first so the
@@ -139,47 +139,6 @@ func (lm listModel) renderBodyArea(width, bodyRows int, chrome viewChrome) strin
 		rendered = rendered[:bodyRows]
 	}
 	return strings.Join(rendered, "\n")
-}
-
-// listFooterItems is the persistent footer help row for the list view.
-// Labels are msgvault-style: single nouns/verbs separated from the key
-// by one space. The `?` key still opens the full sectioned help
-// overlay for the long-form descriptions; the footer carries only the
-// most-used at-a-glance hints.
-//
-// Plan 8 commit 5a: `o owner` was retired; `f filter` opens the
-// multi-axis filter modal in its place. The cheap single-axis paths
-// (s status, / search, c clear) stay because common gestures should
-// not require a modal round trip.
-func listFooterItems() []helpRow {
-	return []helpRow{
-		{key: "↑↓", desc: "move"},
-		{key: "↵", desc: "open"},
-		{key: "n", desc: "new"},
-		{key: "/", desc: "search"},
-		{key: "f", desc: "filter"},
-		{key: "s", desc: "status"},
-		{key: "c", desc: "clear"},
-		{key: "x", desc: "close"},
-		{key: "?", desc: "help"},
-		{key: "q", desc: "quit"},
-	}
-}
-
-// listFooterItemsFor returns the footer items for the list view given
-// the active input. Bars get focused commit/cancel hints; the
-// centered new-issue form overlays the list and renders its own
-// footer hint (see renderNewIssueForm), so the list footer falls back
-// to the default key set under it. Anything else uses the default.
-func listFooterItemsFor(input inputState) []helpRow {
-	if input.kind.isCommandBar() {
-		return []helpRow{
-			{key: "enter", desc: "commit"},
-			{key: "esc", desc: "cancel"},
-			{key: "ctrl+u", desc: "clear"},
-		}
-	}
-	return listFooterItems()
 }
 
 // renderTitleBar formats the top brand strip:
