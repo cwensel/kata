@@ -176,14 +176,20 @@ func renderTitleBar(width int, sc scope, version string) string {
 // scope reads `Project: $name`; all-projects scope reads
 // `Project: all`; the no-scope startup state reads `Project: —` so
 // the bar layout doesn't shift once a project is resolved.
+//
+// sanitizeForDisplay is applied BEFORE the empty check so a daemon
+// reply like "​" or pure control runes (which sanitize down to
+// "") falls through to the `—` placeholder instead of rendering an
+// empty `Project: ` string. Roborev job 128.
 func titleBarLeft(sc scope) string {
-	switch {
-	case sc.allProjects:
+	if sc.allProjects {
 		return "Project: all"
-	case sc.projectName != "":
-		return "Project: " + sanitizeForDisplay(sc.projectName)
 	}
-	return "Project: —"
+	clean := sanitizeForDisplay(sc.projectName)
+	if clean == "" {
+		return "Project: —"
+	}
+	return "Project: " + clean
 }
 
 // titleBarRight is the brand + version cluster pinned to the right
@@ -661,16 +667,20 @@ func renderChips(f ListFilter) string {
 //
 // Width math: each chip is `[<sanitized-label>]` plus one space
 // separator before the next chip. The +N overflow token reserves
-// up to 4 cells (` +99` worst case) inside `available` so packing
-// never blows the budget by failing to leave room for the suffix.
+// `1 + width("+<len(clean)>")` cells inside `available` so packing
+// never blows the budget by failing to leave room for the suffix —
+// computed from the actual label count so projects with 100+ labels
+// (`+100` = 5 cells) reserve correctly instead of underspending the
+// fixed `+99` budget. Roborev job 235.
 func renderLabelChips(labels []string, available int) string {
 	if len(labels) == 0 {
 		return subtleStyle.Render("(no labels)")
 	}
 	clean := sanitizeAndSortLabels(labels)
-	// Reserve worst-case +N width inside `available` so the suffix
-	// always fits when packing drops chips. ` +99` is 4 cells.
-	const overflowReserve = 4
+	// Reserve the worst-case `+N` suffix width (leading space + token).
+	// Computed from len(clean) so a 100-label issue reserves 5 cells
+	// for "+100" instead of the legacy 4-cell "+99" assumption.
+	overflowReserve := 1 + runewidth.StringWidth(fmt.Sprintf("+%d", len(clean)))
 	packed, dropped := packChips(clean, available, overflowReserve)
 	if len(packed) == 0 {
 		return ultraNarrowChipFallback(len(clean))

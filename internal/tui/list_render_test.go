@@ -138,6 +138,53 @@ func TestRenderLabelChips_RenderedTextSanitized(t *testing.T) {
 	}
 }
 
+// TestTitleBarLeft_SanitizeEmptyFallsBackToPlaceholder pins roborev
+// job 128: when sc.projectName sanitizes down to "" (control runes
+// only, zero-width joiners only, etc.), the renderer must render
+// `Project: —` rather than the empty `Project: ` form, preserving
+// the "left side never blank" invariant.
+func TestTitleBarLeft_SanitizeEmptyFallsBackToPlaceholder(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	// String of pure control runes — sanitizeForDisplay strips them.
+	got := titleBarLeft(scope{projectName: "\x01\x02\x07"})
+	if got != "Project: —" {
+		t.Fatalf("titleBarLeft control-only name = %q, want %q", got, "Project: —")
+	}
+	got2 := titleBarLeft(scope{projectName: ""})
+	if got2 != "Project: —" {
+		t.Fatalf("titleBarLeft empty name = %q, want %q", got2, "Project: —")
+	}
+	got3 := titleBarLeft(scope{projectName: "kata"})
+	if got3 != "Project: kata" {
+		t.Fatalf("titleBarLeft happy path = %q, want %q", got3, "Project: kata")
+	}
+	got4 := titleBarLeft(scope{allProjects: true})
+	if got4 != "Project: all" {
+		t.Fatalf("titleBarLeft all-projects = %q, want %q", got4, "Project: all")
+	}
+}
+
+// TestRenderLabelChips_LargeOverflowReservesActualWidth pins the
+// fix for roborev job 235: with >=100 labels dropped, the `+N` token
+// is `+100` (5 cells) — wider than the legacy hard-coded 4-cell
+// reserve. The render must compute reserve from len(clean) so the
+// final width never exceeds the budget.
+func TestRenderLabelChips_LargeOverflowReservesActualWidth(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	labels := make([]string, 150)
+	for i := range labels {
+		labels[i] = "bug"
+	}
+	const budget = 30
+	got := renderLabelChips(labels, budget)
+	if w := runewidth.StringWidth(got); w > budget {
+		t.Fatalf("rendered width %d exceeds budget %d: %q", w, budget, got)
+	}
+	if !strings.Contains(got, "+") {
+		t.Fatalf("expected +N overflow marker in %q", got)
+	}
+}
+
 // TestRenderLabelChips_NewlineInLabelDoesNotBreakRow pins the
 // defense-in-depth invariant that a label containing a literal newline
 // cannot split a chip across two terminal rows. The chip strip is a
