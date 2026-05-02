@@ -38,16 +38,17 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	meta := renderHeaderMeta(*dm.issue)
 	assign := renderHeaderAssignment(width, *dm.issue)
 	titleRow := renderHeaderTitle(width, *dm.issue)
+	hierarchy := renderHierarchySummary(width, dm.parent, dm.children)
 	bodyRule := renderLabeledRule("body", width)
 	activityRule := renderLabeledRule("activity", width)
 	tabs := dm.renderTabStrip()
 	footer := renderFooterBar(width, footerHints(detailFooterContext(dm, chrome)), 0, 0)
 
-	// Reserve nine fixed rows:
+	// Reserve ten fixed rows:
 	//   title bar (1) + meta (1) + assignment (1) + title row (1) +
-	//   body rule (1) + activity rule (1) + tab strip (1) +
-	//   info (1) + footer (1) = 9.
-	// (variable: body content + tab content split 2/3 / 1/3 of slack)
+	//   hierarchy summary (1) + body rule (1) + activity rule (1) + tab strip (1) +
+	//   info (1) + footer (1) = 10.
+	// (variable: body content + optional children + tab content)
 	// No separate "tab rule" — the activity rule above the tab strip
 	// is the only horizontal divider in the activity panel.
 	//
@@ -62,29 +63,27 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	// above the info line). The scroll indicator is briefly less
 	// accurate while the menu is open — acceptable: the user is
 	// autocompleting, not paging tab content.
-	avail := height - 9
-	if avail < detailMinSplit {
-		avail = detailMinSplit
-	}
-	bodyA := avail * 2 / 3
-	if bodyA < detailMinBodyRows {
-		bodyA = detailMinBodyRows
-	}
-	tabA := avail - bodyA
-	if tabA < detailMinTabRows {
-		tabA = detailMinTabRows
-	}
+	bodyA, childA, tabA := detailStackedBudgets(height, len(dm.children))
 	body := dm.renderBody(width, bodyA)
+	children := dm.renderChildrenSection(width, childA)
 	tabContent := dm.renderActiveTab(width, tabA)
 	bodyArea := dm.padArea(body, bodyA, width)
+	childrenArea := ""
+	if childA > 0 {
+		childrenArea = dm.padArea(children, childA, width)
+	}
 	tabArea := dm.padArea(tabContent, tabA, width)
 	// Info line uses the real tabA budget so the scroll indicator
 	// fires correctly (roborev #107 finding 1).
 	infoLine := dm.renderInfoLine(width, chrome, tabA)
-	return strings.Join([]string{
-		title, meta, assign, titleRow, bodyRule, bodyArea,
-		activityRule, tabs, tabArea, infoLine, footer,
-	}, "\n")
+	parts := []string{
+		title, meta, assign, titleRow, hierarchy, bodyRule, bodyArea,
+	}
+	if childrenArea != "" {
+		parts = append(parts, childrenArea)
+	}
+	parts = append(parts, activityRule, tabs, tabArea, infoLine, footer)
+	return strings.Join(parts, "\n")
 }
 
 // renderTinyFallback is the degraded render for terminals below the
@@ -98,6 +97,9 @@ func (dm detailModel) renderTinyFallback(width int) string {
 // slack between the body / tab content and the rest of the chrome
 // so the footer pins to the bottom (msgvault fillScreen pattern).
 func (dm detailModel) padArea(content string, rows, width int) string {
+	if rows <= 0 {
+		return ""
+	}
 	lines := strings.Split(content, "\n")
 	for len(lines) < rows {
 		lines = append(lines, normalRowStyle.Render(strings.Repeat(" ", width)))
@@ -106,6 +108,33 @@ func (dm detailModel) padArea(content string, rows, width int) string {
 		lines = lines[:rows]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func detailStackedBudgets(height, childCount int) (bodyRows, childRows, tabRows int) {
+	return detailBudgets(height-10, childCount)
+}
+
+func detailSplitBudgets(height, childCount int) (bodyRows, childRows, tabRows int) {
+	return detailBudgets(height-7, childCount)
+}
+
+func detailBudgets(avail, childCount int) (bodyRows, childRows, tabRows int) {
+	if avail < detailMinSplit {
+		avail = detailMinSplit
+	}
+	if childCount > 0 && avail >= detailMinBodyRows+detailMinTabRows+2 {
+		childRows = min(childCount+1, max(2, avail/4))
+		avail -= childRows
+	}
+	bodyRows = avail * 2 / 3
+	if bodyRows < detailMinBodyRows {
+		bodyRows = detailMinBodyRows
+	}
+	tabRows = avail - bodyRows
+	if tabRows < detailMinTabRows {
+		tabRows = detailMinTabRows
+	}
+	return bodyRows, childRows, tabRows
 }
 
 // renderInfoLine renders the info line just above the footer for the
@@ -233,6 +262,31 @@ func renderHeaderTitle(width int, iss Issue) string {
 	return titleStyle.Render(truncate(t, max(20, width)))
 }
 
+func renderHierarchySummary(width int, parent *IssueRef, children []Issue) string {
+	left := "Parent: -"
+	if parent != nil {
+		left = fmt.Sprintf("Parent: #%d %s", parent.Number, sanitizeForDisplay(parent.Title))
+	}
+	right := "Children: " + childrenCountSummary(children)
+	rightW := runewidth.StringWidth(right)
+	leftBudget := width - rightW - 1
+	if leftBudget < 1 {
+		leftBudget = 1
+	}
+	left = truncate(left, leftBudget)
+	return padLeftRightInside(left, right, width)
+}
+
+func childrenCountSummary(children []Issue) string {
+	open := 0
+	for _, child := range children {
+		if child.Status == "open" {
+			open++
+		}
+	}
+	return fmt.Sprintf("%d open / %d total", open, len(children))
+}
+
 // renderLabeledRule produces `── <label> ──` padded to width with
 // dashes. Falls back to a plain dash run when the label prefix is
 // wider than the available width — defensive against tiny terminals
@@ -286,6 +340,66 @@ func (dm detailModel) renderBody(width, lines int) string {
 		end = len(wrapped)
 	}
 	return strings.Join(wrapped[start:end], "\n")
+}
+
+func (dm detailModel) renderChildrenSection(width, rows int) string {
+	if rows <= 0 || len(dm.children) == 0 {
+		return ""
+	}
+	lines := []string{renderLabeledRule("children "+childrenCountSummary(dm.children), width)}
+	if rows == 1 {
+		return strings.Join(lines, "\n")
+	}
+	cursor := clampInt(dm.childCursor, 0, len(dm.children)-1)
+	visible, vCursor := windowChildIssues(dm.children, cursor, rows-1)
+	for i, child := range visible {
+		line := renderChildIssueRow(child, i == vCursor && dm.detailFocus == focusChildren, width)
+		if i == vCursor && dm.detailFocus == focusChildren {
+			line = cursorRowStyle.Render(padToWidth(line, width))
+		} else if i%2 == 1 {
+			line = altRowStyle.Render(padToWidth(line, width))
+		} else {
+			line = normalRowStyle.Render(padToWidth(line, width))
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderChildIssueRow(child Issue, selected bool, width int) string {
+	const (
+		markerW = 2
+		numW    = 7
+		statusW = 10
+		ownerW  = 12
+		updateW = 10
+	)
+	titleW := width - markerW - numW - statusW - ownerW - updateW
+	if titleW < 12 {
+		titleW = 12
+	}
+	marker := " "
+	if selected {
+		marker = "▶"
+	}
+	parts := []string{
+		padToWidth(marker, markerW),
+		padToWidth(fmt.Sprintf("#%d", child.Number), numW),
+		padToWidth(statusChip(child), statusW),
+		padToWidth(truncate(sanitizeForDisplay(child.Title), titleW), titleW),
+		padToWidth(truncate(sanitizeForDisplay(ownerText(child.Owner)), ownerW-1), ownerW),
+		padToWidth(humanizeRelative(child.UpdatedAt), updateW),
+	}
+	return strings.Join(parts, "")
+}
+
+func windowChildIssues(issues []Issue, cursor, budget int) ([]Issue, int) {
+	n := len(issues)
+	if n == 0 {
+		return issues, 0
+	}
+	start, end := windowBounds(n, cursor, budget)
+	return issues[start:end], cursor - start
 }
 
 // wrapBody splits s on newlines, then hard-wraps each segment to width.

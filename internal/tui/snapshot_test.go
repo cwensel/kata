@@ -171,6 +171,24 @@ func snapDetailFixture() detailModel {
 	}
 }
 
+func snapDetailHierarchyFixture() detailModel {
+	dm := snapDetailFixture()
+	dm.parent = &IssueRef{Number: 12, Title: "workspace polish parent", Status: "open"}
+	dm.children = []Issue{
+		{
+			ProjectID: 7, Number: 43, Title: "detail hint bars incomplete",
+			Status: "open", Owner: ptrString("alice"),
+			UpdatedAt: snapshotFixedNow.Add(-1 * time.Hour),
+		},
+		{
+			ProjectID: 7, Number: 44, Title: "new issue form parent field",
+			Status: "closed", Owner: ptrString("wesm"),
+			UpdatedAt: snapshotFixedNow.Add(-2 * time.Hour),
+		},
+	}
+	return dm
+}
+
 // TestSnapshot_List_DefaultMixedStatus locks down the steady-state list
 // view at width 120 with three rows and the cursor on row 2. The fixture
 // covers open, closed, and soft-deleted statusChip branches.
@@ -398,6 +416,22 @@ func TestSnapshot_Detail_WithLabelPrompt(t *testing.T) {
 	}
 	got := dm.View(120, 30, chrome)
 	assertGolden(t, "detail-with-label-prompt", got)
+}
+
+func TestSnapshot_Detail_WithChildren(t *testing.T) {
+	defer snapshotInit(t)()
+	dm := snapDetailHierarchyFixture()
+	got := dm.View(120, 32, viewChrome{})
+	assertGolden(t, "detail-with-children", got)
+}
+
+func TestSnapshot_Detail_ChildrenFocus(t *testing.T) {
+	defer snapshotInit(t)()
+	dm := snapDetailHierarchyFixture()
+	dm.detailFocus = focusChildren
+	dm.childCursor = 1
+	got := dm.View(120, 32, viewChrome{})
+	assertGolden(t, "detail-children-focus", got)
 }
 
 // TestSnapshot_Detail_LongCommentsList locks the per-tab scroll

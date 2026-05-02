@@ -205,32 +205,32 @@ func (dm detailModel) ViewSplit(width, height int, _ viewChrome) string {
 	meta := renderHeaderMeta(*dm.issue)
 	assign := renderHeaderAssignment(width, *dm.issue)
 	titleRow := renderHeaderTitle(width, *dm.issue)
+	hierarchy := renderHierarchySummary(width, dm.parent, dm.children)
 	bodyRule := renderLabeledRule("body", width)
 	activityRule := renderLabeledRule("activity", width)
 	tabs := dm.renderTabStrip()
-	// Reserve six fixed rows in the pane:
-	//   meta + assign + title + bodyRule + activityRule + tabs.
+	// Reserve seven fixed rows in the pane:
+	//   meta + assign + title + hierarchy + bodyRule + activityRule + tabs.
 	// The remaining height splits between body content (2/3) and
 	// active-tab content (1/3) — same ratio as the stacked renderer.
-	avail := height - 6
-	if avail < detailMinSplit {
-		avail = detailMinSplit
-	}
-	bodyA := avail * 2 / 3
-	if bodyA < detailMinBodyRows {
-		bodyA = detailMinBodyRows
-	}
-	tabA := avail - bodyA
-	if tabA < detailMinTabRows {
-		tabA = detailMinTabRows
-	}
+	bodyA, childA, tabA := detailSplitBudgets(height, len(dm.children))
 	body := dm.renderBody(width, bodyA)
+	children := dm.renderChildrenSection(width, childA)
 	tabContent := dm.renderActiveTab(width, tabA)
 	bodyArea := dm.padArea(body, bodyA, width)
+	childrenArea := ""
+	if childA > 0 {
+		childrenArea = dm.padArea(children, childA, width)
+	}
 	tabArea := dm.padArea(tabContent, tabA, width)
-	return strings.Join([]string{
-		meta, assign, titleRow, bodyRule, bodyArea, activityRule, tabs, tabArea,
-	}, "\n")
+	parts := []string{
+		meta, assign, titleRow, hierarchy, bodyRule, bodyArea,
+	}
+	if childrenArea != "" {
+		parts = append(parts, childrenArea)
+	}
+	parts = append(parts, activityRule, tabs, tabArea)
+	return strings.Join(parts, "\n")
 }
 
 // pickHighlightedIssue returns a copy of the issue currently under

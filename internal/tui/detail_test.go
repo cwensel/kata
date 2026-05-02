@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-runewidth"
 )
 
 // detailFixture seeds a detailModel with one issue, two comments, two
@@ -47,6 +48,50 @@ func TestDetail_Render_Header_Title(t *testing.T) {
 	}
 	if !strings.Contains(out, "#42") {
 		t.Fatalf("issue number missing:\n%s", out)
+	}
+}
+
+func TestRenderHierarchySummary_FormatsParentAndChildren(t *testing.T) {
+	parent := &IssueRef{Number: 12, Title: "workspace polish parent", Status: "open"}
+	children := []Issue{
+		{Number: 43, Status: "open"},
+		{Number: 44, Status: "closed"},
+	}
+	got := renderHierarchySummary(80, parent, children)
+	if !strings.Contains(got, "Parent: #12 workspace polish parent") {
+		t.Fatalf("parent summary missing:\n%s", got)
+	}
+	if !strings.Contains(got, "Children: 1 open / 2 total") {
+		t.Fatalf("children summary missing:\n%s", got)
+	}
+
+	longParent := &IssueRef{Number: 99, Title: strings.Repeat("very long ", 20), Status: "open"}
+	got = renderHierarchySummary(50, longParent, children)
+	if runewidth.StringWidth(stripANSI(got)) > 50 {
+		t.Fatalf("summary width overflowed: width=%d text=%q",
+			runewidth.StringWidth(stripANSI(got)), got)
+	}
+}
+
+func TestDetail_RenderHierarchySections(t *testing.T) {
+	dm := detailFixture()
+	dm.parent = &IssueRef{Number: 12, Title: "workspace polish parent", Status: "open"}
+	dm.children = []Issue{
+		{Number: 43, Title: "detail hint bars incomplete", Status: "open", Owner: ptrString("alice")},
+		{Number: 44, Title: "new issue form parent field", Status: "closed"},
+	}
+	out := stripANSI(dm.View(100, 28, viewChrome{}))
+	for _, want := range []string{
+		"Parent: #12 workspace polish parent",
+		"Children: 1 open / 2 total",
+		"children 1 open / 2 total",
+		"#43",
+		"detail hint bars incomplete",
+		"#44",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("detail hierarchy render missing %q:\n%s", want, out)
+		}
 	}
 }
 

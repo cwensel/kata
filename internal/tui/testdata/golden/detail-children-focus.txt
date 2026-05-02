@@ -2,7 +2,7 @@
 #42 · open · wesm
 Owner: —                                                                                                     (no labels)
 fix login bug on Safari
-Parent: -                                                                                     Children: 0 open / 0 total
+Parent: #12 workspace polish parent                                                           Children: 1 open / 2 total
 ── body ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Reproduces in Safari 17 only.
 Click the login button twice.
@@ -16,15 +16,17 @@ Click the login button twice.
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
+── children 1 open / 2 total ───────────────────────────────────────────────────────────────────────────────────────────
+  #43    open      detail hint bars incomplete                                                    alice       1h ago    
+▶ #44    closed    new issue form parent field                                                    wesm        2h ago    
 ── activity ────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Comments (2)  [ Events (2) ]  Links (1)
-[issue.created] 2026-04-30 10:00 alice — created
-[issue.commented] 2026-04-30 11:00 bob — added comment
+[ Comments (2) ]  Events (2)  Links (1)
+[alice] 2026-04-30 10:00
+  I can repro on macOS.
+
+[bob] 2026-04-30 11:00
+  Looks like a race in oauth.
+
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
- ↑↓ move │ ↹ tab │ ↵ jump │ esc back │ e edit │ c comment │ x close │ + label │ a owner │ ? help │ q quit               
+ ↑↓ child │ ↵ open child │ N child │ p parent │ ↹ activity │ esc back │ ? help │ q quit                                 

@@ -3,8 +3,9 @@
 │        #     status    title                   kids    updated   ││#42 · open · wesm                                                     │
 │──────────────────────────────────────────────────────────────────││Owner: —                                                   (no labels)│
 │        #1    open      fix login bug on Safari         3h ago    ││fix login bug on Safari                                               │
-│▶       #2    closed    rebuild search index            1h ago    ││── body ──────────────────────────────────────────────────────────────│
-│        #3    [deleted] purge stale tokens              2h ago    ││Reproduces in Safari 17 only.                                         │
+│▶       #2    closed    rebuild search index            1h ago    ││Parent: -                                   Children: 0 open / 0 total│
+│        #3    [deleted] purge stale tokens              2h ago    ││── body ──────────────────────────────────────────────────────────────│
+│                                                                  ││Reproduces in Safari 17 only.                                         │
 │                                                                  ││Click the login button twice.                                         │
 │                                                                  ││                                                                      │
 │                                                                  ││                                                                      │
@@ -27,7 +28,6 @@
 │                                                                  ││                                                                      │
 │                                                                  ││[bob] 2026-04-30 11:00                                                │
 │                                                                  ││  Looks like a race in oauth.                                         │
-│                                                                  ││                                                                      │
 │                                                                  ││                                                                      │
 │                                                                  ││                                                                      │
 │                                                                  ││                                                                      │

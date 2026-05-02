@@ -2,10 +2,10 @@
 #42 · open · wesm
 Owner: —                                                                                                     (no labels)
 fix login bug on Safari
+Parent: -                                                                                     Children: 0 open / 0 total
 ── body ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Reproduces in Safari 17 only.
 Click the login button twice.
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
