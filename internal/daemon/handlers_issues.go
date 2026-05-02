@@ -111,8 +111,19 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+		ids := make([]int64, len(issues))
+		for i, iss := range issues {
+			ids[i] = iss.ID
+		}
+		labelsByID, err := cfg.DB.LabelsByIssues(ctx, in.ProjectID, ids)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
 		out := &api.ListIssuesResponse{}
-		out.Body.Issues = issues
+		out.Body.Issues = make([]api.IssueOut, len(issues))
+		for i, iss := range issues {
+			out.Body.Issues[i] = api.IssueOut{Issue: iss, Labels: labelsByID[iss.ID]}
+		}
 		return out, nil
 	})
 

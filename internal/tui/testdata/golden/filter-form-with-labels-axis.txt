@@ -7,6 +7,6 @@
 │ Search                                                                             │
 │ login                                                                              │
 │ Labels                                                                             │
-│                                                                                    │
+│ bug, prio-1                                                                        │
 │ ctrl+s apply · esc cancel · tab next · ctrl+r reset                                │
 ╰────────────────────────────────────────────────────────────────────────────────────╯

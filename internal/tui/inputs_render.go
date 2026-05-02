@@ -86,22 +86,23 @@ func renderCenteredForm(s inputState, width, height int) string {
 	return renderSingleFieldForm(s, innerW, innerH)
 }
 
-// renderFilterForm lays out the three filter axes: Status (radio),
-// Owner (textinput), Search (textinput). No body field, so the form
-// reads compactly — title strip, three labeled rows, footer hint
-// inside the panel. ctrl+r is added to the footer hint so the reset
-// gesture is discoverable; ctrl+e is omitted (no $EDITOR for this
-// form).
+// renderFilterForm lays out the four filter axes: Status (radio),
+// Owner (textinput), Search (textinput), Labels (textinput, comma-
+// separated). No body field, so the form reads compactly — title
+// strip, four labeled rows, footer hint inside the panel. ctrl+r is
+// added to the footer hint so the reset gesture is discoverable;
+// ctrl+e is omitted (no $EDITOR for this form). Plan 8 commit 5b
+// added the Labels row.
 func renderFilterForm(s inputState, innerW int) string {
-	if len(s.fields) < 3 {
+	if len(s.fields) < 4 {
 		return ""
 	}
 	statusLine := renderFormStatus(s)
 	footer := renderFilterFormFooter(s)
 	parts := []string{titleStyle.Render(s.title)}
-	parts = append(parts, renderFilterField(s, 0, innerW))
-	parts = append(parts, renderFilterField(s, 1, innerW))
-	parts = append(parts, renderFilterField(s, 2, innerW))
+	for i := 0; i < 4; i++ {
+		parts = append(parts, renderFilterField(s, i, innerW))
+	}
 	if statusLine != "" {
 		parts = append(parts, statusLine)
 	}

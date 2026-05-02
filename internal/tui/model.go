@@ -916,13 +916,14 @@ func (m Model) commitInput() (Model, tea.Cmd) {
 // the filter" intent overrides the implicit "follow the same issue
 // across refetches" intent.
 func (m Model) commitFilterForm(form inputState) (Model, tea.Cmd) {
-	if len(form.fields) < 3 {
+	if len(form.fields) < 4 {
 		return m, nil
 	}
 	m.list.filter = ListFilter{
 		Status: form.fields[0].radio.value(),
 		Owner:  strings.TrimSpace(form.fields[1].input.Value()),
 		Search: strings.TrimSpace(form.fields[2].input.Value()),
+		Labels: normalizeLabels(form.fields[3].input.Value()),
 	}
 	// "all" is the surface label for "no Status filter"; the wire
 	// expects an empty string.

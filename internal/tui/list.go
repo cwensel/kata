@@ -568,13 +568,18 @@ func (lm listModel) refetchCmd(api listAPI, sc scope) tea.Cmd {
 }
 
 // filteredIssues returns the subset of issues that satisfy the
-// client-side filters (Owner/Author/Search). Status is filtered
+// client-side filters (Owner/Author/Search/Labels). Status is filtered
 // server-side via the daemon's status query param and is already
 // reflected in lm.issues, so it is not re-checked here. The fast path
 // returns the input slice unchanged when no client-side filter is set
 // — render runs every keystroke, so this matters.
+//
+// Plan 8 commit 5b added the Labels axis: with the wire now carrying
+// per-issue labels (api.IssueOut), the early-return condition gained a
+// len(f.Labels) == 0 check so a label-only filter no longer
+// short-circuits past matchesFilter.
 func filteredIssues(issues []Issue, f ListFilter) []Issue {
-	if f.Owner == "" && f.Author == "" && f.Search == "" {
+	if f.Owner == "" && f.Author == "" && f.Search == "" && len(f.Labels) == 0 {
 		return issues
 	}
 	out := make([]Issue, 0, len(issues))
@@ -591,10 +596,10 @@ func filteredIssues(issues []Issue, f ListFilter) []Issue {
 // owner. Search is case-insensitive over Title — body search would need
 // the detail fetch and is out of scope for the list view.
 //
-// Labels are deliberately not checked: the Issue projection drops the
-// labels field (Task 3 wire-vs-spec adaptation #1), so a label filter
-// can't actually narrow until the wire carries them. The chip strip
-// hides the label chip for the same reason; see renderChips.
+// Labels use any-of semantics: a non-empty filter Labels slice matches
+// when at least one of the filter's labels is attached to the issue. An
+// empty filter Labels slice (len == 0) is the no-filter case — every
+// issue passes that gate.
 func matchesFilter(iss Issue, f ListFilter) bool {
 	if f.Owner != "" {
 		if iss.Owner == nil || *iss.Owner != f.Owner {
@@ -611,5 +616,30 @@ func matchesFilter(iss Issue, f ListFilter) bool {
 			return false
 		}
 	}
+	if len(f.Labels) > 0 && !labelsAnyOf(iss.Labels, f.Labels) {
+		return false
+	}
 	return true
+}
+
+// labelsAnyOf reports whether any of want is present in have. Used by
+// matchesFilter to implement the Labels axis' any-of semantics. Empty
+// want returns true (no filter) so callers can skip the branch entirely
+// when no label filter is configured; both sides empty also returns
+// true. Lookup is via a small map so an issue with many attached labels
+// doesn't pay an O(n*m) cost.
+func labelsAnyOf(have, want []string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	attached := make(map[string]struct{}, len(have))
+	for _, l := range have {
+		attached[l] = struct{}{}
+	}
+	for _, l := range want {
+		if _, ok := attached[l]; ok {
+			return true
+		}
+	}
+	return false
 }

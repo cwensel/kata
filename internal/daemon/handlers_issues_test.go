@@ -383,6 +383,40 @@ func TestCreate_IdempotencyWinsOverForceNew(t *testing.T) {
 	assert.True(t, secondOut.Reused)
 }
 
+// TestListIssues_HydratesLabels verifies the Plan 8 commit 5b
+// contract: GET /api/v1/projects/{id}/issues returns each issue with
+// its attached labels (sorted alphabetically), so the TUI list view
+// can render label chips without an extra fetch per row.
+func TestListIssues_HydratesLabels(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	first := createIssueViaHTTP(t, env, pid, "first")
+	second := createIssueViaHTTP(t, env, pid, "second")
+	postLabel(t, env, pid, first, "prio-1")
+	postLabel(t, env, pid, first, "bug")
+	postLabel(t, env, pid, second, "enhancement")
+
+	resp, err := env.HTTP.Get(env.URL +
+		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var out struct {
+		Issues []struct {
+			Number int64    `json:"number"`
+			Labels []string `json:"labels"`
+		} `json:"issues"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.Len(t, out.Issues, 2)
+	byNumber := map[int64][]string{}
+	for _, iss := range out.Issues {
+		byNumber[iss.Number] = iss.Labels
+	}
+	assert.Equal(t, []string{"bug", "prio-1"}, byNumber[first])
+	assert.Equal(t, []string{"enhancement"}, byNumber[second])
+}
+
 func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	env := testenv.New(t)
 	pid, parent, child := setupTwoIssues(t, env)

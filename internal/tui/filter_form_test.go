@@ -7,13 +7,25 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// listFilterEqual compares two ListFilter values by their commit-side
-// fields (Status/Owner/Search). The Labels axis is deferred to commit
-// 5b; until then the filter modal does not write to it. Direct
-// equality fails because ListFilter contains a []string slice.
+// listFilterEqual compares two ListFilter values by every field. The
+// Labels axis (Plan 8 commit 5b) is included; the slice comparison
+// uses element-wise equality so two label sets with the same contents
+// in the same order match. Direct == fails because ListFilter
+// contains a []string slice.
 func listFilterEqual(a, b ListFilter) bool {
-	return a.Status == b.Status && a.Owner == b.Owner &&
-		a.Author == b.Author && a.Search == b.Search
+	if a.Status != b.Status || a.Owner != b.Owner ||
+		a.Author != b.Author || a.Search != b.Search {
+		return false
+	}
+	if len(a.Labels) != len(b.Labels) {
+		return false
+	}
+	for i := range a.Labels {
+		if a.Labels[i] != b.Labels[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // filterFormFixture returns a Model already at the list view with a
@@ -49,14 +61,15 @@ func openFilterForm(t *testing.T, m Model) Model {
 }
 
 // TestFilterForm_OpensOnFKey: pressing f on the list view opens the
-// centered three-axis filter modal. Field labels are Status / Owner /
-// Search in order.
+// centered four-axis filter modal. Field labels are Status / Owner /
+// Search / Labels in order (Labels axis added in Plan 8 commit 5b).
 func TestFilterForm_OpensOnFKey(t *testing.T) {
 	m := openFilterForm(t, filterFormFixture())
-	if len(m.input.fields) != 3 {
-		t.Fatalf("form fields = %d, want 3 (Status/Owner/Search)", len(m.input.fields))
+	if len(m.input.fields) != 4 {
+		t.Fatalf("form fields = %d, want 4 (Status/Owner/Search/Labels)",
+			len(m.input.fields))
 	}
-	wantLabels := []string{"Status", "Owner", "Search"}
+	wantLabels := []string{"Status", "Owner", "Search", "Labels"}
 	for i, f := range m.input.fields {
 		if f.label != wantLabels[i] {
 			t.Fatalf("field[%d].label = %q, want %q", i, f.label, wantLabels[i])
@@ -85,10 +98,12 @@ func TestFilterForm_AllProjectsScopeStillRenders(t *testing.T) {
 	}
 }
 
-// TestFilterForm_TabCyclesThreeFields_WithWrap: tab cycles 0→1→2→0.
-func TestFilterForm_TabCyclesThreeFields_WithWrap(t *testing.T) {
+// TestFilterForm_TabCyclesFourFields_WithWrap: tab cycles
+// 0→1→2→3→0 (Status → Owner → Search → Labels → Status). Plan 8
+// commit 5b added the Labels axis as the 4th field.
+func TestFilterForm_TabCyclesFourFields_WithWrap(t *testing.T) {
 	m := openFilterForm(t, filterFormFixture())
-	wants := []int{1, 2, 0}
+	wants := []int{1, 2, 3, 0}
 	for i, want := range wants {
 		out, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 		m = out.(Model)
@@ -225,13 +240,20 @@ func TestFilterForm_CommitResetsCursorToZero(t *testing.T) {
 
 // TestFilterForm_CtrlRResetsFieldsOnly_PreFilterIntact: ctrl+r zeros
 // every field on the form but leaves preFilter intact so a subsequent
-// esc still restores the at-open snapshot.
+// esc still restores the at-open snapshot. Plan 8 commit 5b: the
+// Labels field is now part of the reset.
 func TestFilterForm_CtrlRResetsFieldsOnly_PreFilterIntact(t *testing.T) {
 	m := filterFormFixture()
-	m.list.filter = ListFilter{Status: "open", Owner: "wesm", Search: "bug"}
+	m.list.filter = ListFilter{
+		Status: "open", Owner: "wesm", Search: "bug",
+		Labels: []string{"prio-1", "needs-review"},
+	}
 	m = openFilterForm(t, m)
 	// preFilter snapshot should match.
-	wantPre := ListFilter{Status: "open", Owner: "wesm", Search: "bug"}
+	wantPre := ListFilter{
+		Status: "open", Owner: "wesm", Search: "bug",
+		Labels: []string{"prio-1", "needs-review"},
+	}
 	if !listFilterEqual(m.input.preFilter, wantPre) {
 		t.Fatalf("preFilter = %+v, want %+v", m.input.preFilter, wantPre)
 	}
@@ -246,6 +268,9 @@ func TestFilterForm_CtrlRResetsFieldsOnly_PreFilterIntact(t *testing.T) {
 	}
 	if got := m.input.fields[2].input.Value(); got != "" {
 		t.Fatalf("Search not reset: %q, want empty", got)
+	}
+	if got := m.input.fields[3].input.Value(); got != "" {
+		t.Fatalf("Labels not reset: %q, want empty", got)
 	}
 	if !listFilterEqual(m.input.preFilter, wantPre) {
 		t.Fatalf("preFilter mutated by ctrl+r: %+v, want %+v",
@@ -380,6 +405,99 @@ func TestHelpScreen_NoLongerMentionsO(t *testing.T) {
 	}
 }
 
+// TestFilterForm_LabelsField_AnyOfSemantics_AppliesViaCommit
+// (Plan 8 commit 5b): typing labels into the form's Labels field
+// commits via commitFilterForm — the resulting lm.filter.Labels is
+// populated AND the any-of filter narrows the visible rows to issues
+// carrying any of the typed labels.
+func TestFilterForm_LabelsField_AnyOfSemantics_AppliesViaCommit(t *testing.T) {
+	m := openFilterForm(t, filterFormFixture())
+	// Tab three times so Labels (idx 3) is the active field.
+	for i := 0; i < 3; i++ {
+		out, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		m = out.(Model)
+	}
+	if m.input.active != 3 {
+		t.Fatalf("active = %d, want 3 (Labels)", m.input.active)
+	}
+	for _, r := range "bug, prio-1" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	nm := out.(Model)
+	want := []string{"bug", "prio-1"}
+	if len(nm.list.filter.Labels) != len(want) {
+		t.Fatalf("filter.Labels = %v, want %v", nm.list.filter.Labels, want)
+	}
+	for i := range want {
+		if nm.list.filter.Labels[i] != want[i] {
+			t.Fatalf("filter.Labels[%d] = %q, want %q",
+				i, nm.list.filter.Labels[i], want[i])
+		}
+	}
+
+	// Verify the any-of filter actually narrows: feed two issues, one
+	// with "bug", one with "feature"; only the bug row survives.
+	issues := []Issue{
+		{Number: 1, Labels: []string{"bug"}},
+		{Number: 2, Labels: []string{"feature"}},
+	}
+	got := filteredIssues(issues, nm.list.filter)
+	if len(got) != 1 || got[0].Number != 1 {
+		t.Fatalf("filteredIssues = %+v, want only #1 (any-of bug)", got)
+	}
+}
+
+// TestFilterForm_LabelsField_FreeTypedInAllProjectsScope (Plan 8
+// commit 5b): in all-projects mode, the Labels field accepts free
+// text without a suggestion menu (no project label cache to source
+// from). The form still opens and commits cleanly. Suggestion-menu
+// wiring inside the form is deferred regardless of scope, but this
+// test pins the all-projects fallback contract.
+func TestFilterForm_LabelsField_FreeTypedInAllProjectsScope(t *testing.T) {
+	m := filterFormFixture()
+	m.scope = scope{allProjects: true}
+	out, cmd := m.Update(runeKey('f'))
+	if cmd == nil {
+		t.Fatal("press f in all-projects mode must dispatch openInputCmd")
+	}
+	out, _ = out.(Model).Update(cmd())
+	m = out.(Model)
+	if m.input.kind != inputFilterForm {
+		t.Fatalf("filter form did not open in all-projects mode: kind=%v", m.input.kind)
+	}
+	// Tab to Labels (idx 3); type free text.
+	for i := 0; i < 3; i++ {
+		out, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		m = out.(Model)
+	}
+	for _, r := range "ad-hoc-label" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	nm := out.(Model)
+	if len(nm.list.filter.Labels) != 1 || nm.list.filter.Labels[0] != "ad-hoc-label" {
+		t.Fatalf("filter.Labels = %v, want [ad-hoc-label]", nm.list.filter.Labels)
+	}
+}
+
+// TestRenderChips_IncludesLabelChips (Plan 8 commit 5b): the chip
+// strip in chrome renders one chip per label. Pre-fix the label
+// chips were intentionally omitted (the wire didn't carry labels);
+// commit 5b unlocks them.
+func TestRenderChips_IncludesLabelChips(t *testing.T) {
+	defer snapshotInit(t)()
+	out := renderChips(ListFilter{
+		Status: "open", Owner: "alice",
+		Labels: []string{"bug", "prio-1"},
+	})
+	for _, want := range []string{"label:bug", "label:prio-1", "status:open", "owner:alice"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderChips missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 // TestSnapshot_FilterForm_AllAxes locks in the rendered modal layout
 // when every axis is populated: Status=open, Owner=alice, Search=login.
 // Status field is active (default on open) so the radio renders with
@@ -393,14 +511,28 @@ func TestSnapshot_FilterForm_AllAxes(t *testing.T) {
 	assertGolden(t, "filter-form-all-axes", got)
 }
 
+// TestSnapshot_FilterForm_WithLabelsAxis (Plan 8 commit 5b) locks in
+// the rendered modal with all four axes populated, including the
+// Labels row pre-filled from a non-empty current.Labels slice.
+func TestSnapshot_FilterForm_WithLabelsAxis(t *testing.T) {
+	defer snapshotInit(t)()
+	s := newFilterForm(ListFilter{
+		Status: "open", Owner: "alice", Search: "login",
+		Labels: []string{"bug", "prio-1"},
+	})
+	got := renderCenteredForm(s, 120, 30)
+	assertGolden(t, "filter-form-with-labels-axis", got)
+}
+
 // TestSnapshot_List_WithFilterChipsFromModal commits the filter form
-// with all three axes populated and snapshots the resulting list view.
-// The chip strip in chrome must reflect every axis the modal applied.
+// with all four axes populated and snapshots the resulting list view.
+// The chip strip in chrome must reflect every axis the modal applied,
+// including the Plan 8 commit 5b Labels chips.
 //
 // The fixture row matches every axis (status=open, owner=alice, title
-// contains "login") so the body renders the matching row rather than
-// the empty-state hint — that exercises the chip strip + matching
-// row simultaneously.
+// contains "login", labels include "bug") so the body renders the
+// matching row rather than the empty-state hint — that exercises the
+// chip strip + matching row simultaneously.
 func TestSnapshot_List_WithFilterChipsFromModal(t *testing.T) {
 	defer snapshotInit(t)()
 	lm := newListModel()
@@ -408,10 +540,14 @@ func TestSnapshot_List_WithFilterChipsFromModal(t *testing.T) {
 	lm.issues = []Issue{{
 		Number: 42, Title: "fix login bug on Safari", Status: "open",
 		Owner:     ptrString("alice"),
+		Labels:    []string{"bug", "prio-1"},
 		UpdatedAt: snapshotFixedNow.Add(-30 * 60_000_000_000), // 30m
 	}}
 	// The modal commit produces this filter:
-	lm.filter = ListFilter{Status: "open", Owner: "alice", Search: "login"}
+	lm.filter = ListFilter{
+		Status: "open", Owner: "alice", Search: "login",
+		Labels: []string{"bug"},
+	}
 	chrome := viewChrome{
 		scope:     scope{projectID: 7, projectName: "kata"},
 		sseStatus: sseConnected,

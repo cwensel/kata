@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -451,14 +452,16 @@ func (s inputState) handleRadioKey(msg tea.KeyMsg) (inputState, bool) {
 // resetFilterFields zeroes every filter-form field to its empty value.
 // preFilter stays intact so a subsequent esc still restores the
 // at-open snapshot — ctrl+r is a "start over inside the form" gesture,
-// not "discard the form."
+// not "discard the form." Plan 8 commit 5b: now resets the Labels
+// field as well (4th field).
 func (s inputState) resetFilterFields() inputState {
-	if s.kind != inputFilterForm || len(s.fields) < 3 {
+	if s.kind != inputFilterForm || len(s.fields) < 4 {
 		return s
 	}
 	s.fields[0].radio.set("all")
 	s.fields[1].input.SetValue("")
 	s.fields[2].input.SetValue("")
+	s.fields[3].input.SetValue("")
 	return s
 }
 
@@ -669,17 +672,30 @@ const newIssueFormBodyIndex = 1
 var filterFormStatusChoices = []string{"all", "open", "closed"}
 
 // newFilterForm constructs the centered multi-axis filter modal opened
-// by `f` on the list view (Plan 8 commit 5a). Three axes:
+// by `f` on the list view. Plan 8 commit 5a shipped Status/Owner/Search;
+// commit 5b adds the Labels axis (any-of semantics). Four axes:
 //   - Status: tri-state radio (all/open/closed) — pre-positioned on
 //     current.Status (empty maps to "all").
 //   - Owner: single-line textinput, pre-filled from current.Owner.
 //   - Search: single-line textinput, pre-filled from current.Search.
+//   - Labels: single-line comma-separated textinput, pre-filled from
+//     current.Labels (joined with ", ").
 //
 // preFilter snapshots the at-open ListFilter so esc can restore the
 // previous narrowing without re-typing. The form has no daemon
 // mutation — commit applies the filter and refetches; routing is
 // handled by Model.commitInput's explicit early branch (see the
 // load-bearing comment there).
+//
+// The Labels field is comma-separated text (mirrors the new-issue
+// form's Labels field). Wiring an autocomplete suggestion menu inside
+// the form is deferred to a follow-up — the suggestion-menu render
+// path currently anchors on the detail view's panel, and overlaying it
+// inside a centered form would require a second anchoring strategy.
+// In all-projects scope the field already falls back to free-typed
+// text (no project label cache to source from); the deferral keeps
+// the same shape for the single-project case until the overlay
+// rework lands.
 func newFilterForm(current ListFilter) inputState {
 	status := inputField{
 		label: "Status",
@@ -695,6 +711,10 @@ func newFilterForm(current ListFilter) inputState {
 	search.SetValue(current.Search)
 	search.Prompt = ""
 	search.Blur()
+	labels := textinput.New()
+	labels.SetValue(joinLabelsForFilterForm(current.Labels))
+	labels.Prompt = ""
+	labels.Blur()
 	return inputState{
 		kind:  inputFilterForm,
 		title: "filter",
@@ -702,9 +722,21 @@ func newFilterForm(current ListFilter) inputState {
 			status,
 			{kind: fieldSingleLine, input: owner, label: "Owner"},
 			{kind: fieldSingleLine, input: search, label: "Search"},
+			{kind: fieldSingleLine, input: labels, label: "Labels"},
 		},
 		preFilter: current,
 	}
+}
+
+// joinLabelsForFilterForm flattens a Labels slice into the
+// comma-separated form the filter form's Labels field expects. nil and
+// empty slice both produce "". Used to pre-fill the field on open so a
+// re-open sees the labels the user previously committed.
+func joinLabelsForFilterForm(labels []string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	return strings.Join(labels, ", ")
 }
 
 // newNewIssueForm constructs the multi-field modal opened by `n` on

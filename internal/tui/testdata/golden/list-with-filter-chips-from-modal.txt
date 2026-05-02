@@ -1,5 +1,5 @@
  Project: kata                                                                                       kata かた · v0.1.0 
- open: 1 · closed: 0 · all: 1                                                  status:open  owner:alice  search:"login" 
+ open: 1 · closed: 0 · all: 1                                       status:open  owner:alice  search:"login"  label:bug 
   #     status    title                                                                         owner         updated   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▶ #42   open      fix login bug on Safari                                                       alice         30m ago   

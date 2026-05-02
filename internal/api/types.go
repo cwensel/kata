@@ -123,10 +123,29 @@ type ListIssuesRequest struct {
 	Limit     int    `query:"limit,omitempty"`
 }
 
-// ListIssuesResponse is the list payload.
+// IssueOut is the wire projection of one row in ListIssuesResponse.
+// It embeds db.Issue (every persistence column flattens to the top
+// level on JSON marshal) and adds Labels — the sibling slice the
+// daemon hydrates per-issue from issue_labels via LabelsByIssues. Kept
+// separate from db.Issue so the persistence struct stays free of
+// wire-only state; rolling labels into db.Issue would force every db
+// query path to know whether labels were hydrated, which they aren't
+// (LabelsByIssue / LabelsByIssues are explicit calls).
+//
+// omitempty drops the field on rows with no labels so the wire
+// payload doesn't carry an empty array per row on label-sparse
+// projects.
+type IssueOut struct {
+	db.Issue
+	Labels []string `json:"labels,omitempty"`
+}
+
+// ListIssuesResponse is the list payload. Plan 8 commit 5b: each row
+// is now an IssueOut (db.Issue + Labels) so the TUI list view can
+// render label chips without an extra fetch per row.
 type ListIssuesResponse struct {
 	Body struct {
-		Issues []db.Issue `json:"issues"`
+		Issues []IssueOut `json:"issues"`
 	}
 }
 

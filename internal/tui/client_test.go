@@ -313,6 +313,60 @@ func TestClient_ListIssues_FilterShape(t *testing.T) {
 	}
 }
 
+// TestListIssues_TUIDecodePopulatesLabels (Plan 8 commit 5b): the
+// daemon's list response now embeds a labels slice per row (api.IssueOut
+// = db.Issue + Labels). The TUI's Issue struct already has the right
+// `json:"labels,omitempty"` tag (commit 1), so the wire→struct mapping
+// is automatic — this test pins that promise so a future struct-tag
+// removal doesn't silently drop labels from the list view.
+func TestListIssues_TUIDecodePopulatesLabels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issues": []map[string]any{
+				{
+					"number": 1, "title": "first", "status": "open",
+					"labels": []string{"bug", "prio-1"},
+				},
+				{
+					"number": 2, "title": "second", "status": "open",
+					"labels": []string{"enhancement"},
+				},
+				{
+					"number": 3, "title": "third", "status": "open",
+					// no labels field — omitempty on the wire.
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+	got, err := c.ListIssues(context.Background(), 7, ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d issues, want 3", len(got))
+	}
+	wantPerNumber := map[int64][]string{
+		1: {"bug", "prio-1"},
+		2: {"enhancement"},
+		3: nil,
+	}
+	for _, iss := range got {
+		want := wantPerNumber[iss.Number]
+		if len(iss.Labels) != len(want) {
+			t.Fatalf("issue #%d labels = %v, want %v", iss.Number, iss.Labels, want)
+		}
+		for i := range want {
+			if iss.Labels[i] != want[i] {
+				t.Fatalf("issue #%d labels[%d] = %q, want %q",
+					iss.Number, i, iss.Labels[i], want[i])
+			}
+		}
+	}
+}
+
 // TestShowIssue_PopulatesLabelsFromTopLevel: the daemon ships labels as
 // a sibling slice on the show envelope (one IssueLabel per row, no
 // guaranteed order). showIssue extracts the label names, sorts them

@@ -611,9 +611,10 @@ func renderToast(t *toast) string {
 }
 
 // renderChips returns one chip per active filter slot. Inactive
-// defaults (status="", owner="", search="") are skipped. The label
-// chip is omitted because the label-filter UI was retired (see
-// keymap.go).
+// defaults (status="", owner="", search="", labels=nil) are skipped.
+// Plan 8 commit 5b: the label chip is rendered now that the wire
+// carries per-issue labels (api.IssueOut) and matchesFilter honors
+// any-of semantics.
 //
 // "search" chip prefix changed from `q:` to `search:` in M3.5: the
 // `q` letter collided with the global Quit binding and read as if
@@ -634,6 +635,10 @@ func renderChips(f ListFilter) string {
 	if f.Search != "" {
 		chips = append(chips, chipStyle.Render(
 			fmt.Sprintf("search:%q", sanitizeForDisplay(f.Search))))
+	}
+	for _, l := range f.Labels {
+		chips = append(chips, chipStyle.Render(
+			"label:"+sanitizeForDisplay(l)))
 	}
 	if len(chips) == 0 {
 		return ""

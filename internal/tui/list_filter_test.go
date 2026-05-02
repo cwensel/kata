@@ -496,6 +496,62 @@ func TestList_NoFilter_PassThrough(t *testing.T) {
 	}
 }
 
+// TestFilteredIssues_FastPathIncludesLabels (Plan 8 commit 5b
+// hard invariant): filteredIssues' fast-path returns the input slice
+// unchanged ONLY when every client-side filter is empty — Labels
+// included. Pre-fix the early-return ignored f.Labels, so a
+// label-only filter narrowed nothing on the steady path.
+func TestFilteredIssues_FastPathIncludesLabels(t *testing.T) {
+	f := ListFilter{Labels: []string{"bug"}}
+	issues := []Issue{
+		{Number: 1, Labels: []string{"bug"}},
+		{Number: 2, Labels: []string{"feature"}},
+	}
+	got := filteredIssues(issues, f)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1 (label filter must narrow)", len(got))
+	}
+	if got[0].Number != 1 {
+		t.Fatalf("got #%d, want #1 (the labeled-bug row)", got[0].Number)
+	}
+}
+
+// TestMatchesFilter_LabelsAnyOfSemantics (Plan 8 commit 5b hard
+// invariant): the Labels axis on the filter modal uses any-of
+// semantics — an issue matches if ANY of its labels is present in
+// the filter's Labels slice. Empty filter Labels is the no-filter
+// case (every issue matches).
+func TestMatchesFilter_LabelsAnyOfSemantics(t *testing.T) {
+	iss := Issue{Number: 1, Labels: []string{"bug", "prio-1"}}
+	cases := []struct {
+		name   string
+		filter ListFilter
+		want   bool
+	}{
+		{"single matching label", ListFilter{Labels: []string{"bug"}}, true},
+		{"any-of mixed match/miss", ListFilter{Labels: []string{"bug", "foo"}}, true},
+		{"no overlap", ListFilter{Labels: []string{"foo"}}, false},
+		{"empty filter is no filter", ListFilter{Labels: []string{}}, true},
+		{"nil filter is no filter", ListFilter{Labels: nil}, true},
+	}
+	for _, c := range cases {
+		got := matchesFilter(iss, c.filter)
+		if got != c.want {
+			t.Errorf("%s: matchesFilter = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestMatchesFilter_LabelsAnyOf_EmptyIssueLabels: an issue with no
+// labels can never match a non-empty Labels filter (the any-of set is
+// empty, so no overlap with any non-empty filter slice).
+func TestMatchesFilter_LabelsAnyOf_EmptyIssueLabels(t *testing.T) {
+	iss := Issue{Number: 1, Labels: nil}
+	if matchesFilter(iss, ListFilter{Labels: []string{"bug"}}) {
+		t.Fatal("issue with no labels must not match any non-empty Labels filter")
+	}
+}
+
 // TestList_AuthorFilter_NarrowsDisplay covers the Author branch even
 // though there's no key binding for it yet — ListFilter.Author is on
 // the struct (Task 6 left it in for forward compat) and matchesFilter
