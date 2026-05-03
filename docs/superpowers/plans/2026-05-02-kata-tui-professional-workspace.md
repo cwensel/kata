@@ -1051,6 +1051,7 @@ Populate existing list/detail/default hints first, plus named context slots for 
 
 In `footer_hints_test.go`, add tests:
 
+- footer descriptions use arrow notation for movement (`↑↓ move`, `↑↓ child`); the full help screen lists `j/k` aliases, but persistent footers do not use `j/k`
 - list with rows includes `N new child`
 - list without rows omits `N new child`
 - list leaf may include `space expand` only if `hasChildren`; otherwise omit
@@ -1070,7 +1071,7 @@ Expected: FAIL.
 
 - [ ] **Step 6.3: Implement footer matrix**
 
-Fill the registry. Keep descriptions short enough for 80-column fallback.
+Fill the registry. Keep descriptions short enough for 80-column fallback, and use `↑↓` for footer movement labels consistently across queue, detail, children, and form contexts.
 
 Run Step 6.2. Expected: PASS.
 

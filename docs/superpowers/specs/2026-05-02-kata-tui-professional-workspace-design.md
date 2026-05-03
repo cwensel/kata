@@ -195,9 +195,10 @@ Activity tabs:
 
 Footer hints must change by tab and focus:
 
-- Comments tab: `j/k move`, `c comment`, `e edit`, `x close`, `+ label`, `a owner`, `tab next`, `esc back`.
-- Children section focus: `j/k child`, `enter open child`, `N new child`, `p parent`, `tab activity`, `esc back`.
-- Links tab: `j/k move`, `enter jump`, `L link`, `p parent`, `b blocker`, `tab next`, `esc back`.
+- Persistent footers use arrow notation for movement, for example `↑↓ move` and `↑↓ child`. The full `?` help screen lists `j/k` as aliases for users who prefer vim-style navigation.
+- Comments tab: `↑↓ move`, `c comment`, `e edit`, `x close`, `+ label`, `a owner`, `tab next`, `esc back`.
+- Children section focus: `↑↓ child`, `enter open child`, `N new child`, `p parent`, `tab activity`, `esc back`.
+- Links tab: `↑↓ move`, `enter jump`, `L link`, `p parent`, `b blocker`, `tab next`, `esc back`.
 - Active prompts and forms replace the row with commit/cancel/navigation hints.
 
 ### Forms And Prompts
