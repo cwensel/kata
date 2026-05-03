@@ -1013,8 +1013,8 @@ git commit -m "feat(tui): model issue parent and children in detail"
 
 **Files:**
 
-- Create: `internal/tui/footer_hints.go`
-- Create: `internal/tui/footer_hints_test.go`
+- Modify: `internal/tui/footer_hints.go`
+- Modify: `internal/tui/footer_hints_test.go`
 - Modify: `internal/tui/list_render.go`
 - Modify: `internal/tui/detail_render.go`
 - Modify: `internal/tui/split_render.go`
@@ -1029,9 +1029,19 @@ git commit -m "feat(tui): model issue parent and children in detail"
 
 Kata already depends on `lipgloss/table` and `runewidth`, so this task adds no hint-bar dependencies.
 
-- [ ] **Step 6.1: Add help item primitives and per-view row builders**
+- [ ] **Step 6.1: Replace the existing footer registry with per-view row builders**
 
-Create `footer_hints.go`:
+`internal/tui/footer_hints.go` and `internal/tui/footer_hints_test.go` already exist. This is a refactor, not net-new construction.
+
+First remove the existing registry shape:
+
+- rename `helpRow` in `help.go` to `helpItem`
+- remove `footerContext`
+- remove `listFooterContext`, `detailFooterContext`, and `splitFooterContext`
+- remove `footerHints(ctx footerContext)`
+- update tests away from direct `footerHints(footerContext{...})` calls
+
+Then keep the roborev primitive:
 
 ```go
 type helpItem struct {
@@ -1040,7 +1050,7 @@ type helpItem struct {
 }
 ```
 
-Do not introduce a separate `footerContext` registry. Build hint rows from current model/view state using per-view methods, for example:
+Do not reintroduce a separate `footerContext` registry. Build hint rows from current model/view state using per-view methods, for example:
 
 ```go
 func (m Model) queueHelpRows() [][]helpItem
@@ -1111,15 +1121,22 @@ Wire list, detail, and split rendering so body height subtracts the reflowed hel
 
 - [ ] **Step 6.5: Wire renderers through per-view hint rows**
 
-Replace hand-built `renderFooterBar` item assembly, `listFooterItemsFor`, `detailFooterItemsFor`, and split footer branching with `renderHelpTable(<view>HelpRows(), width)`.
+Replace the real existing footer call sites:
+
+- `list_render.go`: replace `renderFooterBar(width, footerHints(listFooterContext(lm, chrome)), lm.cursor, len(lm.visibleRows()))`
+- `detail_render.go`: replace `renderFooterBar(width, footerHints(detailFooterContext(dm, chrome)), 0, 0)`
+- `split_render.go`: replace `footerHints(splitFooterContext(m))` and its `renderFooterBar` call
+
+Delete `renderFooterBar` instead of keeping a compatibility wrapper. Move the list position indicator (`[N/M]`) into the list help-row rendering path as a separate right-aligned suffix or adjacent info-line field, so `renderHelpTable(<view>HelpRows(), width)` remains the only persistent hint table renderer.
 
 Keep the existing info/status line behavior above the hint table. If height is too small, use compact mode rather than clipping the hint table unpredictably.
 
 - [ ] **Step 6.6: Add compact mode**
 
-Mirror roborev's `queueCompact` idea for kata:
+Mirror roborev's `queueCompact` idea for kata, but calibrate against kata's own chrome height instead of blindly copying roborev's threshold:
 
-- Hide nonessential chrome at small heights, initially `height < 15`, or when a future distraction-free flag exists.
+- Start with `height < 15`, then adjust until compact mode always leaves at least 3 visible body rows at the smallest supported height.
+- Hide nonessential chrome at calibrated small heights, or when a future distraction-free flag exists.
 - In compact mode, keep the minimum content needed to orient the user and avoid rendering multi-line hint tables into unusable space.
 - Apply consistently to list, detail, and split panes where the existing layout would otherwise run out of vertical space.
 
@@ -1627,6 +1644,8 @@ Check:
 - focused pane has border + textual focus cue
 - info line priority: input > mutation/error > SSE > toast > truncation > scroll
 - footer rows fit at 80 columns by dropping low-priority hints
+
+If this task or a follow-up document-detail task adds Glamour/Markdown rendering, include a verification step for width-safe tables: render a table wider than the body pane and assert it degrades to the spec's plain-text grid without overflowing. Prefer a custom Glamour renderer/style hook over post-processing only if it can be made deterministic under `NO_COLOR`.
 
 - [ ] **Step 11.2: Audit forms**
 
