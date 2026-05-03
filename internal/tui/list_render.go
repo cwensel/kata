@@ -44,11 +44,11 @@ type viewChrome struct {
 //
 //   - line 1: title bar (brand · project · version)
 //   - line 2: stats line (counts + filter chips)
-//   - lines 3..H-2: table (header + separator + windowed rows, padded
-//     so the footer pins to the bottom of the terminal regardless of
-//     row count)
+//   - lines 3..H-N: table (header + separator + windowed rows, padded
+//     so the adaptive footer pins to the bottom of the terminal
+//     regardless of row count)
 //   - line H-1: info line (active input bar OR scroll/flash text)
-//   - line H:   footer help row
+//   - line H:   footer help table (one or more rows)
 //
 // The table body absorbs the slack so the footer always sits on the
 // last line of the terminal — the msgvault `fillScreen` pattern.
@@ -66,15 +66,16 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	}
 	title := renderTitleBar(width, chrome.scope, chrome.version)
 	stats := renderStatsLine(width, chrome.scope, lm.issueCounts(), lm.filter)
-	footer := renderFooterBar(width, footerHints(listFooterContext(lm, chrome)), lm.cursor, len(lm.visibleRows()))
+	helpRows := listHelpRows(lm, chrome)
+	footerLines := helpLines(helpRows, width)
+	footer := renderFooterHelpTable(helpRows, width)
 
 	// Body area: everything between header (lines 1-2) and the
-	// info+footer (last 2 lines). bodyRows is computed first so the
-	// info-line scroll indicator uses the actual budget (not a
-	// hardcoded approximation — roborev #107 finding 2). The
+	// info+adaptive footer. bodyRows is computed first so the
+	// info-line scroll indicator uses the actual budget. The
 	// table-overhead cost (header + separator) is baked into
-	// renderBodyArea, so bodyRows here is the *visible-data* budget.
-	bodyRows := height - 2 /* header */ - 2 /* info+footer */
+	// renderBodyArea, so bodyRows here is the full body region.
+	bodyRows := height - 2 /* header */ - 1 /* info */ - footerLines
 	if bodyRows < listBodyFloor {
 		bodyRows = listBodyFloor
 	}
@@ -231,7 +232,8 @@ func statsCountsText(c issueCounts) string {
 //  4. A toast (e.g. "resynced").
 //  5. The scroll indicator `[start-end of N]` when the visible window
 //     doesn't fit the full filtered list.
-//  6. Blank if none of the above apply.
+//  6. The cursor indicator `[N/M]` when the visible list fits.
+//  7. Blank if none of the above apply.
 //
 // dataBudget is the actual data-row budget the table renders into;
 // the scroll indicator only fires when the visible list exceeds it.
@@ -262,6 +264,8 @@ func renderListInfoLine(width int, chrome viewChrome, lm listModel, dataBudget i
 				fmt.Sprintf("[%d-%d of %d]", start+1, end, n),
 				titleBarInnerWidth(width),
 			)
+		} else if n > 0 {
+			body = rightAlignInside(footerPositionIndicator(lm.cursor, n), titleBarInnerWidth(width))
 		}
 	}
 	return statsLineStyle.Render(padToWidth(body, titleBarInnerWidth(width)))
@@ -293,97 +297,6 @@ func sseDegradedFlash(state sseConnState) string {
 		return "kata: disconnected (retrying)"
 	}
 	return ""
-}
-
-// renderFooterBar formats the persistent footer help row. Items are
-// joined with ` │ ` (vertical bar with spaces) — msgvault's denser
-// style. A right-aligned position indicator (`[N/M]`) appears when
-// there are issues to count.
-func renderFooterBar(width int, items []helpRow, cursor, totalRows int) string {
-	right := footerPositionIndicator(cursor, totalRows)
-	items = fitFooterItems(items, titleBarInnerWidth(width), right)
-	left := joinHelpItems(items)
-	body := padLeftRightInside(left, right, titleBarInnerWidth(width))
-	return footerBarStyle.Render(body)
-}
-
-func fitFooterItems(items []helpRow, innerWidth int, right string) []helpRow {
-	available := innerWidth
-	if right != "" {
-		available -= runewidth.StringWidth(right) + 1
-	}
-	if available <= 0 {
-		return nil
-	}
-	out := append([]helpRow(nil), items...)
-	for helpRowsWidth(out) > available {
-		idx := footerDropIndex(out)
-		if idx < 0 {
-			idx = fallbackFooterDropIndex(out)
-		}
-		if idx < 0 {
-			break
-		}
-		out = append(out[:idx], out[idx+1:]...)
-	}
-	return out
-}
-
-func footerDropIndex(items []helpRow) int {
-	dropOrder := []helpRow{
-		{key: "s", desc: "status"},
-		{key: "c", desc: "clear"},
-		{key: "x", desc: "close"},
-		{key: "?", desc: "help"},
-		{key: "/", desc: "search"},
-	}
-	for _, drop := range dropOrder {
-		for i, item := range items {
-			if item == drop {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-func fallbackFooterDropIndex(items []helpRow) int {
-	if len(items) == 0 {
-		return -1
-	}
-	if items[len(items)-1].key == "q" && len(items) > 1 {
-		return len(items) - 2
-	}
-	return len(items) - 1
-}
-
-func helpRowsWidth(items []helpRow) int {
-	total := 0
-	for i, item := range items {
-		if i > 0 {
-			total += 3 // " │ "
-		}
-		total += runewidth.StringWidth(item.key)
-		if item.desc != "" {
-			total += 1 + runewidth.StringWidth(item.desc)
-		}
-	}
-	return total
-}
-
-// joinHelpItems renders a flat list of helpRow as a `key desc` line
-// joined by ` │ ` separators. Each item has a faint key + slightly
-// brighter desc; the separator stays faint.
-func joinHelpItems(items []helpRow) string {
-	parts := make([]string, 0, len(items))
-	for _, it := range items {
-		if it.desc == "" {
-			parts = append(parts, helpKeyStyle.Render(it.key))
-		} else {
-			parts = append(parts, helpKeyStyle.Render(it.key)+" "+helpDescStyle.Render(it.desc))
-		}
-	}
-	return strings.Join(parts, " │ ")
 }
 
 // footerPositionIndicator returns the cursor position in the visible

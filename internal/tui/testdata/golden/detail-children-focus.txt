@@ -29,4 +29,4 @@ Click the login button twice.
 
                                                                                                                         
                                                                                                                         
- ↑↓ child │ ↵ open child │ N child │ p parent │ ↹ activity │ esc back │ ? help │ q quit                                 
+ ↑↓ child▕ ↵ open child▕ N child▕ p parent▕ ↹ activity▕ esc back▕ ? help▕ q quit                                        

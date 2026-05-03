@@ -18,5 +18,5 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
- ↑↓ move │ ↵ open │ space expand │ n new │ N child │ / search │ f filter │ c clear │ x close │ ? help │ q quit    [1/3] 
+                                                                                                                  [1/3] 
+ ↑↓ move▕ ↵ open▕ space expand▕ n new▕ N child▕ / search▕ f filter▕ s status▕ c clear▕ x close▕ ? help▕ q quit          

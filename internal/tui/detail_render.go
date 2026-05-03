@@ -20,7 +20,7 @@ import (
 //     under the body); labeled activity rule; tab strip; tab content;
 //     padding so the info+footer pin to the bottom
 //   - line H-1:  info line (panel prompt OR scroll/flash text)
-//   - line H:    footer help row
+//   - line H:    footer help table (one or more rows)
 //
 // Same fillScreen pattern as the list view: the body+tab area
 // absorbs slack so the footer always sits on the last terminal row.
@@ -42,12 +42,14 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	bodyRule := renderLabeledRule("body", width)
 	activityRule := renderLabeledRule("activity", width)
 	tabs := dm.renderTabStrip()
-	footer := renderFooterBar(width, footerHints(detailFooterContext(dm, chrome)), 0, 0)
+	helpRows := detailHelpRows(dm, chrome)
+	footerLines := helpLines(helpRows, width)
+	footer := renderFooterHelpTable(helpRows, width)
 
-	// Reserve ten fixed rows:
+	// Reserve fixed rows:
 	//   title bar (1) + meta (1) + assignment (1) + title row (1) +
 	//   hierarchy summary (1) + body rule (1) + activity rule (1) + tab strip (1) +
-	//   info (1) + footer (1) = 10.
+	//   info (1) + adaptive footer.
 	// (variable: body content + optional children + tab content)
 	// No separate "tab rule" — the activity rule above the tab strip
 	// is the only horizontal divider in the activity panel.
@@ -63,7 +65,7 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	// above the info line). The scroll indicator is briefly less
 	// accurate while the menu is open — acceptable: the user is
 	// autocompleting, not paging tab content.
-	bodyA, childA, tabA := detailStackedBudgets(height, len(dm.children))
+	bodyA, childA, tabA := detailStackedBudgets(height, len(dm.children), footerLines)
 	body := dm.renderBody(width, bodyA)
 	children := dm.renderChildrenSection(width, childA)
 	tabContent := dm.renderActiveTab(width, tabA)
@@ -110,8 +112,8 @@ func (dm detailModel) padArea(content string, rows, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func detailStackedBudgets(height, childCount int) (bodyRows, childRows, tabRows int) {
-	return detailBudgets(height-10, childCount)
+func detailStackedBudgets(height, childCount, footerLines int) (bodyRows, childRows, tabRows int) {
+	return detailBudgets(height-(9+footerLines), childCount)
 }
 
 func detailSplitBudgets(height, childCount int) (bodyRows, childRows, tabRows int) {
@@ -119,20 +121,24 @@ func detailSplitBudgets(height, childCount int) (bodyRows, childRows, tabRows in
 }
 
 func detailBudgets(avail, childCount int) (bodyRows, childRows, tabRows int) {
-	if avail < detailMinSplit {
-		avail = detailMinSplit
+	if avail < 1 {
+		avail = 1
 	}
 	if childCount > 0 && avail >= detailMinBodyRows+detailMinTabRows+2 {
 		childRows = min(childCount+1, max(2, avail/4))
 		avail -= childRows
 	}
 	bodyRows = avail * 2 / 3
-	if bodyRows < detailMinBodyRows {
+	if bodyRows < detailMinBodyRows && avail > detailMinBodyRows {
 		bodyRows = detailMinBodyRows
 	}
 	tabRows = avail - bodyRows
 	if tabRows < detailMinTabRows {
-		tabRows = detailMinTabRows
+		tabRows = min(detailMinTabRows, max(0, avail-1))
+		bodyRows = avail - tabRows
+	}
+	if bodyRows < 1 {
+		bodyRows = 1
 	}
 	return bodyRows, childRows, tabRows
 }

@@ -3,80 +3,72 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/mattn/go-runewidth"
 )
 
-func TestFooterHints_ListContextRowsAndChildren(t *testing.T) {
-	tests := []struct {
-		name string
-		ctx  footerContext
-		want []helpRow
-		deny []helpRow
-	}{
-		{
-			name: "row with children exposes expand and new child",
-			ctx: footerContext{
-				view: viewList, input: inputNone, hasRows: true, hasChildren: true,
-			},
-			want: []helpRow{{key: "space", desc: "expand"}, {key: "N", desc: "child"}},
-		},
-		{
-			name: "leaf omits expand",
-			ctx:  footerContext{view: viewList, input: inputNone, hasRows: true},
-			deny: []helpRow{{key: "space", desc: "expand"}},
-		},
-		{
-			name: "empty queue omits new child",
-			ctx:  footerContext{view: viewList, input: inputNone},
-			deny: []helpRow{{key: "N", desc: "child"}},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := footerHints(tt.ctx)
-			for _, want := range tt.want {
-				assertHelpRowPresent(t, got, want)
-			}
-			for _, deny := range tt.deny {
-				assertHelpRowAbsent(t, got, deny)
-			}
-		})
-	}
+func TestQueueHelpRows_ConditionalItems(t *testing.T) {
+	parentNum := int64(1)
+	withChildren := Model{list: listModel{issues: []Issue{
+		{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
+		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
+	}}}
+	assertHelpItemPresent(t, flattenHelpRows(withChildren.queueHelpRows()),
+		helpItem{key: "space", desc: "expand"})
+	assertHelpItemPresent(t, flattenHelpRows(withChildren.queueHelpRows()),
+		helpItem{key: "N", desc: "child"})
+
+	leaf := Model{list: listModel{issues: []Issue{
+		{ProjectID: 7, Number: 1, Title: "leaf", Status: "open"},
+	}}}
+	assertHelpItemAbsent(t, flattenHelpRows(leaf.queueHelpRows()),
+		helpItem{key: "space", desc: "expand"})
+	assertHelpItemPresent(t, flattenHelpRows(leaf.queueHelpRows()),
+		helpItem{key: "N", desc: "child"})
+
+	empty := Model{}
+	assertHelpItemAbsent(t, flattenHelpRows(empty.queueHelpRows()),
+		helpItem{key: "N", desc: "child"})
 }
 
-func TestFooterHints_DetailContexts(t *testing.T) {
-	comments := footerHints(footerContext{
-		view: viewDetail, input: inputNone, detailFocus: focusActivity, activeTab: tabComments,
-	})
-	for _, want := range []helpRow{
+func TestDetailHelpRows_Contexts(t *testing.T) {
+	activity := Model{detail: detailModel{
+		issue:       &Issue{Number: 1, Title: "issue", Status: "open"},
+		detailFocus: focusActivity,
+		activeTab:   tabComments,
+	}}
+	for _, want := range []helpItem{
 		{key: "c", desc: "comment"},
 		{key: "e", desc: "edit"},
 		{key: "+", desc: "label"},
 		{key: "a", desc: "owner"},
 	} {
-		assertHelpRowPresent(t, comments, want)
+		assertHelpItemPresent(t, flattenHelpRows(activity.detailHelpRows()), want)
 	}
 
-	children := footerHints(footerContext{
-		view: viewDetail, input: inputNone, detailFocus: focusChildren, hasChildren: true,
-	})
-	for _, want := range []helpRow{
+	children := Model{detail: detailModel{
+		issue:       &Issue{Number: 1, Title: "parent", Status: "open"},
+		children:    []Issue{{Number: 2, Title: "child", Status: "open"}},
+		detailFocus: focusChildren,
+	}}
+	for _, want := range []helpItem{
 		{key: "↵", desc: "open child"},
 		{key: "N", desc: "child"},
 	} {
-		assertHelpRowPresent(t, children, want)
+		assertHelpItemPresent(t, flattenHelpRows(children.detailHelpRows()), want)
 	}
 }
 
-func TestFooterHints_InputAndModalContexts(t *testing.T) {
+func TestHelpRows_InputAndModalContexts(t *testing.T) {
 	tests := []struct {
 		name string
-		ctx  footerContext
-		want []helpRow
+		m    Model
+		want []helpItem
 	}{
 		{
 			name: "search bar",
-			ctx:  footerContext{view: viewList, input: inputSearchBar},
-			want: []helpRow{
+			m:    Model{input: inputState{kind: inputSearchBar}},
+			want: []helpItem{
 				{key: "enter", desc: "commit"},
 				{key: "esc", desc: "cancel"},
 				{key: "ctrl+u", desc: "clear"},
@@ -84,8 +76,8 @@ func TestFooterHints_InputAndModalContexts(t *testing.T) {
 		},
 		{
 			name: "filter form",
-			ctx:  footerContext{view: viewList, input: inputFilterForm},
-			want: []helpRow{
+			m:    Model{input: inputState{kind: inputFilterForm}},
+			want: []helpItem{
 				{key: "ctrl+s", desc: "apply"},
 				{key: "esc", desc: "cancel"},
 				{key: "ctrl+r", desc: "reset"},
@@ -93,8 +85,8 @@ func TestFooterHints_InputAndModalContexts(t *testing.T) {
 		},
 		{
 			name: "quit modal",
-			ctx:  footerContext{view: viewList, modal: modalQuitConfirm},
-			want: []helpRow{
+			m:    Model{modal: modalQuitConfirm},
+			want: []helpItem{
 				{key: "y", desc: "confirm"},
 				{key: "n/esc", desc: "cancel"},
 			},
@@ -102,64 +94,120 @@ func TestFooterHints_InputAndModalContexts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := footerHints(tt.ctx)
+			got := flattenHelpRows(tt.m.helpRows())
 			for _, want := range tt.want {
-				assertHelpRowPresent(t, got, want)
+				assertHelpItemPresent(t, got, want)
 			}
 		})
 	}
 }
 
-func TestListViewFooterUsesContextualHints(t *testing.T) {
+func TestPersistentHelpRowsPreferArrowNotation(t *testing.T) {
+	parentNum := int64(1)
+	m := Model{
+		list: listModel{issues: []Issue{
+			{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
+			{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
+		}},
+		detail: detailModel{
+			issue:    &Issue{Number: 1, Title: "parent", Status: "open"},
+			children: []Issue{{Number: 2, Title: "child", Status: "open"}},
+		},
+	}
+	for _, rows := range [][][]helpItem{m.queueHelpRows(), m.detailHelpRows()} {
+		for _, item := range flattenHelpRows(rows) {
+			if strings.Contains(item.key, "j/k") {
+				t.Fatalf("persistent footer keys should use arrows, got %+v", item)
+			}
+		}
+	}
+}
+
+func TestRenderHelpTable_ReflowsToFitWidth80(t *testing.T) {
+	rows := [][]helpItem{{
+		{key: "↑↓", desc: "move"},
+		{key: "↵", desc: "open"},
+		{key: "space", desc: "expand"},
+		{key: "N", desc: "child"},
+		{key: "/", desc: "search"},
+		{key: "f", desc: "filter"},
+		{key: "s", desc: "status"},
+		{key: "c", desc: "clear"},
+		{key: "x", desc: "close"},
+		{key: "?", desc: "help"},
+		{key: "q", desc: "quit"},
+	}}
+	got := stripANSI(renderHelpTable(rows, 80))
+	assertLinesFitWidth(t, got, 80)
+	assertStringContains(t, got, "▕")
+	assertStringContains(t, got, "space expand")
+	assertStringContains(t, got, "q quit")
+}
+
+func TestReflowHelpRows_ExtremeNarrowFallsBackToOneItemPerRow(t *testing.T) {
+	rows := [][]helpItem{{
+		{key: "↑↓", desc: "move"},
+		{key: "↵", desc: "open"},
+		{key: "space", desc: "expand"},
+	}}
+	got := reflowHelpRows(rows, 8)
+	for _, row := range got {
+		if len(row) > 1 {
+			t.Fatalf("narrow reflow should use one item per row, got %+v", got)
+		}
+	}
+}
+
+func TestListViewFooterUsesAdaptiveHelpTable(t *testing.T) {
 	parentNum := int64(1)
 	lm := listModel{issues: []Issue{
 		{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
 		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
 	}}
-	got := stripANSI(lm.View(120, 12, viewChrome{}))
+	got := stripANSI(lm.View(80, 14, viewChrome{}))
+	assertLineCount(t, got, 14)
+	assertLinesFitWidth(t, got, 80)
 	assertStringContains(t, got, "space expand")
 	assertStringContains(t, got, "N child")
+	assertStringContains(t, got, "▕")
 }
 
-func TestDetailViewFooterUsesChildrenFocusHints(t *testing.T) {
+func TestDetailViewFooterUsesAdaptiveChildrenFocusHints(t *testing.T) {
 	dm := detailModel{
 		issue:       &Issue{Number: 1, Title: "parent", Status: "open"},
 		children:    []Issue{{Number: 2, Title: "child", Status: "open"}},
 		detailFocus: focusChildren,
 	}
-	got := stripANSI(dm.View(120, 18, viewChrome{}))
+	got := stripANSI(dm.View(80, 18, viewChrome{}))
+	assertLineCount(t, got, 18)
+	assertLinesFitWidth(t, got, 80)
 	assertStringContains(t, got, "open child")
 	assertStringContains(t, got, "N child")
 }
 
-func TestRenderFooterBar_DropsLowPriorityHintsBeforeTruncating(t *testing.T) {
-	items := footerHints(footerContext{
-		view: viewList, input: inputNone, hasRows: true, hasChildren: true,
-	})
-	got := stripANSI(renderFooterBar(120, items, 0, 2))
-	if strings.Contains(got, "…") {
-		t.Fatalf("footer should drop low-priority hints before truncating:\n%s", got)
+func flattenHelpRows(rows [][]helpItem) []helpItem {
+	out := []helpItem{}
+	for _, row := range rows {
+		out = append(out, row...)
 	}
-	assertStringContains(t, got, "space expand")
-	assertStringContains(t, got, "N child")
-	assertStringContains(t, got, "q quit")
+	return out
 }
 
-func assertHelpRowPresent(t *testing.T, rows []helpRow, want helpRow) {
+func assertHelpItemPresent(t *testing.T, rows []helpItem, want helpItem) {
 	t.Helper()
 	for _, row := range rows {
 		if row == want {
 			return
 		}
 	}
-	t.Fatalf("footer rows missing %+v in %+v", want, rows)
+	t.Fatalf("help rows missing %+v in %+v", want, rows)
 }
 
-func assertHelpRowAbsent(t *testing.T, rows []helpRow, deny helpRow) {
+func assertHelpItemAbsent(t *testing.T, rows []helpItem, deny helpItem) {
 	t.Helper()
 	for _, row := range rows {
 		if row == deny {
-			t.Fatalf("footer rows unexpectedly contain %+v in %+v", deny, rows)
+			t.Fatalf("help rows unexpectedly contain %+v in %+v", deny, rows)
 		}
 	}
 }
@@ -168,5 +216,21 @@ func assertStringContains(t *testing.T, got, want string) {
 	t.Helper()
 	if !strings.Contains(got, want) {
 		t.Fatalf("output missing %q:\n%s", want, got)
+	}
+}
+
+func assertLineCount(t *testing.T, got string, want int) {
+	t.Helper()
+	if lines := strings.Split(got, "\n"); len(lines) != want {
+		t.Fatalf("got %d lines, want %d:\n%s", len(lines), want, got)
+	}
+}
+
+func assertLinesFitWidth(t *testing.T, got string, width int) {
+	t.Helper()
+	for i, line := range strings.Split(got, "\n") {
+		if w := runewidth.StringWidth(line); w > width {
+			t.Fatalf("line %d width=%d exceeds %d:\n%s", i+1, w, width, got)
+		}
 	}
 }

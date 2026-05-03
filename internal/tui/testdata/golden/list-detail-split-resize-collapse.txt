@@ -32,5 +32,5 @@
 │                                                                  ││                                                                      │
 │                                                                  ││                                                                      │
 └──────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────┘
-                                                                                                                                            
- ↑↓ move │ ↵ open │ n new │ N child │ / search │ f filter │ s status │ c clear │ x close │ ? help │ q quit                            [2/3] 
+                                                                                                                                      [2/3] 
+ ↑↓ move▕ ↵ open▕ n new▕ N child▕ / search▕ f filter▕ s status▕ c clear▕ x close▕ ? help▕ q quit                                            

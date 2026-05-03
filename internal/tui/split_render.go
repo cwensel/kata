@@ -22,13 +22,15 @@ import (
 func renderSplit(m Model) string {
 	width, height := m.width, m.height
 	title := renderTitleBar(width, m.scope, kataVersion)
+	helpRows := m.splitHelpRows()
+	footerLines := helpLines(helpRows, width)
 	footer := renderSplitFooter(width, m)
 	infoLine := renderSplitInfoLine(width, m)
-	// Body = (height - title - infoLine - footer) rows. The two panes
-	// share that vertical budget; they're rendered side-by-side then
-	// joined column-wise with lipgloss.JoinHorizontal so each pane
-	// keeps its own border.
-	bodyHeight := height - 3 // title + info + footer
+	// Body = (height - title - infoLine - adaptive footer) rows. The
+	// two panes share that vertical budget; they're rendered
+	// side-by-side then joined column-wise with lipgloss.JoinHorizontal
+	// so each pane keeps its own border.
+	bodyHeight := height - 2 - footerLines // title + info + footer
 	if bodyHeight < 4 {
 		bodyHeight = 4
 	}
@@ -153,32 +155,20 @@ func splitInfoBody(m Model) string {
 	if chrome.toast != nil {
 		return chrome.toast.text
 	}
-	return ""
-}
-
-// renderSplitFooter renders the shared footer help row for the split
-// layout. The help items track the focused pane: list bindings when
-// focusList; detail bindings when focusDetail. The right-aligned
-// position indicator only renders for the list pane (the detail pane
-// has its own per-tab indicator on the info line above).
-func renderSplitFooter(width int, m Model) string {
-	items := footerHints(splitFooterContext(m))
-	left := joinHelpItems(items)
-	right := splitFooterRight(m)
-	body := padLeftRightInside(left, right, titleBarInnerWidth(width))
-	return footerBarStyle.Render(body)
-}
-
-// splitFooterRight returns the right-aligned text shown on the
-// shared split footer. List focus surfaces the [N/M] cursor
-// position; detail focus surfaces the focused-pane label so the user
-// can read the focus state textually as well as via the border
-// color (multi-redundant cue, helpful in colorNone mode).
-func splitFooterRight(m Model) string {
 	if m.focus == focusList {
-		return footerPositionIndicator(m.list.cursor, len(m.list.visibleRows()))
+		return rightAlignInside(
+			footerPositionIndicator(m.list.cursor, len(m.list.visibleRows())),
+			titleBarInnerWidth(m.width),
+		)
 	}
 	return ""
+}
+
+// renderSplitFooter renders the shared footer help table for the split
+// layout. The help items track the focused pane: list bindings when
+// focusList; detail bindings when focusDetail.
+func renderSplitFooter(width int, m Model) string {
+	return renderFooterHelpTable(m.splitHelpRows(), width)
 }
 
 // ViewSplit renders the detail body for the M6 split-mode detail

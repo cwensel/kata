@@ -27,4 +27,4 @@
                                                                                                                         
                                                                                                                         
  /login                                                                                                                 
- enter commit │ esc cancel │ ctrl+u clear                                                                         [1/3] 
+ enter commit▕ esc cancel▕ ctrl+u clear                                                                                 

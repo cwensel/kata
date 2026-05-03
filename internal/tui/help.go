@@ -7,45 +7,42 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// helpRow is a binding row (key + desc); helpSection groups them under a
-// title (Global/List/Detail).
-type helpRow struct{ key, desc string }
 type helpSection struct {
 	title string
-	rows  []helpRow
+	rows  []helpItem
 }
 
 // helpSections returns bindings grouped by section in stable order.
 // TestHelpSections_AllBindingsCovered fails CI when a keymap entry is
 // missed here, so future binding additions must update this too.
 func helpSections(km keymap) []helpSection {
-	r := func(k key) helpRow { return helpRow{keyDisplay(k), k.Help} }
+	r := func(k key) helpItem { return helpItem{keyDisplay(k), k.Help} }
 	return []helpSection{
-		{"Global", []helpRow{r(km.Help), r(km.Quit), r(km.ToggleScope)}},
-		{"Queue", []helpRow{
+		{"Global", []helpItem{r(km.Help), r(km.Quit), r(km.ToggleScope)}},
+		{"Queue", []helpItem{
 			r(km.Up), r(km.Down), r(km.PageUp), r(km.PageDown), r(km.Home),
 			r(km.End), r(km.Open), r(km.ExpandCollapse), r(km.NewIssue),
 			r(km.Close), r(km.Reopen),
 		}},
-		{"Detail", []helpRow{
+		{"Detail", []helpItem{
 			r(km.NextTab), r(km.PrevTab), r(km.JumpRef), r(km.Back),
 			r(km.EditBody), r(km.NewComment), r(km.SetParent),
 			r(km.AddBlocker), r(km.AddLink), r(km.AddLabel),
 			r(km.RemoveLabel), r(km.AssignOwner), r(km.ClearOwner),
 		}},
-		{"Children", []helpRow{
+		{"Children", []helpItem{
 			r(km.NewChild),
 			{key: "↑↓", desc: "move child cursor"},
 			{key: "enter", desc: "open child"},
 		}},
-		{"Forms", []helpRow{
+		{"Forms", []helpItem{
 			{key: "ctrl+s", desc: "save or apply"},
 			{key: "esc", desc: "cancel"},
 			{key: "tab/shift+tab", desc: "change field"},
 			{key: "ctrl+e", desc: "open editor"},
 			{key: "ctrl+u", desc: "clear prompt"},
 		}},
-		{"Filters", []helpRow{
+		{"Filters", []helpItem{
 			r(km.Search), r(km.FilterStatus), r(km.FilterForm), r(km.ClearFilters),
 			{key: "ctrl+r", desc: "reset filter form"},
 		}},
@@ -63,106 +60,6 @@ func keyDisplay(k key) string {
 		}
 	}
 	return strings.Join(parts, "/")
-}
-
-// reflowHelpRows redistributes helpRow items across rows so the rendered
-// table fits within width. Each cell's visible width is key + space +
-// desc, and non-first columns add 2 chars (▕ border + padding). width
-// <= 0 returns rows unchanged.
-//
-// Lifted verbatim from roborev (`cmd/roborev/tui/tui.go::reflowHelpRows`)
-// per the design lock §"Resolved decisions" #5 — no point getting
-// clever; the algorithm is battle-tested and bounded.
-//
-// Currently unused after M3.5 — the persistent footer joins items
-// inline via joinHelpItems instead of via a reflowed table. Kept
-// for the help-overlay rebuild that M5 will land.
-//
-//nolint:unused // reserved for M5 help overlay re-style
-func reflowHelpRows(rows [][]helpRow, width int) [][]helpRow {
-	if width <= 0 {
-		return rows
-	}
-	cellWidth := func(item helpRow) int {
-		w := runewidth.StringWidth(item.key)
-		if item.desc != "" {
-			w += 1 + runewidth.StringWidth(item.desc)
-		}
-		return w
-	}
-	maxItemsPerRow := 0
-	for _, row := range rows {
-		if len(row) > maxItemsPerRow {
-			maxItemsPerRow = len(row)
-		}
-	}
-	for ncols := maxItemsPerRow; ncols >= 1; ncols-- {
-		var candidate [][]helpRow
-		for _, row := range rows {
-			for i := 0; i < len(row); i += ncols {
-				end := min(i+ncols, len(row))
-				candidate = append(candidate, row[i:end])
-			}
-		}
-		colW := make([]int, ncols)
-		for _, crow := range candidate {
-			for c, item := range crow {
-				if w := cellWidth(item); w > colW[c] {
-					colW[c] = w
-				}
-			}
-		}
-		total := 0
-		for c, w := range colW {
-			total += w
-			if c > 0 {
-				total += 2 // ▕ + padding
-			}
-		}
-		if total <= width {
-			return candidate
-		}
-	}
-	// Fallback: one item per row.
-	var result [][]helpRow
-	for _, row := range rows {
-		for _, item := range row {
-			result = append(result, []helpRow{item})
-		}
-	}
-	return result
-}
-
-// renderHelpBar renders a flat list of helpRow items as a single line
-// (or a few wrapped lines, via reflowHelpRows) suitable for the
-// persistent footer help row on the main views. Each item is rendered
-// as `helpKeyStyle(key) " " helpDescStyle(desc)`; entries are joined
-// with two spaces. Empty input renders as "".
-//
-// Currently unused after M3.5 — list/detail footers use renderFooterBar
-// (joins items with ` │ ` and right-aligns a position indicator).
-// Kept for the help-overlay rebuild that M5 will land.
-//
-//nolint:unused // reserved for M5 help overlay re-style
-func renderHelpBar(items []helpRow, width int) string {
-	if len(items) == 0 {
-		return ""
-	}
-	rows := reflowHelpRows([][]helpRow{items}, width)
-	out := make([]string, len(rows))
-	for ri, row := range rows {
-		parts := make([]string, len(row))
-		for i, item := range row {
-			if item.desc == "" {
-				parts[i] = helpKeyStyle.Render(item.key)
-			} else {
-				parts[i] = helpKeyStyle.Render(item.key) + " " +
-					helpDescStyle.Render(item.desc)
-			}
-		}
-		out[ri] = strings.Join(parts, "  ")
-	}
-	return strings.Join(out, "\n")
 }
 
 // renderHelp builds the help overlay. width picks column count.

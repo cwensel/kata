@@ -27,4 +27,4 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
- ↑↓ move │ ↵ open │ n new │ / search │ f filter │ s status │ c clear │ x close │ ? help │ q quit                        
+ ↑↓ move▕ ↵ open▕ n new▕ / search▕ f filter▕ s status▕ c clear▕ x close▕ ? help▕ q quit                                 

@@ -27,4 +27,4 @@ Click the login button twice.
                                                                                │(no labels in project — type to add)  │
                                                                                └──────────────────────────────────────┘ 
  add label to #42:                                                                                                      
- enter commit │ esc cancel                                                                                              
+ enter commit▕ esc cancel                                                                                               

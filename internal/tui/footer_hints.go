@@ -1,95 +1,146 @@
 package tui
 
-type footerContext struct {
-	view        viewID
-	layout      layoutMode
-	pane        focusPane
-	input       inputKind
-	modal       modalKind
-	detailFocus detailFocus
-	activeTab   detailTab
-	hasRows     bool
-	hasChildren bool
-}
+import (
+	"strings"
 
-func footerHints(ctx footerContext) []helpRow {
-	if ctx.modal == modalQuitConfirm {
-		return quitModalFooterHints()
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
+	"github.com/mattn/go-runewidth"
+)
+
+// helpItem is a footer/help binding row: key + concise description.
+type helpItem struct{ key, desc string }
+
+func (m Model) helpRows() [][]helpItem {
+	if m.modal != modalNone {
+		return modalHelpRows(m.modal)
 	}
-	if ctx.input != inputNone {
-		return inputFooterHints(ctx.input)
+	if m.input.kind != inputNone {
+		return inputHelpRows(m.input.kind)
 	}
-	switch ctx.view {
+	if m.layout == layoutSplit {
+		return m.splitHelpRows()
+	}
+	switch m.view {
 	case viewDetail:
-		return detailFooterHints(ctx)
+		return m.detail.detailHelpRows()
 	case viewList:
-		return listFooterHints(ctx)
+		return m.list.queueHelpRows()
 	}
-	return globalFooterHints()
+	return globalHelpRows()
 }
 
-func inputFooterHints(kind inputKind) []helpRow {
+func (m Model) queueHelpRows() [][]helpItem {
+	if m.modal != modalNone {
+		return modalHelpRows(m.modal)
+	}
+	if m.input.kind != inputNone {
+		return inputHelpRows(m.input.kind)
+	}
+	return m.list.queueHelpRows()
+}
+
+func (m Model) detailHelpRows() [][]helpItem {
+	if m.modal != modalNone {
+		return modalHelpRows(m.modal)
+	}
+	if m.input.kind != inputNone {
+		return inputHelpRows(m.input.kind)
+	}
+	return m.detail.detailHelpRows()
+}
+
+func (m Model) splitHelpRows() [][]helpItem {
+	if m.modal != modalNone {
+		return modalHelpRows(m.modal)
+	}
+	if m.input.kind != inputNone {
+		return inputHelpRows(m.input.kind)
+	}
+	if m.focus == focusDetail {
+		return m.detail.detailHelpRows()
+	}
+	return m.list.queueHelpRows()
+}
+
+func listHelpRows(lm listModel, chrome viewChrome) [][]helpItem {
+	if chrome.input.kind != inputNone {
+		return inputHelpRows(chrome.input.kind)
+	}
+	return lm.queueHelpRows()
+}
+
+func detailHelpRows(dm detailModel, chrome viewChrome) [][]helpItem {
+	if chrome.input.kind != inputNone {
+		return inputHelpRows(chrome.input.kind)
+	}
+	return dm.detailHelpRows()
+}
+
+func inputHelpRows(kind inputKind) [][]helpItem {
 	switch {
 	case kind.isCommandBar():
-		return []helpRow{
+		return [][]helpItem{{
 			{key: "enter", desc: "commit"},
 			{key: "esc", desc: "cancel"},
 			{key: "ctrl+u", desc: "clear"},
-		}
+		}}
 	case kind.isPanelPrompt():
-		return []helpRow{
+		return [][]helpItem{{
 			{key: "enter", desc: "commit"},
 			{key: "esc", desc: "cancel"},
-		}
+		}}
 	case kind == inputFilterForm:
-		return []helpRow{
+		return [][]helpItem{{
 			{key: "ctrl+s", desc: "apply"},
 			{key: "esc", desc: "cancel"},
 			{key: "ctrl+r", desc: "reset"},
-		}
+		}}
 	case kind == inputNewIssueForm:
-		return []helpRow{
+		return [][]helpItem{{
 			{key: "ctrl+s", desc: "create"},
 			{key: "esc", desc: "cancel"},
 			{key: "tab", desc: "field"},
 			{key: "ctrl+e", desc: "editor"},
-		}
+		}}
 	case kind.isCenteredForm():
-		return []helpRow{
+		return [][]helpItem{{
 			{key: "ctrl+s", desc: "save"},
 			{key: "esc", desc: "cancel"},
 			{key: "ctrl+e", desc: "editor"},
-		}
+		}}
 	}
 	return nil
 }
 
-func listFooterHints(ctx footerContext) []helpRow {
-	rows := []helpRow{
+func (lm listModel) queueHelpRows() [][]helpItem {
+	row, ok := lm.targetQueueRow()
+	items := []helpItem{
 		{key: "↑↓", desc: "move"},
 		{key: "↵", desc: "open"},
 	}
-	if ctx.hasChildren {
-		rows = append(rows, helpRow{key: "space", desc: "expand"})
+	if ok && row.hasChildren {
+		items = append(items, helpItem{key: "space", desc: "expand"})
 	}
-	rows = append(rows, helpRow{key: "n", desc: "new"})
-	if ctx.hasRows {
-		rows = append(rows, helpRow{key: "N", desc: "child"})
+	items = append(items, helpItem{key: "n", desc: "new"})
+	if ok {
+		items = append(items, helpItem{key: "N", desc: "child"})
 	}
-	return append(rows,
-		helpRow{key: "/", desc: "search"},
-		helpRow{key: "f", desc: "filter"},
-		helpRow{key: "s", desc: "status"},
-		helpRow{key: "c", desc: "clear"},
-		helpRow{key: "x", desc: "close"},
-		helpRow{key: "?", desc: "help"},
-		helpRow{key: "q", desc: "quit"},
+	items = append(items,
+		helpItem{key: "/", desc: "search"},
+		helpItem{key: "f", desc: "filter"},
+		helpItem{key: "s", desc: "status"},
+		helpItem{key: "c", desc: "clear"},
+		helpItem{key: "x", desc: "close"},
+		helpItem{key: "?", desc: "help"},
+		helpItem{key: "q", desc: "quit"},
 	)
+	return [][]helpItem{items}
 }
 
-func detailFooterHints(ctx footerContext) []helpRow {
-	if ctx.detailFocus == focusChildren && ctx.hasChildren {
-		return []helpRow{
+func (dm detailModel) detailHelpRows() [][]helpItem {
+	if dm.detailFocus == focusChildren && len(dm.children) > 0 {
+		return [][]helpItem{{
 			{key: "↑↓", desc: "child"},
 			{key: "↵", desc: "open child"},
 			{key: "N", desc: "child"},
@@ -98,9 +149,9 @@ func detailFooterHints(ctx footerContext) []helpRow {
 			{key: "esc", desc: "back"},
 			{key: "?", desc: "help"},
 			{key: "q", desc: "quit"},
-		}
+		}}
 	}
-	return []helpRow{
+	return [][]helpItem{{
 		{key: "↑↓", desc: "move"},
 		{key: "↹", desc: "tab"},
 		{key: "↵", desc: "jump"},
@@ -112,59 +163,176 @@ func detailFooterHints(ctx footerContext) []helpRow {
 		{key: "a", desc: "owner"},
 		{key: "?", desc: "help"},
 		{key: "q", desc: "quit"},
-	}
+	}}
 }
 
-func quitModalFooterHints() []helpRow {
-	return []helpRow{
-		{key: "y", desc: "confirm"},
-		{key: "n/esc", desc: "cancel"},
+func modalHelpRows(kind modalKind) [][]helpItem {
+	switch kind {
+	case modalQuitConfirm:
+		return [][]helpItem{{
+			{key: "y", desc: "confirm"},
+			{key: "n/esc", desc: "cancel"},
+		}}
 	}
+	return nil
 }
 
-func globalFooterHints() []helpRow {
-	return []helpRow{
+func globalHelpRows() [][]helpItem {
+	return [][]helpItem{{
 		{key: "?", desc: "help"},
 		{key: "q", desc: "quit"},
-	}
+	}}
 }
 
-func listFooterContext(lm listModel, chrome viewChrome) footerContext {
-	row, ok := lm.targetQueueRow()
-	return footerContext{
-		view:        viewList,
-		layout:      layoutStacked,
-		pane:        focusList,
-		input:       chrome.input.kind,
-		hasRows:     ok,
-		hasChildren: ok && row.hasChildren,
+func renderFooterHelpTable(rows [][]helpItem, width int) string {
+	innerWidth := titleBarInnerWidth(width)
+	body := renderHelpTable(rows, innerWidth)
+	if body == "" {
+		return footerBarStyle.Render(padToWidth("", innerWidth))
 	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		lines[i] = footerBarStyle.Render(padToWidth(line, innerWidth))
+	}
+	return strings.Join(lines, "\n")
 }
 
-func detailFooterContext(dm detailModel, chrome viewChrome) footerContext {
-	return footerContext{
-		view:        viewDetail,
-		layout:      layoutStacked,
-		pane:        focusDetail,
-		input:       chrome.input.kind,
-		detailFocus: dm.detailFocus,
-		activeTab:   dm.activeTab,
-		hasChildren: len(dm.children) > 0,
+func helpLines(rows [][]helpItem, width int) int {
+	lines := len(reflowHelpRows(rows, titleBarInnerWidth(width)))
+	if lines < 1 {
+		return 1
 	}
+	return lines
 }
 
-func splitFooterContext(m Model) footerContext {
-	chrome := m.chrome()
-	if m.focus == focusDetail {
-		ctx := detailFooterContext(m.detail, chrome)
-		ctx.layout = layoutSplit
-		ctx.pane = focusDetail
-		ctx.modal = m.modal
-		return ctx
+// Adapted from roborev cmd/roborev/tui/tui.go.
+func reflowHelpRows(rows [][]helpItem, width int) [][]helpItem {
+	if width <= 0 {
+		return rows
 	}
-	ctx := listFooterContext(m.list, chrome)
-	ctx.layout = layoutSplit
-	ctx.pane = focusList
-	ctx.modal = m.modal
-	return ctx
+
+	cellWidth := func(item helpItem) int {
+		w := runewidth.StringWidth(item.key)
+		if item.desc != "" {
+			w += 1 + runewidth.StringWidth(item.desc)
+		}
+		return w
+	}
+
+	maxItemsPerRow := 0
+	for _, row := range rows {
+		if len(row) > maxItemsPerRow {
+			maxItemsPerRow = len(row)
+		}
+	}
+
+	for ncols := maxItemsPerRow; ncols >= 1; ncols-- {
+		var candidate [][]helpItem
+		for _, row := range rows {
+			for i := 0; i < len(row); i += ncols {
+				end := min(i+ncols, len(row))
+				candidate = append(candidate, row[i:end])
+			}
+		}
+
+		colW := make([]int, ncols)
+		for _, crow := range candidate {
+			for c, item := range crow {
+				if w := cellWidth(item); w > colW[c] {
+					colW[c] = w
+				}
+			}
+		}
+
+		total := 0
+		for c, w := range colW {
+			total += w
+			if c > 0 {
+				total += 2
+			}
+		}
+		if total <= width {
+			return candidate
+		}
+	}
+
+	var result [][]helpItem
+	for _, row := range rows {
+		for _, item := range row {
+			result = append(result, []helpItem{item})
+		}
+	}
+	return result
+}
+
+func renderHelpTable(rows [][]helpItem, width int) string {
+	rows = reflowHelpRows(rows, width)
+	if len(rows) == 0 {
+		return ""
+	}
+
+	borderColor := lipgloss.AdaptiveColor{Light: "248", Dark: "242"}
+	cellStyle := lipgloss.NewStyle()
+	cellWithBorder := lipgloss.NewStyle().
+		PaddingLeft(1).
+		Border(lipgloss.Border{Left: "▕"}, false, false, false, true).
+		BorderForeground(borderColor)
+
+	maxCols := 0
+	for _, row := range rows {
+		if len(row) > maxCols {
+			maxCols = len(row)
+		}
+	}
+
+	colMinW := make([]int, maxCols)
+	for _, row := range rows {
+		for c, item := range row {
+			w := runewidth.StringWidth(item.key)
+			if item.desc != "" {
+				w += 1 + runewidth.StringWidth(item.desc)
+			}
+			if w > colMinW[c] {
+				colMinW[c] = w
+			}
+		}
+	}
+
+	empty := make([][]bool, len(rows))
+	t := table.New().
+		BorderTop(false).
+		BorderBottom(false).
+		BorderLeft(false).
+		BorderRight(false).
+		BorderColumn(false).
+		BorderRow(false).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			minW := 0
+			if col < len(colMinW) {
+				minW = colMinW[col]
+			}
+			if col == 0 || (row < len(empty) && col < len(empty[row]) && empty[row][col]) {
+				return cellStyle.Width(minW)
+			}
+			return cellWithBorder.Width(minW + 2)
+		}).
+		Wrap(false)
+
+	for ri, row := range rows {
+		styled := make([]string, maxCols)
+		empty[ri] = make([]bool, maxCols)
+		for i, item := range row {
+			if item.desc != "" {
+				styled[i] = helpKeyStyle.Render(item.key) + " " + helpDescStyle.Render(item.desc)
+			} else {
+				styled[i] = helpKeyStyle.Render(item.key)
+			}
+		}
+		for i := len(row); i < maxCols; i++ {
+			empty[ri][i] = true
+		}
+		t = t.Row(styled...)
+	}
+
+	return t.Render()
 }

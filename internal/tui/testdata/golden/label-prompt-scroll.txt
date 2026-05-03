@@ -27,4 +27,4 @@ Click the login button twice.
                                                                                                        │lbl-10 (11)   │
                                                                                                        └──────────────┘ 
  add label to #42:                                                                                                      
- enter commit │ esc cancel                                                                                              
+ enter commit▕ esc cancel                                                                                               
