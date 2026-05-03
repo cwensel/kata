@@ -227,6 +227,64 @@ func TestHandleEventReceived_ParentLinkRefetchesOpenChildDetail(t *testing.T) {
 	}
 }
 
+// TestHandleEventReceived_IssueCreatedWithParentRefetchesOpenParent
+// covers the agent-creates-subissue path: the daemon's CreateIssue
+// folds a parent link into a single issue.created event (no separate
+// issue.linked emit, see internal/db/queries.go::buildCreatedPayload),
+// so the SSE handler must recognize an issue.created event whose
+// payload carries a parent link and refetch the open parent's detail
+// — otherwise the parent's children section stays stale until reload.
+func TestHandleEventReceived_IssueCreatedWithParentRefetchesOpenParent(t *testing.T) {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: 7}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
+	m.detail.scopePID = 7
+	m.detail.gen = 5
+
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:   "issue.created",
+		projectID:   7,
+		issueNumber: 99, // the new child
+		link:        &linkPayload{Type: "parent", FromNumber: 99, ToNumber: 42},
+	})
+	if cmd == nil {
+		t.Fatal("parent detail must refetch when a child is created with a parent link")
+	}
+}
+
+// TestDecodeEventReceived_IssueCreatedExtractsParentLink covers the
+// payload-extraction half: the SSE parser must surface the embedded
+// parent link out of the issue.created payload so the dispatcher can
+// match it against the open detail. Mirror of the issue.linked test
+// (sse_test.go) but for the issue.created shape the agent path emits.
+func TestDecodeEventReceived_IssueCreatedExtractsParentLink(t *testing.T) {
+	body := []byte(`{
+		"type":"issue.created",
+		"project_id":7,
+		"issue_number":99,
+		"payload":{"links":[{"type":"parent","to_number":42}]}
+	}`)
+	got := decodeEventReceived(frame{eventType: "issue.created", data: body})
+	if got.eventType != "issue.created" {
+		t.Fatalf("eventType = %q, want issue.created", got.eventType)
+	}
+	if got.link == nil {
+		t.Fatal("expected parent link extracted from payload, got nil")
+	}
+	if got.link.Type != "parent" {
+		t.Errorf("link.Type = %q, want parent", got.link.Type)
+	}
+	if got.link.ToNumber != 42 {
+		t.Errorf("link.ToNumber = %d, want 42", got.link.ToNumber)
+	}
+	// from_number is implicit (the new issue) — fall back to issueNumber.
+	if got.link.FromNumber != 99 {
+		t.Errorf("link.FromNumber = %d, want 99 (the new issue)", got.link.FromNumber)
+	}
+}
+
 func TestHandleEventReceived_NonParentLinkDoesNotRefetchForHierarchy(t *testing.T) {
 	m := sseUpdateFixture()
 	m.scope = scope{projectID: 7}

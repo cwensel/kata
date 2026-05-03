@@ -1549,8 +1549,17 @@ func (msg eventReceivedMsg) matchesIssueNumber(number int64) bool {
 	return ok && (from == number || to == number)
 }
 
+// parentLinkEndpoints returns the (from, to) pair when the event is
+// a parent-link signal: either a direct issue.linked / issue.unlinked
+// frame whose link.Type == "parent", or an issue.created frame whose
+// payload `links` array carries a parent entry (the agent-creates-
+// subissue path). decodeEventReceived normalises the second case
+// onto the same msg.link shape so this consumer doesn't have to
+// branch on event type beyond the allowlist.
 func (msg eventReceivedMsg) parentLinkEndpoints() (from, to int64, ok bool) {
-	if msg.eventType != "issue.linked" && msg.eventType != "issue.unlinked" {
+	switch msg.eventType {
+	case "issue.linked", "issue.unlinked", "issue.created":
+	default:
 		return 0, 0, false
 	}
 	if msg.link == nil || msg.link.Type != "parent" {

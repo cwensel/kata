@@ -125,6 +125,16 @@ func finalizeFrame(f frame) frame {
 
 // decodeEventReceived parses the JSON body into eventReceivedMsg.
 // Missing fields fall through as zero values.
+//
+// issue.created events carry their initial parent link (when present)
+// folded into a `links` array on the payload — see
+// internal/db/queries.go::buildCreatedPayload. The TUI's open-detail
+// refetch logic needs that parent reference to know whether the new
+// child belongs to the issue currently on screen, so we surface the
+// first parent entry as msg.link with FromNumber filled in from the
+// new issue's own number (the payload only carries to_number; the
+// from is implicit). issue.linked / issue.unlinked retain their
+// original single-link shape (link object directly on payload).
 func decodeEventReceived(f frame) eventReceivedMsg {
 	var p sseEventPayload
 	_ = json.Unmarshal(f.data, &p)
@@ -138,5 +148,35 @@ func decodeEventReceived(f frame) eventReceivedMsg {
 			out.link = &link
 		}
 	}
+	if p.Type == "issue.created" && len(p.Payload) > 0 {
+		out.link = parentLinkFromCreatedPayload(p.Payload, out.issueNumber)
+	}
 	return out
+}
+
+// parentLinkFromCreatedPayload extracts the first parent link from an
+// issue.created payload's `links` array. Returns nil when the payload
+// has no parent link or fails to parse. fromNumber is the new issue's
+// own number — the payload only stores to_number, so we fill in from
+// at decode time so downstream matchesIssueNumber checks both ends.
+func parentLinkFromCreatedPayload(payload []byte, fromNumber int64) *linkPayload {
+	var body struct {
+		Links []struct {
+			Type     string `json:"type"`
+			ToNumber int64  `json:"to_number"`
+		} `json:"links"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil
+	}
+	for _, l := range body.Links {
+		if l.Type == "parent" {
+			return &linkPayload{
+				Type:       "parent",
+				FromNumber: fromNumber,
+				ToNumber:   l.ToNumber,
+			}
+		}
+	}
+	return nil
 }
