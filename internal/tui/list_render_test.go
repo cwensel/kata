@@ -81,22 +81,22 @@ func TestRenderLabelChips_EmptyLabels(t *testing.T) {
 }
 
 // TestRenderLabelChips_WidthMeasureUsesRunewidth pins the width-math
-// invariant: a wide-glyph label (`かた` is 4 cells, not 6 bytes) plus
+// invariant: a wide-glyph label (`カタ` is 4 cells, not 6 bytes) plus
 // an embedded ANSI escape must be measured correctly. Width is
 // computed AFTER sanitize so the measurement matches the rendered cell.
 //
-// Sorted clean labels: "bug" (3 cells), "かた" (4 cells). At width 11:
+// Sorted clean labels: "bug" (3 cells), "カタ" (4 cells). At width 11:
 //   - "[bug]" = 5 cells; reserve 4-cell overflow tail since one label
 //     remains. 0+5+4 = 9 <= 11, so "[bug]" fits (used=5).
-//   - "[かた]" = 6 cells + 1-cell separator = 7. 5+7+0 = 12 > 11, so
-//     "[かた]" is dropped. Output: "[bug] +1".
+//   - "[カタ]" = 6 cells + 1-cell separator = 7. 5+7+0 = 12 > 11, so
+//     "[カタ]" is dropped. Output: "[bug] +1".
 //
-// If the renderer measured the raw `\x1b[31mかた` (10+ bytes) instead
-// of the sanitized "かた" (4 cells), or measured byte length instead
+// If the renderer measured the raw `\x1b[31mカタ` (10+ bytes) instead
+// of the sanitized "カタ" (4 cells), or measured byte length instead
 // of cell width, the math would be wrong and the test would fail.
 func TestRenderLabelChips_WidthMeasureUsesRunewidth(t *testing.T) {
 	applyColorMode(colorNone, io.Discard)
-	got := renderLabelChips([]string{"\x1b[31mかた", "bug"}, 11)
+	got := renderLabelChips([]string{"\x1b[31mカタ", "bug"}, 11)
 	if strings.Contains(got, "\x1b") {
 		t.Fatalf("ESC survived width-measure path: %q", got)
 	}
@@ -111,8 +111,8 @@ func TestRenderLabelChips_WidthMeasureUsesRunewidth(t *testing.T) {
 	}
 	// Direct width check on the sanitized label proves we really are
 	// measuring cell width, not bytes.
-	if cells := runewidth.StringWidth("かた"); cells != 4 {
-		t.Fatalf("runewidth.StringWidth(\"かた\") = %d, want 4", cells)
+	if cells := runewidth.StringWidth("カタ"); cells != 4 {
+		t.Fatalf("runewidth.StringWidth(\"カタ\") = %d, want 4", cells)
 	}
 }
 

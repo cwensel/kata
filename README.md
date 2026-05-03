@@ -1,4 +1,4 @@
-# kata かた
+# kata カタ
 
 Local-first issue tracking for humans and coding agents.
 
@@ -215,8 +215,9 @@ kata ready [--limit N]
 kata events [--after N] [--limit N]
 kata events --tail [--last-event-id N]
 kata projects list
-kata projects show <id>
-kata projects rename <id> <name>
+kata projects show <project>
+kata projects rename <project> <name>
+kata projects merge <source> <target> [--rename-target NAME]
 ```
 
 Destructive operations are explicit:
@@ -326,6 +327,13 @@ Multiple checkouts or repositories can share one kata project when they use
 the same `.kata.toml` project identity and run `kata init` in each checkout.
 That shares issue numbering, labels, links, and events across those workspaces
 in the same local database.
+
+If a repository rename accidentally creates a second project, merge the old
+source into the surviving target, for example:
+
+```sh
+kata projects merge old-repo new-repo --rename-target new-repo
+```
 
 Future shared mode should be a distinct deployment:
 

@@ -23,7 +23,7 @@ That screenshot is more important than the current goldens. It shows what the us
 
 1. The project bar is missing.
 
-   The stacked detail view is supposed to keep the global project/title bar at the top, e.g. `Project: kata` on the left and `kata かた` on the right. The live screenshot starts directly with `#1 fix the tui...`, so the global chrome was lost somewhere in the actual runtime path. `internal/tui/detail_render.go` currently calls `renderTitleBar`, but do not trust that alone. Verify the running binary and the `Model.View`/layout path.
+   The stacked detail view is supposed to keep the global project/title bar at the top, e.g. `Project: kata` on the left and `kata カタ` on the right. The live screenshot starts directly with `#1 fix the tui...`, so the global chrome was lost somewhere in the actual runtime path. `internal/tui/detail_render.go` currently calls `renderTitleBar`, but do not trust that alone. Verify the running binary and the `Model.View`/layout path.
 
 2. The page starts at column zero and feels raw.
 
@@ -70,7 +70,7 @@ Replace the current detail rendering with a stricter compact card/sheet layout.
 At a high level:
 
 ```text
- Project: kata                                                   kata かた
+ Project: kata                                                   kata カタ
 
   #1  fix the tui to be less shitty                         open
       anonymous · created May 2 19:15 · updated 21h ago

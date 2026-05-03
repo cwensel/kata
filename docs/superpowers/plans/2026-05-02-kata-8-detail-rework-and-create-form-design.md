@@ -120,7 +120,7 @@ Three rows replace the current single header line. Renders inside the existing `
 
 | Row | Content |
 |-----|---------|
-| 1 | title bar (`kata かた · …`) |
+| 1 | title bar (`kata カタ · …`) |
 | 2 | meta (`#42 · open · author · created · updated`) |
 | 3 | assignment (`Owner: alice          [bug] [prio-1] +N`) |
 | 4 | title row (bold, full width) |

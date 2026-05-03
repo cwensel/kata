@@ -1,4 +1,4 @@
- Project: kata                                                                                       kata かた · v0.1.0 
+ Project: kata                                                                                       kata カタ · v0.1.0 
  open: 4 · closed: 1 · all: 5                                                                      search:"jump target" 
         #     status    title                                                           kids    owner         updated   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -19,7 +19,7 @@
 Target: stacked detail at `80x50`.
 
 ```text
- Project: kata                                               kata かた · dev
+ Project: kata                                               kata カタ · dev
 
  issue #42
 
@@ -67,7 +67,7 @@ The ASCII rule characters above are illustrative for the spec text. The renderer
 The global app frame remains outside the issue document:
 
 - Left: current project or all-projects state.
-- Right: `kata かた · <version>`, styled as dim chrome.
+- Right: `kata カタ · <version>`, styled as dim chrome.
 - Do not repeat the project inside the issue body for single-project mode.
 
 In all-projects mode, the issue metadata block starts with a full-width project row:

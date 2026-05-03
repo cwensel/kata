@@ -86,6 +86,20 @@ type RenameProjectRequest struct {
 	}
 }
 
+// MergeProjectRequest is POST /api/v1/projects/{id}/merge.
+type MergeProjectRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Body      struct {
+		SourceProjectID int64  `json:"source_project_id" required:"true"`
+		TargetName      string `json:"target_name,omitempty"`
+	}
+}
+
+// MergeProjectResponse summarizes a completed project merge.
+type MergeProjectResponse struct {
+	Body db.ProjectMergeResult
+}
+
 // CreateIssueRequest is POST /api/v1/projects/{id}/issues.
 //
 // IdempotencyKey is read from the Idempotency-Key HTTP header (spec §4.4).

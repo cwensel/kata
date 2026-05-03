@@ -346,10 +346,10 @@ If the smoke test panics or `go mod tidy` won't resolve, **stop**. Open a discus
 - Modify: `internal/tui/theme.go` (titleBarStyle / statsStyle / cursorRowStyle / altRowStyle / separatorStyle / footerStyle / modalStyle — borrow msgvault's exact style shapes)
 - New: `internal/tui/layout_fill.go` (fillScreen helper for the bottom-pin pattern)
 - New: `internal/tui/quit_modal.go` (or fold into modal.go-redux — quit-confirm modal: `[Y] Yes  [N] No`)
-- Test: `internal/tui/snapshot_test.go` (new fixtures: `list-msgvault-chrome`, `list-search-bar-info-line`, `list-new-issue-row`, `quit-confirm-modal`, `title-bar-narrow-80`, `title-bar-wide-200` — last two for the `kata かた` wide-character alignment guard)
+- Test: `internal/tui/snapshot_test.go` (new fixtures: `list-msgvault-chrome`, `list-search-bar-info-line`, `list-new-issue-row`, `quit-confirm-modal`, `title-bar-narrow-80`, `title-bar-wide-200` — last two for the `kata カタ` wide-character alignment guard)
 
 **Invariants touched:**
-- Sanitization (preserve every existing call; new title-bar `kata かた` text is daemon-side-known so no sanitize needed there).
+- Sanitization (preserve every existing call; new title-bar `kata カタ` text is daemon-side-known so no sanitize needed there).
 - Identity selection (untouched — state, not chrome).
 - Stale-fetch guards (untouched — preserved internals).
 - Help-during-overlay sync (extended: the new quit-confirm modal must not steal keys when the inline command bar is open).
@@ -371,11 +371,11 @@ If the smoke test panics or `go mod tidy` won't resolve, **stop**. Open a discus
 ### M3.5 Step 3: Title bar + branding
 
 - [ ] **Restyle title bar with adaptive background.** New `titleBarStyle` in `theme.go` mirroring msgvault's: bold + adaptive bg + 1-cell horizontal padding. The bar reads as a window-chrome strip.
-- [ ] **Brand text becomes `kata かた · project: $name`** when scope.projectName is set. Falls back to `kata かた` alone when no project. Right-aligned `vX.Y.Z` slot stays as-is.
+- [ ] **Brand text becomes `kata カタ · project: $name`** when scope.projectName is set. Falls back to `kata カタ` alone when no project. Right-aligned `vX.Y.Z` slot stays as-is.
 - [ ] **Rendered counts move to the second header line** (alongside breadcrumb-equivalent — for kata that's the active filter chips). msgvault uses `breadcrumbStyled + gap + statsStyled`.
 - [ ] **Drop the persistent `SSE: connected · 0 pending events` line.** The SSE state surfaces ONLY when degraded — `sseReconnecting` / `sseDisconnected` becomes a flash on the info line, brief and dismissible.
 - [ ] **Drop the `actor` / `anonymous` slot.** `lm.actor` stays for mutation dispatch, but it doesn't render as chrome text.
-- [ ] **Wide-character alignment snapshots**: lock the title-bar render at widths 80, 100, 140, 200. The `かた` glyphs are 2 cells each; the right-aligned version text must not drift.
+- [ ] **Wide-character alignment snapshots**: lock the title-bar render at widths 80, 100, 140, 200. The `カタ` glyphs are 2 cells each; the right-aligned version text must not drift.
 
 ### M3.5 Step 4: Table chrome simplification
 
@@ -412,7 +412,7 @@ If the smoke test panics or `go mod tidy` won't resolve, **stop**. Open a discus
 ### M3.5 tests + acceptance
 
 - [ ] **Snapshot fixtures** (regenerated under the new chrome):
-    - `list-msgvault-chrome` (80×24, 120×30, 200×40 — three width snapshots so the title-bar `かた` alignment is locked)
+    - `list-msgvault-chrome` (80×24, 120×30, 200×40 — three width snapshots so the title-bar `カタ` alignment is locked)
     - `list-search-bar-info-line` (search bar active on the info line)
     - `list-new-issue-row` (inline new-issue row at top of table, cursor in title field)
     - `quit-confirm-modal` (centered overlay)
@@ -426,12 +426,12 @@ If the smoke test panics or `go mod tidy` won't resolve, **stop**. Open a discus
     - `TestNewIssueRow_EscCancels`: Esc closes the row, no API call.
     - `TestSearch_BarRendersOnInfoLine`: snapshot confirms the search bar is below the table, not above.
     - `TestFooter_PinnedToBottom`: rendering at height 30 with 5 issues — the footer is on row 30, not row 8.
-    - `TestTitleBar_KataKanaAlignment`: render at 80, 100, 140 — verify the right-aligned version text appears at column == width-len(version), accounting for `かた` being 2 cells each.
+    - `TestTitleBar_KataKanaAlignment`: render at 80, 100, 140 — verify the right-aligned version text appears at column == width-len(version), accounting for `カタ` being 2 cells each.
 - [ ] **Synchronous input open**: drop `openInputCmd` indirection for `/`, `o`, the panel prompts, and `n`. The inputState constructor runs in the same Update tick that handled the key. Addresses roborev #96/#97 async-race findings.
 - [ ] **Lint clean, `go test ./...` green, all hard invariants hold.**
 
 **Acceptance criteria:**
-- `make build && ./kata tui` shows: bordered title bar at top with `kata かた · project: $name · vX.Y.Z`; second line with counts/filters; table flush against bg with one separator under header; alternating row stripes; footer pinned to absolute bottom row of terminal with `│`-separated descriptive keys; search bar shows on info line just above footer when `/` pressed; quit-confirm modal on `q`; new-issue row at top of table on `n`.
+- `make build && ./kata tui` shows: bordered title bar at top with `kata カタ · project: $name · vX.Y.Z`; second line with counts/filters; table flush against bg with one separator under header; alternating row stripes; footer pinned to absolute bottom row of terminal with `│`-separated descriptive keys; search bar shows on info line just above footer when `/` pressed; quit-confirm modal on `q`; new-issue row at top of table on `n`.
 - All hard invariants still hold (re-run the full TUI test suite + manual smoke).
 - Folded roborev reviews (94/95/96/97) close as superseded with comment pointing at the M3.5 commit.
 - Plan-doc reviews (91/92) close as superseded by the pre-M3.5 fixes (jobs 89/90) which removed the "preserved as-is" routing bugs.

@@ -1,4 +1,4 @@
- Project: —                                                   kata かた 
+ Project: —                                                   kata カタ 
                                                                         
   #42  fix login bug on Safari                                    [open]
   authored by wesm                                                      

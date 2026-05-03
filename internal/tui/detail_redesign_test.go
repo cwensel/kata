@@ -23,7 +23,7 @@ func TestDetailRedesign_StackedHasProjectBarOnFirstLine(t *testing.T) {
 	if !strings.Contains(first, "Project: kata") {
 		t.Fatalf("expected first line to be project bar, got %q\n%s", first, got)
 	}
-	if !strings.Contains(first, "kata かた") {
+	if !strings.Contains(first, "kata カタ") {
 		t.Fatalf("expected brand on first line, got %q\n%s", first, got)
 	}
 }

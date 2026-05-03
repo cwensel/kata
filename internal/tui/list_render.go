@@ -144,11 +144,11 @@ func (lm listModel) renderBodyArea(width, bodyRows int, chrome viewChrome) strin
 
 // renderTitleBar formats the top brand strip:
 //
-//	Project: {name}                         kata かた · vX.Y.Z
+//	Project: {name}                         kata カタ · vX.Y.Z
 //
 // Project context lives on the left because it's what the user is
 // actually working in; brand + version are window-chrome and pin to
-// the right. `かた` is hiragana for "form/pattern" — the romaji
+// the right. `カタ` is katakana for "form/pattern" — the romaji
 // disambiguator for the brand vs. a project that happens to also be
 // named "kata". All-projects scope and the empty-scope hint render
 // in the project slot so the left side is never blank.
@@ -184,9 +184,9 @@ func titleBarLeft(sc scope) string {
 // didn't stamp it so the right side is just the brand.
 func titleBarRight(version string) string {
 	if version == "" {
-		return "kata かた"
+		return "kata カタ"
 	}
-	return "kata かた · " + version
+	return "kata カタ · " + version
 }
 
 // titleBarInnerWidth subtracts the titleBarStyle horizontal padding
@@ -315,7 +315,7 @@ func footerPositionIndicator(cursor, totalRows int) string {
 // padLeftRightInside places left text on the left and right text on
 // the right of an `innerWidth`-cell-wide line, padding with spaces
 // in between. Wide-character aware via runewidth.StringWidth so the
-// `かた` glyphs in the title bar align correctly. When the right
+// `カタ` glyphs in the title bar align correctly. When the right
 // text would overflow, it's truncated to fit (the left side wins
 // because it carries the brand/identity).
 func padLeftRightInside(left, right string, innerWidth int) string {

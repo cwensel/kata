@@ -84,6 +84,42 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	})
 
 	huma.Register(humaAPI, huma.Operation{
+		OperationID: "mergeProject",
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/merge",
+	}, func(ctx context.Context, in *api.MergeProjectRequest) (*api.MergeProjectResponse, error) {
+		if in.Body.SourceProjectID == 0 {
+			return nil, api.NewError(400, "validation", "source_project_id required", "", nil)
+		}
+		targetName := strings.TrimSpace(in.Body.TargetName)
+		var namePtr *string
+		if targetName != "" {
+			namePtr = &targetName
+		}
+		merged, err := cfg.DB.MergeProjects(ctx, db.MergeProjectsParams{
+			SourceProjectID: in.Body.SourceProjectID,
+			TargetProjectID: in.ProjectID,
+			TargetName:      namePtr,
+		})
+		if errors.Is(err, db.ErrProjectMergeSameProject) {
+			return nil, api.NewError(400, "validation", "cannot merge a project into itself", "", nil)
+		}
+		var collision *db.ProjectMergeCollisionError
+		if errors.As(err, &collision) {
+			return nil, api.NewError(409, "project_merge_issue_number_collision",
+				"source and target have overlapping issue numbers",
+				"resolve collisions before merging", map[string]any{"numbers": collision.Numbers})
+		}
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		return &api.MergeProjectResponse{Body: merged}, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
 		OperationID: "renameProject",
 		Method:      "PATCH",
 		Path:        "/api/v1/projects/{project_id}",
@@ -154,7 +190,7 @@ func resolveByKataToml(ctx context.Context, store *db.DB, disc config.Discovered
 		}
 		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 	}
-	project, err := store.ProjectByIdentity(ctx, cfgFile.Project.Identity)
+	project, err := projectByIdentityOrAlias(ctx, store, cfgFile.Project.Identity)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, false, api.NewError(404, "project_not_initialized",
 			"project "+cfgFile.Project.Identity+" is bound by .kata.toml but not registered",
@@ -272,8 +308,8 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 	}
 
 	dest := writeDestination(disc, abs)
-	if tomlCfg == nil || tomlCfg.Project.Identity != identity {
-		if err := config.WriteProjectConfig(dest, identity, name); err != nil {
+	if tomlCfg == nil || tomlCfg.Project.Identity != project.Identity || tomlCfg.Project.Name != project.Name {
+		if err := config.WriteProjectConfig(dest, project.Identity, project.Name); err != nil {
 			return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 	}
@@ -354,7 +390,7 @@ func writeDestination(disc config.DiscoveredPaths, abs string) string {
 // upsertProject returns the existing project (created=false) when one matches
 // the identity, otherwise creates a new project (created=true).
 func upsertProject(ctx context.Context, store *db.DB, identity, name string) (db.Project, bool, error) {
-	got, err := store.ProjectByIdentity(ctx, identity)
+	got, err := projectByIdentityOrAlias(ctx, store, identity)
 	if err == nil {
 		return got, false, nil
 	}
@@ -366,6 +402,21 @@ func upsertProject(ctx context.Context, store *db.DB, identity, name string) (db
 		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	return created, true, nil
+}
+
+func projectByIdentityOrAlias(ctx context.Context, store *db.DB, identity string) (db.Project, error) {
+	project, err := store.ProjectByIdentity(ctx, identity)
+	if err == nil {
+		return project, nil
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		return db.Project{}, err
+	}
+	alias, err := store.AliasByIdentity(ctx, identity)
+	if err != nil {
+		return db.Project{}, err
+	}
+	return store.ProjectByID(ctx, alias.ProjectID)
 }
 
 // upsertAliasFor is the disc-flavored entry point used during resolve, where
@@ -462,6 +513,13 @@ func preflightAliasConflict(ctx context.Context, store *db.DB, info config.Alias
 	}
 	if existingProject.Identity == targetIdentity {
 		return nil
+	}
+	targetProject, err := projectByIdentityOrAlias(ctx, store, targetIdentity)
+	if err == nil && targetProject.ID == existing.ProjectID {
+		return nil
+	}
+	if err != nil && !errors.Is(err, db.ErrNotFound) {
+		return api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	return api.NewError(http.StatusConflict, "project_alias_conflict",
 		"alias already attached to a different project",

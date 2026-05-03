@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/wesm/kata/internal/daemon"
+	"github.com/wesm/kata/internal/db"
 )
 
 func runGit(t *testing.T, dir string, args ...string) {
@@ -251,4 +252,72 @@ func TestRenameProject_MissingIs404(t *testing.T) {
 	})
 	assert.Equal(t, 404, resp.StatusCode)
 	assert.Contains(t, string(bs), "project_not_found")
+}
+
+func TestMergeProject_SourceMovesIntoSurvivingTarget(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "")
+	store := h.DB()
+	ctx := t.Context()
+	kenn, err := store.CreateProject(ctx, "github.com/wesm/kenn", "kenn")
+	require.NoError(t, err)
+	steward, err := store.CreateProject(ctx, "github.com/wesm/steward", "steward")
+	require.NoError(t, err)
+	_, err = store.AttachAlias(ctx, kenn.ID, "github.com/wesm/kenn", "git", "/tmp/kenn")
+	require.NoError(t, err)
+	_, err = store.AttachAlias(ctx, steward.ID, "github.com/wesm/steward", "git", "/tmp/steward")
+	require.NoError(t, err)
+	_, _, err = store.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: kenn.ID, Title: "existing work", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	resp, bs := postJSON(t, h.ts.(*httptest.Server),
+		"/api/v1/projects/"+strconv.FormatInt(steward.ID, 10)+"/merge",
+		map[string]any{"source_project_id": kenn.ID})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"identity":"github.com/wesm/steward"`)
+	assert.Contains(t, string(bs), `"issues_moved":1`)
+	assert.Contains(t, string(bs), `"next_issue_number":2`)
+
+	issue, err := store.IssueByNumber(ctx, steward.ID, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "existing work", issue.Title)
+	_, err = store.ProjectByID(ctx, kenn.ID)
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestInit_MergedKataTomlIdentityResolvesToSurvivingProject(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "https://github.com/wesm/steward.git")
+	store := h.DB()
+	ctx := t.Context()
+	kenn, err := store.CreateProject(ctx, "github.com/wesm/kenn", "kenn")
+	require.NoError(t, err)
+	steward, err := store.CreateProject(ctx, "github.com/wesm/steward", "steward")
+	require.NoError(t, err)
+	_, err = store.AttachAlias(ctx, kenn.ID, "github.com/wesm/kenn", "git", h.dir)
+	require.NoError(t, err)
+	_, err = store.AttachAlias(ctx, steward.ID, "github.com/wesm/steward", "git", h.dir)
+	require.NoError(t, err)
+	_, err = store.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: kenn.ID,
+		TargetProjectID: steward.ID,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(h.dir, ".kata.toml"), //nolint:gosec // test fixture mirrors production .kata.toml mode
+		[]byte(`version = 1
+
+[project]
+identity = "github.com/wesm/kenn"
+name     = "kenn"
+`), 0o644))
+
+	resp, bs := postJSON(t, h.ts.(*httptest.Server), "/api/v1/projects", map[string]any{
+		"start_path": h.dir,
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"identity":"github.com/wesm/steward"`)
+
+	cfgBytes, err := os.ReadFile(filepath.Join(h.dir, ".kata.toml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cfgBytes), `identity = "github.com/wesm/steward"`)
 }

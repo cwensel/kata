@@ -153,3 +153,101 @@ func TestProjectAliases_ReturnsAllForProject(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, got, 2)
 }
+
+func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	kenn, err := d.CreateProject(ctx, "github.com/wesm/kenn", "kenn")
+	require.NoError(t, err)
+	steward, err := d.CreateProject(ctx, "github.com/wesm/steward", "steward")
+	require.NoError(t, err)
+	_, err = d.AttachAlias(ctx, kenn.ID, "github.com/wesm/kenn", "git", "/tmp/kenn")
+	require.NoError(t, err)
+	_, err = d.AttachAlias(ctx, steward.ID, "github.com/wesm/steward", "git", "/tmp/steward")
+	require.NoError(t, err)
+	parent, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: kenn.ID, Title: "parent", Author: "tester",
+	})
+	require.NoError(t, err)
+	child, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: kenn.ID, Title: "child", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
+		ProjectID: kenn.ID, FromIssueID: child.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
+	}, db.LinkEventParams{
+		EventType: "issue.linked", EventIssueID: child.ID, EventIssueNumber: child.Number,
+		FromNumber: child.Number, ToNumber: parent.Number, Actor: "tester",
+	})
+	require.NoError(t, err)
+
+	merged, err := d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: kenn.ID,
+		TargetProjectID: steward.ID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, steward.ID, merged.Target.ID)
+	assert.Equal(t, "github.com/wesm/steward", merged.Target.Identity)
+	assert.Equal(t, "steward", merged.Target.Name)
+	assert.Equal(t, int64(2), merged.IssuesMoved)
+	assert.Equal(t, int64(1), merged.AliasesMoved)
+	assert.Equal(t, int64(3), merged.EventsMoved)
+	assert.Equal(t, int64(3), merged.Target.NextIssueNumber)
+
+	gotParent, err := d.IssueByNumber(ctx, steward.ID, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "parent", gotParent.Title)
+	assert.Equal(t, steward.ID, gotParent.ProjectID)
+	gotChild, err := d.IssueByNumber(ctx, steward.ID, 2)
+	require.NoError(t, err)
+	assert.Equal(t, "child", gotChild.Title)
+	assert.Equal(t, steward.ID, gotChild.ProjectID)
+	_, err = d.IssueByNumber(ctx, kenn.ID, 1)
+	assert.ErrorIs(t, err, db.ErrNotFound)
+	_, err = d.ProjectByID(ctx, kenn.ID)
+	assert.ErrorIs(t, err, db.ErrNotFound)
+
+	aliases, err := d.ProjectAliases(ctx, steward.ID)
+	require.NoError(t, err)
+	var aliasIdentities []string
+	for _, alias := range aliases {
+		aliasIdentities = append(aliasIdentities, alias.AliasIdentity)
+		assert.Equal(t, steward.ID, alias.ProjectID)
+	}
+	assert.ElementsMatch(t, []string{"github.com/wesm/kenn", "github.com/wesm/steward"}, aliasIdentities)
+
+	events, err := d.EventsAfter(ctx, db.EventsAfterParams{ProjectID: steward.ID, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, events, 3)
+	for _, event := range events {
+		assert.Equal(t, steward.ID, event.ProjectID)
+		assert.Equal(t, "github.com/wesm/steward", event.ProjectIdentity)
+	}
+}
+
+func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	source, err := d.CreateProject(ctx, "github.com/wesm/kenn", "kenn")
+	require.NoError(t, err)
+	target, err := d.CreateProject(ctx, "github.com/wesm/steward", "steward")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: source.ID, Title: "source issue", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: target.ID, Title: "target issue", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: source.ID,
+		TargetProjectID: target.ID,
+	})
+	require.ErrorIs(t, err, db.ErrProjectMergeIssueNumberCollision)
+
+	got, lookupErr := d.ProjectByID(ctx, source.ID)
+	require.NoError(t, lookupErr)
+	assert.Equal(t, "github.com/wesm/kenn", got.Identity)
+}

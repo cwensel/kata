@@ -221,7 +221,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
     ```
     Reserve:
-      title bar (1) +    // kata かた · …
+      title bar (1) +    // kata カタ · …
       meta (1) +          // #N · status · author · created · updated
       assignment (1) +    // Owner: alice          [bug] [prio-1] +N
       title row (1) +     // bold full-width title
@@ -259,7 +259,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
         // Must render the placeholder "(no labels)".
     }
     func TestRenderLabelChips_WidthMeasureUsesRunewidth(t *testing.T) {
-        // Label with wide-glyph "かた" (4 cells) and ANSI escape "\x1b[31m":
+        // Label with wide-glyph "カタ" (4 cells) and ANSI escape "\x1b[31m":
         // sanitize first, then runewidth.StringWidth. Verify packing math.
     }
     func TestRenderLabelChips_RenderedTextSanitized(t *testing.T) {
