@@ -15,6 +15,9 @@ coverage.out
 # Git worktrees
 /.worktrees/
 
+# Local planning/work artifacts
+/.superpowers/
+
 # IDE/editor
 .vscode/
 .idea/
