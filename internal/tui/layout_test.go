@@ -161,3 +161,104 @@ func TestLayout_ResizeStackedToSplit_PreservesFocusFromDetail(t *testing.T) {
 		t.Errorf("focus=%v after stacked→split from viewDetail, want focusDetail", m.focus)
 	}
 }
+
+// TestLayout_SplitListPaneWidth_GrowsWithTerminal verifies the list
+// pane reclaims space on wide terminals so the title column stays
+// readable. The detail pane reserves documentSheetMaxWidth + gutter
+// + border (~100 cells) for the document sheet; everything beyond
+// that goes to the list pane up to a usability cap.
+func TestLayout_SplitListPaneWidth_GrowsWithTerminal(t *testing.T) {
+	cases := []struct {
+		termWidth int
+		want      int
+	}{
+		{140, 68},  // breakpoint minimum: floor at 68
+		{160, 68},  // still floored — detail wants ~100
+		{168, 68},  // exact transition: 168-100=68
+		{180, 80},  // grows: 180-100
+		{200, 100}, // user's terminal in the screenshot
+		{220, 110}, // capped at 110
+		{300, 110}, // still capped
+	}
+	for _, c := range cases {
+		got := splitListPaneWidth(c.termWidth)
+		if got != c.want {
+			t.Errorf("splitListPaneWidth(%d) = %d, want %d", c.termWidth, got, c.want)
+		}
+	}
+}
+
+// TestLayout_ToggleLayout_FromSplitToStacked: pressing the layout-
+// toggle key in split mode flips to stacked, sets layoutLocked so a
+// subsequent WindowSizeMsg cannot auto-flip back, and migrates view
+// from focus (mirrors the existing handleLayoutFlip path).
+func TestLayout_ToggleLayout_FromSplitToStacked(t *testing.T) {
+	m, cleanup := layoutTestSetup(t)
+	defer cleanup()
+	out, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = out.(Model)
+	if m.layout != layoutSplit {
+		t.Fatalf("setup failed: layout=%v want split", m.layout)
+	}
+	iss := m.list.issues[0]
+	m.detail.issue = &iss
+	m.focus = focusDetail
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}})
+	m = out.(Model)
+	if m.layout != layoutStacked {
+		t.Errorf("layout=%v after L toggle, want layoutStacked", m.layout)
+	}
+	if !m.layoutLocked {
+		t.Error("layoutLocked=false after L toggle, want true")
+	}
+	if m.view != viewDetail {
+		t.Errorf("view=%v after toggle from focusDetail, want viewDetail", m.view)
+	}
+	out, _ = m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
+	m = out.(Model)
+	if m.layout != layoutStacked {
+		t.Errorf("layout=%v after resize while locked, want layoutStacked", m.layout)
+	}
+}
+
+// TestLayout_ToggleLayout_FromStackedToSplit: pressing L in stacked
+// mode flips to split when the terminal is large enough.
+func TestLayout_ToggleLayout_FromStackedToSplit(t *testing.T) {
+	m, cleanup := layoutTestSetup(t)
+	defer cleanup()
+	// Boot in a split-eligible terminal but force-stacked first.
+	out, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = out.(Model)
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}})
+	m = out.(Model)
+	if m.layout != layoutStacked {
+		t.Fatalf("setup failed: layout=%v want stacked after first L", m.layout)
+	}
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}})
+	m = out.(Model)
+	if m.layout != layoutSplit {
+		t.Errorf("layout=%v after second L toggle, want layoutSplit", m.layout)
+	}
+	if !m.layoutLocked {
+		t.Error("layoutLocked=false after second L toggle, want true")
+	}
+}
+
+// TestLayout_ToggleLayout_RefusesSplitOnTooNarrowTerminal: pressing L
+// in stacked mode on a terminal too small for split keeps stacked.
+// The lock still sticks (so a resize across the threshold can apply
+// the user's pref), but the rendered layout stays usable.
+func TestLayout_ToggleLayout_RefusesSplitOnTooNarrowTerminal(t *testing.T) {
+	m, cleanup := layoutTestSetup(t)
+	defer cleanup()
+	out, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = out.(Model)
+	if m.layout != layoutStacked {
+		t.Fatalf("setup failed: layout=%v want stacked", m.layout)
+	}
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}})
+	m = out.(Model)
+	if m.layout != layoutStacked {
+		t.Errorf("layout=%v after L on too-narrow term, want layoutStacked", m.layout)
+	}
+}

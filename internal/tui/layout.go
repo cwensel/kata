@@ -23,12 +23,44 @@ const (
 	focusDetail
 )
 
-// splitListPaneWidth is the fixed cell width of the list pane in
-// split layout. Plan 7 spec said 60-64; bumped to 68 for Plan 8 row
-// chips so the title column still has 20+ cells after subtracting
-// the # / status / updated columns. The remaining width feeds the
-// detail pane.
-const splitListPaneWidth = 68
+// splitListPaneMinWidth is the floor on the list pane's cell width
+// in split layout. Plan 7 said 60-64; bumped to 68 for Plan 8 row
+// chips so the title column still has 20+ cells after the fixed
+// columns (#/status/kids/updated, which sum to ~42 cells in narrow
+// mode). Wider terminals grow past this floor — see splitListPaneWidth.
+const splitListPaneMinWidth = 68
+
+// splitListPaneMaxWidth caps the list pane on very wide terminals.
+// Beyond this point the title column is comfortable enough that
+// further growth would just steal cells from the detail pane.
+const splitListPaneMaxWidth = 110
+
+// splitDetailPaneReservedWidth is the budget the detail pane needs
+// for its document sheet (documentSheetMaxWidth=96 + gutter=2 +
+// border=2). Set as a constant rather than referenced symbolically
+// to keep this package's layout math independent of detail_render
+// (which would otherwise create a coupling cycle for split-mode
+// width computations).
+const splitDetailPaneReservedWidth = 100
+
+// splitListPaneWidth is the cell width of the list pane in split
+// layout. The detail pane gets first dibs on the document sheet's
+// reserved budget; everything beyond that goes to the list pane,
+// floored at splitListPaneMinWidth and capped at splitListPaneMaxWidth.
+//
+// At terminal width 140 (the split breakpoint) the list pane sits on
+// its floor of 68 cells. As the terminal grows past ~168 cells, the
+// list pane reclaims width to give the title column more room.
+func splitListPaneWidth(termWidth int) int {
+	w := termWidth - splitDetailPaneReservedWidth
+	if w < splitListPaneMinWidth {
+		return splitListPaneMinWidth
+	}
+	if w > splitListPaneMaxWidth {
+		return splitListPaneMaxWidth
+	}
+	return w
+}
 
 // splitMinWidth and splitMinHeight are the breakpoint thresholds for
 // split layout. Below either dimension we fall back to layoutStacked
@@ -45,12 +77,57 @@ const (
 
 // pickLayout chooses between the stacked single-view layout and the
 // split-pane layout based on terminal dimensions. Below either
-// threshold, fall back to stacked. Re-run on every WindowSizeMsg.
+// threshold, fall back to stacked. Re-run on every WindowSizeMsg
+// when the user has not manually locked a layout.
 func pickLayout(width, height int) layoutMode {
 	if width >= splitMinWidth && height >= splitMinHeight {
 		return layoutSplit
 	}
 	return layoutStacked
+}
+
+// canRenderSplit reports whether the terminal is large enough to
+// render split-pane layout without producing unusable UI. Used both
+// by the auto-pick path and by the manual-toggle path so a locked
+// split-preference still degrades to stacked when the terminal is
+// outright too narrow.
+func canRenderSplit(width, height int) bool {
+	return width >= splitMinWidth && height >= splitMinHeight
+}
+
+// resolveLayout returns the layoutMode the model should render for
+// its current width/height + lock state. When unlocked, defers to
+// pickLayout. When locked, honors m.layout but degrades to stacked
+// if the terminal cannot fit split — the lock represents intent,
+// not a guarantee that split fits.
+func (m Model) resolveLayout() layoutMode {
+	if !m.layoutLocked {
+		return pickLayout(m.width, m.height)
+	}
+	if m.layout == layoutSplit && !canRenderSplit(m.width, m.height) {
+		return layoutStacked
+	}
+	return m.layout
+}
+
+// toggleLayout flips between split and stacked, sets layoutLocked so
+// a subsequent WindowSizeMsg cannot revert the user's choice, and
+// runs handleLayoutFlip so view/focus migrate consistently with the
+// auto-flip path. When the user requests split on a too-narrow
+// terminal the request is honored as intent (layoutLocked is set)
+// but the rendered layout stays stacked.
+func (m Model) toggleLayout() Model {
+	prev := m.layout
+	m.layoutLocked = true
+	if m.layout == layoutSplit {
+		m.layout = layoutStacked
+	} else if canRenderSplit(m.width, m.height) {
+		m.layout = layoutSplit
+	}
+	if prev != m.layout {
+		m = m.handleLayoutFlip(prev)
+	}
+	return m
 }
 
 // handleLayoutFlip preserves selection and focus across a layout

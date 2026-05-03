@@ -7,6 +7,7 @@ import tea "github.com/charmbracelet/bubbletea"
 // what Update actually handles.
 type keymap struct {
 	Help, Quit, ToggleScope                        key
+	ToggleLayout                                   key
 	Up, Down, PageUp, PageDown, Home, End          key
 	Open, NewIssue, NewChild, Search               key
 	ExpandCollapse                                 key
@@ -31,6 +32,7 @@ func newKeymap() keymap {
 		Help:           key{Keys: []string{"?"}, Help: "help"},
 		Quit:           key{Keys: []string{"q", "ctrl+c"}, Help: "quit"},
 		ToggleScope:    key{Keys: []string{"R"}, Help: "scope toggle (gated)"},
+		ToggleLayout:   key{Keys: []string{"L"}, Help: "toggle split/stacked layout"},
 		Up:             key{Keys: []string{"k", "up"}, Help: "up"},
 		Down:           key{Keys: []string{"j", "down"}, Help: "down"},
 		PageUp:         key{Keys: []string{"pgup"}, Help: "page up"},
@@ -63,7 +65,7 @@ func newKeymap() keymap {
 		NewComment:   key{Keys: []string{"c"}, Help: "new comment"},
 		SetParent:    key{Keys: []string{"p"}, Help: "set parent"},
 		AddBlocker:   key{Keys: []string{"b"}, Help: "add blocker"},
-		AddLink:      key{Keys: []string{"L"}, Help: "add link"},
+		AddLink:      key{Keys: []string{"l"}, Help: "add link"},
 		AddLabel:     key{Keys: []string{"+"}, Help: "add label"},
 		RemoveLabel:  key{Keys: []string{"-"}, Help: "remove label"},
 		AssignOwner:  key{Keys: []string{"a"}, Help: "assign owner"},

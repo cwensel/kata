@@ -17,6 +17,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
                                                                                                                   [1/4] 
- ↑↓ move▕ ↵ open▕ space expand▕ n new▕ N child▕ / search▕ f filter▕ s status▕ c clear▕ x close▕ ? help▕ q quit          
+ ↑↓ move▕ ↵ open▕ space expand▕ n new▕ N child▕ / search▕ f filter▕ s status▕ c clear▕ x close▕ L layout▕ ? help        
+ q quit                                                                                                                 

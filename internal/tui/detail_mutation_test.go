@@ -274,11 +274,13 @@ func TestDetail_AddLink_Blocks(t *testing.T) {
 	}
 }
 
-// TestDetail_AddLink_Other: 'L' opens an inputLinkPrompt; commit of
+// TestDetail_AddLink_Other: 'l' opens an inputLinkPrompt; commit of
 // "related 7" parses as <kind> <number> and calls AddLink. The
 // daemon's CHECK constraint accepts only 'parent', 'blocks', or
-// 'related' (internal/db/migrations/0001_init.sql:66); the L-key
-// path passes the first whitespace token verbatim as Type.
+// 'related' (internal/db/migrations/0001_init.sql:66); the l-key
+// path passes the first whitespace token verbatim as Type. (Capital
+// L was rebound to ToggleLayout when the layout-toggle hotkey was
+// added — AddLink moved to lowercase l for ergonomics.)
 func TestDetail_AddLink_Other(t *testing.T) {
 	api := &fakeDetailAPI{
 		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
@@ -286,7 +288,7 @@ func TestDetail_AddLink_Other(t *testing.T) {
 	km := newKeymap()
 	dm := dmFixture()
 
-	_, cmd := dm.Update(runeKey('L'), km, api)
+	_, cmd := dm.Update(runeKey('l'), km, api)
 	if msg, ok := cmd().(openInputMsg); !ok || msg.kind != inputLinkPrompt {
 		t.Fatalf("expected openInputMsg{inputLinkPrompt}, got %v", cmd())
 	}

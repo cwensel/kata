@@ -28,5 +28,5 @@
                                                                                                                         
                                                                                                                         
                                                                                                     [1-1 of 2 comments] 
- ↑↓ child▕ ↵ open child▕ ↹ section▕ e edit ▕ c comment▕ + label▕ - unlabel▕ a owner▕ A unassign▕ x close▕ r reopen      
- p parent▕ b block     ▕ L link   ▕ N child▕ esc back ▕ ? help ▕ q quit                                                 
+ ↑↓ child▕ ↵ open child▕ ↹ section▕ e edit ▕ c comment▕ + label ▕ - unlabel▕ a owner▕ A unassign▕ x close▕ r reopen     
+ p parent▕ b block     ▕ l link   ▕ N child▕ L layout ▕ esc back▕ ? help   ▕ q quit                                     

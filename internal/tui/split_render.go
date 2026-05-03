@@ -34,7 +34,7 @@ func renderSplit(m Model) string {
 	if bodyHeight < 4 {
 		bodyHeight = 4
 	}
-	listW := splitListPaneWidth
+	listW := splitListPaneWidth(width)
 	detailW := width - listW
 	if detailW < 20 {
 		detailW = 20

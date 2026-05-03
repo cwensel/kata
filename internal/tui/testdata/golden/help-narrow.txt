@@ -4,6 +4,7 @@ Global
 ?         help
 q/ctrl+c  quit
 R         scope toggle (gated)
+L         toggle split/stacked layout
 
 Queue
 k/up    up
@@ -27,7 +28,7 @@ e              edit body
 c              new comment
 p              set parent
 b              add blocker
-L              add link
+l              add link
 +              add label
 -              remove label
 a              assign owner

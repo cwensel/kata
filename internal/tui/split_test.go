@@ -256,7 +256,7 @@ func TestSplit_SuggestionMenuClampedToDetailPane(t *testing.T) {
 	got := m.View()
 	// Look for the unique menu content "alpha (1)" — it shouldn't
 	// appear on the left side of the screen (which is the list
-	// pane), only inside the detail pane (column >= splitListPaneWidth).
+	// pane), only inside the detail pane (column >= list-pane width).
 	idx := strings.Index(got, "alpha (1)")
 	if idx < 0 {
 		t.Fatalf("menu content not found in output:\n%s", got)
@@ -264,9 +264,10 @@ func TestSplit_SuggestionMenuClampedToDetailPane(t *testing.T) {
 	// Find the column of "alpha (1)" within its line.
 	lineStart := strings.LastIndex(got[:idx], "\n") + 1
 	col := idx - lineStart
-	if col < splitListPaneWidth {
+	listW := splitListPaneWidth(m.width)
+	if col < listW {
 		t.Errorf("suggest menu content at column %d, want >= %d (list pane width)",
-			col, splitListPaneWidth)
+			col, listW)
 	}
 }
 
@@ -484,14 +485,15 @@ func TestSplit_SuggestionMenuClampActuallyFires_AtMinSplit(t *testing.T) {
 	// breakpoint with the maximum menu width, the natural anchor
 	// is still right of the list-pane boundary, so the clamp is
 	// defensive.
+	listW := splitListPaneWidth(splitMinWidth)
 	naturalAnchor := splitMinWidth - suggestMenuMaxWidth - 1
-	if naturalAnchor < splitListPaneWidth+1 {
+	if naturalAnchor < listW+1 {
 		t.Fatalf("constants drifted: at width=%d max-menu=%d "+
-			"naturalAnchor=%d, want >= splitListPaneWidth+1=%d "+
+			"naturalAnchor=%d, want >= listW+1=%d "+
 			"(if this fires, overlaySuggestMenu's minCol clamp is "+
 			"now load-bearing and needs an end-to-end test)",
 			splitMinWidth, suggestMenuMaxWidth, naturalAnchor,
-			splitListPaneWidth+1)
+			listW+1)
 	}
 	// Exercise the underlying overlay-clamp primitive directly: pass
 	// an anchorCol left of zero and assert the panel still renders

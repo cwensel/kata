@@ -132,6 +132,7 @@ func (lm listModel) queueHelpRows() [][]helpItem {
 		helpItem{key: "s", desc: "status"},
 		helpItem{key: "c", desc: "clear"},
 		helpItem{key: "x", desc: "close"},
+		helpItem{key: "L", desc: "layout"},
 		helpItem{key: "?", desc: "help"},
 		helpItem{key: "q", desc: "quit"},
 	)
@@ -162,8 +163,9 @@ func (dm detailModel) detailHelpRows() [][]helpItem {
 		{key: "r", desc: "reopen"},
 		{key: "p", desc: "parent"},
 		{key: "b", desc: "block"},
-		{key: "L", desc: "link"},
+		{key: "l", desc: "link"},
 		{key: "N", desc: "child"},
+		{key: "L", desc: "layout"},
 		{key: "esc", desc: "back"},
 		{key: "?", desc: "help"},
 		{key: "q", desc: "quit"},

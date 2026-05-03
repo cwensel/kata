@@ -103,6 +103,12 @@ type Model struct {
 	// side). Re-evaluated on every WindowSizeMsg via pickLayout. See
 	// layout.go for the breakpoint thresholds and handleLayoutFlip.
 	layout layoutMode
+	// layoutLocked is set when the user explicitly toggles the layout
+	// via the ToggleLayout key (default: L). While locked, WindowSizeMsg
+	// preserves the user's chosen layout instead of re-running
+	// pickLayout — except that an outright too-narrow terminal still
+	// degrades to stacked so split never renders unusable UI.
+	layoutLocked bool
 	// focus names which pane owns key dispatch in split layout. In
 	// stacked layout m.view is authoritative; m.focus is only
 	// consulted when m.layout == layoutSplit. Default focusList.
@@ -447,7 +453,7 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case tea.WindowSizeMsg:
 		prevLayout := m.layout
 		m.width, m.height = msg.Width, msg.Height
-		m.layout = pickLayout(m.width, m.height)
+		m.layout = m.resolveLayout()
 		if prevLayout != m.layout {
 			m = m.handleLayoutFlip(prevLayout)
 		}
@@ -1284,6 +1290,9 @@ func (m Model) routeGlobalKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		next, cmd := m.handleScopeToggle()
 		return next, cmd, true
 	}
+	if m.keymap.ToggleLayout.matches(msg) {
+		return m.toggleLayout(), nil, true
+	}
 	if next, cmd, ok := m.routeLayoutFocusKey(msg); ok {
 		return next, cmd, true
 	}
@@ -2106,9 +2115,9 @@ func (m Model) overlaySuggestMenu(body string) string {
 	anchorCol := m.width - menuW - 1
 	if m.layout == layoutSplit {
 		// Anchor inside the detail pane only: the detail pane starts
-		// at column splitListPaneWidth. The menu's left edge must
-		// not encroach into the list pane.
-		minCol := splitListPaneWidth + 1
+		// at the column right after the list pane. The menu's left
+		// edge must not encroach into the list pane.
+		minCol := splitListPaneWidth(m.width) + 1
 		if anchorCol < minCol {
 			anchorCol = minCol
 		}
