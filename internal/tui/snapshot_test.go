@@ -498,9 +498,63 @@ func TestSnapshot_Detail_WithLabels(t *testing.T) {
 	assertGolden(t, "detail-with-labels", got)
 }
 
+func TestSnapshot_Detail_DocumentPage80x50(t *testing.T) {
+	defer snapshotInit(t)()
+	dm := snapDetailHierarchyFixture()
+	dm.issue.Owner = ptrString("alice")
+	dm.issue.Labels = []string{"prio-1", "bug", "needs-design"}
+	dm.issue.CreatedAt = time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC)
+	dm.issue.UpdatedAt = snapshotFixedNow.Add(-3 * time.Hour)
+	got := dm.View(80, 50, viewChrome{
+		scope:   scope{projectID: 7, projectName: "kata"},
+		version: "dev",
+	})
+	assertGolden(t, "detail-document-80x50", got)
+}
+
+func TestSnapshot_Detail_DocumentNarrow(t *testing.T) {
+	defer snapshotInit(t)()
+	dm := snapDetailFixture()
+	dm.issue.Owner = ptrString("alice")
+	dm.issue.Labels = []string{"bug", "prio-1"}
+	dm.parent = &IssueRef{Number: 12, Title: "workspace polish", Status: "open"}
+	got := dm.View(72, 40, viewChrome{})
+	assertGolden(t, "detail-document-narrow", got)
+}
+
+func TestSnapshot_Detail_DocumentEmpty(t *testing.T) {
+	defer snapshotInit(t)()
+	iss := Issue{ProjectID: 7, Number: 99, Title: "empty issue", Status: "open"}
+	dm := detailModel{issue: &iss}
+	got := dm.View(80, 32, viewChrome{})
+	assertGolden(t, "detail-document-empty", got)
+}
+
+func TestSnapshot_Detail_DocumentMarkdown(t *testing.T) {
+	defer snapshotInit(t)()
+	iss := Issue{
+		ProjectID: 7,
+		Number:    55,
+		Title:     "markdown body",
+		Status:    "open",
+		Body: strings.Join([]string{
+			"## Steps",
+			"",
+			"- Click `Login` twice.",
+			"",
+			"```go",
+			`fmt.Println("ok")`,
+			"```",
+		}, "\n"),
+	}
+	dm := detailModel{issue: &iss}
+	got := dm.View(80, 40, viewChrome{})
+	assertGolden(t, "detail-document-markdown", got)
+}
+
 // TestSnapshot_Detail_LabelsNarrow_OverflowAndDegrade verifies the
 // chip strip degrades gracefully on narrow terminals: at 60 cells
-// the +N overflow appears; at 30 cells the strip collapses to the
+// the +N overflow appears; at 20 cells the strip collapses to the
 // `[N labels]` ultra-narrow fallback.
 func TestSnapshot_Detail_LabelsNarrow_OverflowAndDegrade(t *testing.T) {
 	defer snapshotInit(t)()
@@ -514,7 +568,7 @@ func TestSnapshot_Detail_LabelsNarrow_OverflowAndDegrade(t *testing.T) {
 	if !strings.Contains(overflow, "+") {
 		t.Fatalf("expected +N overflow at width 60, got:\n%s", overflow)
 	}
-	degrade := dm.View(30, 24, viewChrome{})
+	degrade := dm.View(20, 24, viewChrome{})
 	if !strings.Contains(degrade, "labels]") {
 		t.Fatalf("expected [N labels] degrade at width 30, got:\n%s", degrade)
 	}

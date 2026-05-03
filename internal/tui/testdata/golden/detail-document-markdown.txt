@@ -1,0 +1,40 @@
+ Project: —                                                           kata かた 
+                                                                                
+issue #55
+                                                                                
+markdown body                                                             [open]
+                                                                                
+owner: none                                                         labels: none
+parent: none                                                      children: none
+                                                                                
+Body ───────────────────────────────────────────────────────────────────────────
+Steps
+- Click `Login` twice.
+
+fmt.Println("ok")
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ↑↓ move▕ ↹ section▕ ↵ open▕ esc back▕ e edit▕ c comment▕ x close▕ + label      
+ a owner▕ ? help   ▕ q quit                                                     

@@ -145,7 +145,7 @@ func (dm detailModel) detailHelpRows() [][]helpItem {
 			{key: "↵", desc: "open child"},
 			{key: "N", desc: "child"},
 			{key: "p", desc: "parent"},
-			{key: "↹", desc: "activity"},
+			{key: "↹", desc: "section"},
 			{key: "esc", desc: "back"},
 			{key: "?", desc: "help"},
 			{key: "q", desc: "quit"},
@@ -153,8 +153,8 @@ func (dm detailModel) detailHelpRows() [][]helpItem {
 	}
 	return [][]helpItem{{
 		{key: "↑↓", desc: "move"},
-		{key: "↹", desc: "tab"},
-		{key: "↵", desc: "jump"},
+		{key: "↹", desc: "section"},
+		{key: "↵", desc: "open"},
 		{key: "esc", desc: "back"},
 		{key: "e", desc: "edit"},
 		{key: "c", desc: "comment"},

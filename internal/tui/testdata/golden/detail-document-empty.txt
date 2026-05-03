@@ -1,0 +1,32 @@
+ Project: —                                                           kata かた 
+                                                                                
+issue #99
+                                                                                
+empty issue                                                               [open]
+                                                                                
+owner: none                                                         labels: none
+parent: none                                                      children: none
+                                                                                
+Body ───────────────────────────────────────────────────────────────────────────
+(no description)
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ↑↓ move▕ ↹ section▕ ↵ open▕ esc back▕ e edit▕ c comment▕ x close▕ + label      
+ a owner▕ ? help   ▕ q quit                                                     

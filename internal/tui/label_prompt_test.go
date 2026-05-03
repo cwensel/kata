@@ -191,8 +191,8 @@ func TestSuggestMenu_BodyKeepsFullHeight_AndChromeStaysAtBottom(t *testing.T) {
 	}
 	// The activity rule must land at the same row in both renders —
 	// the body+tab budget MUST not change when the menu is active.
-	withRule := indexOf(withLines, "── activity")
-	noRule := indexOf(noLines, "── activity")
+	withRule := indexOf(withLines, "Activity")
+	noRule := indexOf(noLines, "Activity")
 	if withRule != noRule || withRule < 0 {
 		t.Fatalf("activity rule moved with menu (withMenu row=%d, "+
 			"noMenu row=%d) — the body must not shrink when menu opens",

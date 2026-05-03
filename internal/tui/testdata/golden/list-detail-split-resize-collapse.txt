@@ -1,33 +1,33 @@
  Project: kata                                                                                                              kata かた · dev 
 ┌──────────────────────────────────────────────────────────────────┐┌──────────────────────────────────────────────────────────────────────┐
-│        #     status    title                   kids    updated   ││#42 · open · wesm                                                     │
-│──────────────────────────────────────────────────────────────────││Owner: —                                                   (no labels)│
-│        #1    open      fix login bug on Safari         3h ago    ││fix login bug on Safari                                               │
-│▶       #2    closed    rebuild search index            1h ago    ││Parent: -                                   Children: 0 open / 0 total│
-│        #3    [deleted] purge stale tokens              2h ago    ││── body ──────────────────────────────────────────────────────────────│
+│        #     status    title                   kids    updated   ││issue #42                                                             │
+│──────────────────────────────────────────────────────────────────││fix login bug on Safari                                         [open]│
+│        #1    open      fix login bug on Safari         3h ago    ││authored by wesm                                                      │
+│▶       #2    closed    rebuild search index            1h ago    ││owner: none                                                           │
+│        #3    [deleted] purge stale tokens              2h ago    ││labels: none                                                          │
+│                                                                  ││parent: none                                                          │
+│                                                                  ││children: none                                                        │
+│                                                                  ││Body ─────────────────────────────────────────────────────────────────│
 │                                                                  ││Reproduces in Safari 17 only.                                         │
 │                                                                  ││Click the login button twice.                                         │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││                                                                      │
-│                                                                  ││── activity ──────────────────────────────────────────────────────────│
+│                                                                  ││Activity ─────────────────────────────────────────────────────────────│
 │                                                                  ││[ Comments (2) ]  Events (2)  Links (1)                               │
-│                                                                  ││[alice] 2026-04-30 10:00                                              │
+│                                                                  ││> alice  Apr 30 10:00                                                 │
 │                                                                  ││  I can repro on macOS.                                               │
 │                                                                  ││                                                                      │
-│                                                                  ││[bob] 2026-04-30 11:00                                                │
+│                                                                  ││  bob    Apr 30 11:00                                                 │
 │                                                                  ││  Looks like a race in oauth.                                         │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
+│                                                                  ││                                                                      │
 │                                                                  ││                                                                      │
 │                                                                  ││                                                                      │
 │                                                                  ││                                                                      │

@@ -82,9 +82,9 @@ func TestDetail_RenderHierarchySections(t *testing.T) {
 	}
 	out := stripANSI(dm.View(100, 28, viewChrome{}))
 	for _, want := range []string{
-		"Parent: #12 workspace polish parent",
-		"Children: 1 open / 2 total",
-		"children 1 open / 2 total",
+		"parent: #12 workspace polish parent",
+		"children: 1 open / 2 total",
+		"Children",
 		"#43",
 		"detail hint bars incomplete",
 		"#44",
@@ -725,8 +725,8 @@ func TestDetail_TinyTerminal_RendersWithoutPanic(t *testing.T) {
 }
 
 // TestDetail_RenderCommentsTab_FormatsAuthorAndIndentsBody confirms the
-// per-comment header is "[author] timestamp" and body lines are indented
-// by 2 spaces under the header.
+// per-comment header uses an author + compact timestamp and body lines
+// are indented by 2 spaces under the header.
 func TestDetail_RenderCommentsTab_FormatsAuthorAndIndentsBody(t *testing.T) {
 	cs := []CommentEntry{
 		{
@@ -736,7 +736,7 @@ func TestDetail_RenderCommentsTab_FormatsAuthorAndIndentsBody(t *testing.T) {
 		},
 	}
 	out := renderCommentsTab(cs, 80, 20, -1, tabState{})
-	if !strings.Contains(out, "[alice] 2025-01-02 15:04") {
+	if !strings.Contains(out, "alice  Jan 2 15:04") {
 		t.Fatalf("missing author/timestamp header:\n%s", out)
 	}
 	if !strings.Contains(out, "  hello there") {
@@ -754,7 +754,7 @@ func TestDetail_RenderCommentsTab_FormatsAuthorAndIndentsBody(t *testing.T) {
 // zero-comments case.
 func TestDetail_RenderCommentsTab_EmptyShowsHint(t *testing.T) {
 	out := renderCommentsTab(nil, 80, 5, -1, tabState{})
-	if !strings.Contains(out, "no comments yet") {
+	if !strings.Contains(out, "no comments") {
 		t.Fatalf("expected placeholder, got:\n%s", out)
 	}
 }
@@ -1264,23 +1264,16 @@ func TestDetail_EnterOnEventWithoutPayload_NoOp(t *testing.T) {
 	}
 }
 
-// TestDetail_ApplyRowCursor_StylesOnlyWhenSelected confirms the cursor
-// indirection: the helper styles the line via selectedStyle when
-// isCursor=true and otherwise returns the raw text. The package-level
-// selectedStyle is not asserted against ANSI escapes here because the
-// test environment may run in colorNone mode (no TTY); we instead
-// confirm the function defers to selectedStyle.Render(line) which the
-// theme tests verify is materially different from the raw input.
-func TestDetail_ApplyRowCursor_StylesOnlyWhenSelected(t *testing.T) {
-	plain := applyRowCursor("hello", false)
-	if plain != "hello" {
-		t.Fatalf("non-cursor branch should return raw text, got %q", plain)
+// TestDetail_ApplyActivityCursor_UsesTextMarker confirms activity rows
+// use a NO_COLOR-visible marker rather than a painted row background.
+func TestDetail_ApplyActivityCursor_UsesTextMarker(t *testing.T) {
+	plain := applyActivityCursor("hello", false)
+	if plain != "  hello" {
+		t.Fatalf("non-cursor branch should indent text, got %q", plain)
 	}
-	styled := applyRowCursor("hello", true)
-	want := selectedStyle.Render("hello")
-	if styled != want {
-		t.Fatalf("cursor branch did not apply selectedStyle: got %q want %q",
-			styled, want)
+	styled := applyActivityCursor("hello", true)
+	if styled != "> hello" {
+		t.Fatalf("cursor branch should use marker: got %q", styled)
 	}
 }
 

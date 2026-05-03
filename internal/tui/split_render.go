@@ -171,18 +171,10 @@ func renderSplitFooter(width int, m Model) string {
 	return renderFooterHelpTable(m.splitHelpRows(), width)
 }
 
-// ViewSplit renders the detail body for the M6 split-mode detail
-// pane. Same composition as View but skips the outer title bar
-// (renderSplit owns the shared top row) and the info+footer (also
-// shared). The remaining vertical budget is split between body and
-// the active tab in the same 2/3 / 1/3 ratio as the stacked
-// renderer. Loading / no-issue states match View.
-//
-// chrome is currently unused — renderSplit owns the shared title
-// bar / info / footer — but the parameter is kept for symmetry with
-// View() so future per-pane chrome (status flash, scroll indicator)
-// has a wire-up path without churning the call sites.
-func (dm detailModel) ViewSplit(width, height int, _ viewChrome) string {
+// ViewSplit renders the detail document inside the M6 split-mode
+// pane. The shared split frame owns the global title and footer, but
+// the issue content keeps the same document grammar as stacked detail.
+func (dm detailModel) ViewSplit(width, height int, chrome viewChrome) string {
 	if dm.loading {
 		return statusStyle.Render("loading…")
 	}
@@ -192,35 +184,35 @@ func (dm detailModel) ViewSplit(width, height int, _ viewChrome) string {
 	if width <= 0 || height < 6 {
 		return dm.renderTinyFallback(width)
 	}
-	meta := renderHeaderMeta(*dm.issue)
-	assign := renderHeaderAssignment(width, *dm.issue)
-	titleRow := renderHeaderTitle(width, *dm.issue)
-	hierarchy := renderHierarchySummary(width, dm.parent, dm.children)
-	bodyRule := renderLabeledRule("body", width)
-	activityRule := renderLabeledRule("activity", width)
-	tabs := dm.renderTabStrip()
-	// Reserve seven fixed rows in the pane:
-	//   meta + assign + title + hierarchy + bodyRule + activityRule + tabs.
-	// The remaining height splits between body content (2/3) and
-	// active-tab content (1/3) — same ratio as the stacked renderer.
-	bodyA, childA, tabA := detailSplitBudgets(height, len(dm.children))
-	body := dm.renderBody(width, bodyA)
-	children := dm.renderChildrenSection(width, childA)
-	tabContent := dm.renderActiveTab(width, tabA)
-	bodyArea := dm.padArea(body, bodyA, width)
+	header := dm.documentHeader(width, chrome, false)
+	hasChildren := len(dm.children) > 0
+	hasActivity := dm.hasActivity()
+	fixed := len(header) + 1
+	if hasChildren {
+		fixed++
+	}
+	if hasActivity {
+		fixed += 2
+	}
+	bodyA, childA, tabA := detailDocumentBudgets(height-fixed, len(dm.children), hasActivity)
+	bodyArea := dm.renderBody(width, bodyA)
 	childrenArea := ""
-	if childA > 0 {
-		childrenArea = dm.padArea(children, childA, width)
+	if hasChildren {
+		childrenArea = dm.renderChildrenSection(width, childA)
 	}
-	tabArea := dm.padArea(tabContent, tabA, width)
-	parts := []string{
-		meta, assign, titleRow, hierarchy, bodyRule, bodyArea,
+	tabArea := ""
+	if hasActivity {
+		tabArea = dm.renderActiveTab(width, tabA)
 	}
-	if childrenArea != "" {
-		parts = append(parts, childrenArea)
+	parts := append([]string{}, header...)
+	parts = append(parts, renderDocumentRule("Body", width), bodyArea)
+	if hasChildren {
+		parts = append(parts, renderDocumentRule("Children", width), childrenArea)
 	}
-	parts = append(parts, activityRule, tabs, tabArea)
-	return strings.Join(parts, "\n")
+	if hasActivity {
+		parts = append(parts, renderDocumentRule("Activity", width), dm.renderTabStrip(), tabArea)
+	}
+	return padDocumentContent(parts, height, width)
 }
 
 // pickHighlightedIssue returns a copy of the issue currently under

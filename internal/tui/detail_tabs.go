@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // tabState carries the per-tab loading / error markers from the model
@@ -13,9 +15,9 @@ type tabState struct {
 	err     error
 }
 
-// renderCommentsTab formats the comments tab as a per-comment chunk:
-// header `[author] timestamp` (selected row inverse-styled) + the
-// body line-wrapped to width with a 2-space indent + blank separator.
+// renderCommentsTab formats the comments tab as document activity:
+// cursor marker + bold author + dim timestamp, followed by indented
+// Markdown comment text and a blank separator.
 // The cursor highlights the row under dm.tabCursor; rendered lines
 // are windowed so the cursor entry is always visible even when the
 // entries don't all fit in height.
@@ -24,18 +26,17 @@ type tabState struct {
 // renderer no longer repeats it. Empty / loading / error placeholders
 // still render in place of the entries via tabPlaceholder.
 func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState) string {
-	placeholder := tabPlaceholder(ts, "comments", "(no comments yet)", len(cs))
+	placeholder := tabPlaceholder(ts, "comments", "(no comments)", len(cs))
 	if placeholder != nil {
 		return assembleTab(nil, []entryChunk{*placeholder}, width, height, -1)
 	}
 	chunks := make([]entryChunk, 0, len(cs))
+	authorW := commentAuthorWidth(cs)
 	for i, c := range cs {
-		// Author and Body are agent-authored — sanitize before the
-		// printf so control sequences can't reshape the terminal.
-		header := fmt.Sprintf("[%s] %s",
-			sanitizeForDisplay(c.Author), fmtTime(c.CreatedAt))
-		lines := []string{applyRowCursor(header, i == cursor)}
-		for _, ln := range wrapBody(sanitizeForDisplay(c.Body), max(1, width-2)) {
+		author := padToWidth(commentAuthorStyle(c.Author), authorW)
+		header := fmt.Sprintf("%s  %s", author, subtleStyle.Render(formatDocumentTime(c.CreatedAt)))
+		lines := []string{applyActivityCursor(header, i == cursor)}
+		for _, ln := range renderMarkdownLines(c.Body, max(1, width-2)) {
 			lines = append(lines, "  "+ln)
 		}
 		lines = append(lines, "")
@@ -64,7 +65,7 @@ func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState)
 			sanitizeForDisplay(e.Actor),
 			sanitizeForDisplay(eventDescription(e)))
 		chunks = append(chunks, entryChunk{lines: []string{
-			applyRowCursor(line, i == cursor),
+			applyActivityCursor(line, i == cursor),
 		}})
 	}
 	return assembleTab(nil, chunks, width, height, cursor)
@@ -88,7 +89,7 @@ func renderLinksTab(ls []LinkEntry, width, height, cursor int, ts tabState) stri
 			l.Type, l.ToNumber, l.FromNumber,
 			sanitizeForDisplay(l.Author), fmtTime(l.CreatedAt))
 		chunks = append(chunks, entryChunk{lines: []string{
-			applyRowCursor(line, i == cursor),
+			applyActivityCursor(line, i == cursor),
 		}})
 	}
 	return assembleTab(nil, chunks, width, height, cursor)
@@ -121,14 +122,28 @@ type entryChunk struct {
 	lines []string
 }
 
-// applyRowCursor returns line wrapped in selectedStyle when isCursor.
-// Centralizing the cursor application here keeps each tab renderer
-// readable.
-func applyRowCursor(line string, isCursor bool) string {
-	if isCursor {
-		return selectedStyle.Render(line)
+func commentAuthorStyle(author string) string {
+	return titleStyle.Render(sanitizeForDisplay(author))
+}
+
+func commentAuthorWidth(cs []CommentEntry) int {
+	width := 0
+	for _, c := range cs {
+		if w := runewidth.StringWidth(sanitizeForDisplay(c.Author)); w > width {
+			width = w
+		}
 	}
-	return line
+	return min(width, 16)
+}
+
+// applyActivityCursor prefixes activity rows with a text cursor marker
+// instead of painting the row. This keeps the document body free of
+// filled blocks and remains readable under NO_COLOR.
+func applyActivityCursor(line string, isCursor bool) string {
+	if isCursor {
+		return "> " + line
+	}
+	return "  " + line
 }
 
 // assembleTab joins the header lines with the windowed entry chunks

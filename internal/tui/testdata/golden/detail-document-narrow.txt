@@ -1,0 +1,40 @@
+ Project: —                                                   kata かた 
+                                                                        
+issue #42
+                                                                        
+fix login bug on Safari                                           [open]
+                                                                        
+authored by wesm
+owner: alice
+labels: [bug] [prio-1]
+parent: #12 workspace polish
+children: none
+                                                                        
+Body ───────────────────────────────────────────────────────────────────
+Reproduces in Safari 17 only.
+Click the login button twice.
+Activity ───────────────────────────────────────────────────────────────
+[ Comments (2) ]  Events (2)  Links (1)
+> alice  Apr 30 10:00
+  I can repro on macOS.
+
+  bob    Apr 30 11:00
+  Looks like a race in oauth.
+
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+ ↑↓ move▕ ↹ section▕ ↵ open▕ esc back▕ e edit▕ c comment▕ x close       
+ + label▕ a owner  ▕ ? help▕ q quit                                     
