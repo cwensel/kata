@@ -2055,20 +2055,23 @@ func (m Model) handleDetailFollowTick(msg detailFollowTickMsg) (Model, tea.Cmd) 
 // strings in the steady state so the view does not gain spurious blank
 // lines.
 func (m Model) View() string {
-	// M5: degraded full-screen hint when the terminal is below the
-	// threshold for clean chrome rendering. Short-circuit BEFORE the
-	// regular dispatch so we don't render a cropped/torn frame. The
-	// `m.width > 0` gate avoids tripping the hint before the first
-	// WindowSizeMsg arrives (initial state has width=0). q / ctrl+c
-	// still route through routeGlobalKey, so the user can quit from
-	// the hint without resizing first.
+	// M5: degraded full-screen hint when the terminal is too narrow for
+	// readable table columns. Short terminals still render the active view:
+	// the list/detail renderers already have compact fallbacks, and blocking
+	// on height makes tmux panes feel broken.
+	//
+	// Short-circuit BEFORE the regular dispatch so we don't render a
+	// cropped/torn frame on narrow width. The `m.width > 0` gate avoids
+	// tripping the hint before the first WindowSizeMsg arrives (initial
+	// state has width=0). q / ctrl+c still route through routeGlobalKey, so
+	// the user can quit from the hint without resizing first.
 	//
 	// Active modal overlays (quit-confirm, centered forms) layer on
 	// top of the hint so a modal opened at full width stays visible
 	// after a resize below threshold (roborev #250). Without this the
 	// modal would silently disappear and the user would be stuck —
 	// pressing q again would only re-trigger the (invisible) modal.
-	if m.width > 0 && (m.width < 80 || m.height < 16) {
+	if m.width > 0 && m.width < 80 {
 		body := renderTooNarrow(m.width, m.height)
 		if m.modal == modalQuitConfirm {
 			return overlayModal(body, renderQuitConfirmModal(), m.width, m.height)

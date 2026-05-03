@@ -30,6 +30,9 @@ func buildQueueRows(issues []Issue, filter ListFilter, expanded expansionSet) []
 		if state.emitted[key] || !state.included[key] {
 			continue
 		}
+		if state.hasIncludedParent(key) {
+			continue
+		}
 		state.appendNode(key, 0, false, nil)
 	}
 	return state.rows
@@ -41,6 +44,7 @@ type queueBuildState struct {
 	order            []issueKey
 	filter           ListFilter
 	filterActive     bool
+	revealMatches    bool
 	expanded         expansionSet
 	matched          map[issueKey]bool
 	included         map[issueKey]bool
@@ -55,6 +59,7 @@ func newQueueBuildState(issues []Issue, filter ListFilter, expanded expansionSet
 		order:            make([]issueKey, 0, len(issues)),
 		filter:           filter,
 		filterActive:     hasActiveQueueFilter(filter),
+		revealMatches:    hasRevealQueueFilter(filter),
 		expanded:         expanded,
 		matched:          make(map[issueKey]bool, len(issues)),
 		included:         make(map[issueKey]bool, len(issues)),
@@ -125,7 +130,7 @@ func (s *queueBuildState) appendNode(key issueKey, depth int, lastChild bool, se
 	iss := s.byKey[key]
 	hasChildren := len(s.childrenByParent[key]) > 0
 	isExpanded := s.expanded != nil && s.expanded[key]
-	if s.filterActive && len(s.visibleChildKeys(key, true)) > 0 {
+	if s.shouldAutoExpand(key) {
 		isExpanded = true
 	}
 	s.rows = append(s.rows, queueRow{
@@ -148,6 +153,16 @@ func (s *queueBuildState) appendNode(key issueKey, depth int, lastChild bool, se
 	}
 }
 
+func (s *queueBuildState) shouldAutoExpand(key issueKey) bool {
+	if !s.filterActive || len(s.visibleChildKeys(key, true)) == 0 {
+		return false
+	}
+	if s.revealMatches {
+		return true
+	}
+	return !s.matched[key]
+}
+
 func (s *queueBuildState) visibleChildKeys(parent issueKey, expanded bool) []issueKey {
 	children := s.childrenByParent[parent]
 	if len(children) == 0 {
@@ -158,6 +173,9 @@ func (s *queueBuildState) visibleChildKeys(parent issueKey, expanded bool) []iss
 			return nil
 		}
 		return children
+	}
+	if !expanded {
+		return nil
 	}
 	out := make([]issueKey, 0, len(children))
 	for _, child := range children {
@@ -173,6 +191,19 @@ func (s *queueBuildState) hasIssue(key issueKey) bool {
 	return ok
 }
 
+func (s *queueBuildState) hasIncludedParent(key issueKey) bool {
+	iss := s.byKey[key]
+	if iss.ParentNumber == nil {
+		return false
+	}
+	parentKey := issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}
+	return s.included[parentKey]
+}
+
 func hasActiveQueueFilter(f ListFilter) bool {
 	return f.Status != "" || f.Owner != "" || f.Author != "" || f.Search != "" || len(f.Labels) > 0
+}
+
+func hasRevealQueueFilter(f ListFilter) bool {
+	return f.Owner != "" || f.Author != "" || f.Search != "" || len(f.Labels) > 0
 }

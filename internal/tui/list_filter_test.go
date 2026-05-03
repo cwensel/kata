@@ -152,6 +152,38 @@ func TestList_StatusCycle(t *testing.T) {
 	}
 }
 
+func TestList_StatusOpenDoesNotAutoExpandMatchingChildren(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+	parent := int64(1)
+	lm := listModel{issues: []Issue{
+		{
+			ProjectID: 7, Number: parent, Status: "open",
+			Title: "parent", ChildCounts: &ChildCounts{Open: 1, Total: 1},
+		},
+		{
+			ProjectID: 7, Number: 2, Status: "open",
+			Title: "child", ParentNumber: &parent,
+		},
+	}}
+
+	lm, cmd := lm.Update(runeKey('s'), km, api, sc)
+	if cmd != nil {
+		t.Fatalf("status toggle should not dispatch a command, got %T", cmd)
+	}
+	rows := lm.visibleRows()
+	if len(rows) != 1 || rows[0].issue.Number != parent {
+		t.Fatalf("visible rows after status=open = %+v, want collapsed parent only", rows)
+	}
+	if rows[0].expanded {
+		t.Fatalf("parent row expanded by status filter; want collapsed")
+	}
+	if lm.expanded[issueKey{projectID: 7, number: parent}] {
+		t.Fatalf("status filter mutated explicit expansion state: %+v", lm.expanded)
+	}
+}
+
 // TestList_Search_AccumulatesAndCommits drives /, then "abc", then
 // Enter through Model.Update so the M3a inline command bar handles
 // the keys. The buffer mirrors live into filter.Search on every

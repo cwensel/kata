@@ -43,25 +43,29 @@ func TestNarrowTerminal_NarrowWidthShowsHint(t *testing.T) {
 	}
 }
 
-// TestNarrowTerminal_NarrowHeightShowsHint verifies that a sub-16-row
-// height trips the short-circuit even when the width is comfortably
-// above the 80-cell threshold.
-func TestNarrowTerminal_NarrowHeightShowsHint(t *testing.T) {
+// TestNarrowTerminal_ShortHeightRendersNormally verifies that a short
+// terminal still renders the active view when width is sufficient. The
+// list view has compact rendering; blocking on height makes tmux panes
+// unnecessarily unusable.
+func TestNarrowTerminal_ShortHeightRendersNormally(t *testing.T) {
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
+	m.list.issues = []Issue{{ProjectID: 7, Number: 1, Title: "short pane", Status: "open"}}
+	m.scope = scope{projectID: 7, projectName: "kata"}
 
 	out, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 12})
 	m = out.(Model)
 	got := m.View()
-	if !strings.Contains(got, narrowHintMarker) {
-		t.Fatalf("narrow height view missing hint marker %q; got:\n%s",
-			narrowHintMarker, got)
+	if strings.Contains(got, narrowHintMarker) {
+		t.Fatalf("short-height view unexpectedly contains hint marker; got:\n%s", got)
+	}
+	if !strings.Contains(got, "short pane") {
+		t.Fatalf("short-height view missing list content; got:\n%s", got)
 	}
 }
 
-// TestNarrowTerminal_BothNarrowShowsHint covers the OR-of-axes case:
-// either dimension below threshold should suffice; both below should
-// also trip the hint cleanly.
+// TestNarrowTerminal_BothNarrowShowsHint covers the width gate when
+// height is also short. Width below threshold is still unreadable.
 func TestNarrowTerminal_BothNarrowShowsHint(t *testing.T) {
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
