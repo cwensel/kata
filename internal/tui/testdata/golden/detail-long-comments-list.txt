@@ -1,21 +1,17 @@
  Project: —                                                                                                   kata かた 
+#42  fix login bug on Safari                                                              [open]                        
+authored by wesm                                                                                                        
+owner: none                                                                         labels: none                        
+parent: none                                                                      children: none                        
+Body                                                                                                                    
+Reproduces in Safari 17 only.                                                                                           
+Click the login button twice.                                                                                           
+Activity   [ Comments (30) ]   Events (2)   Links (1)                                                                   
+  actor-14  Apr 30 10:13                                                                                                
+  comment body 14                                                                                                       
                                                                                                                         
-issue #42
-                                                                                                                        
-fix login bug on Safari                                                                                           [open]
-                                                                                                                        
-authored by wesm
-owner: none                                                                                                 labels: none
-parent: none                                                                                              children: none
-                                                                                                                        
-Body ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Reproduces in Safari 17 only.
-Click the login button twice.
-Activity ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-[ Comments (30) ]  Events (2)  Links (1)
-> actor-15  Apr 30 10:14
-  comment body 15
-
+> actor-15  Apr 30 10:14                                                                                                
+  comment body 15                                                                                                       
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -26,5 +22,9 @@ Activity ───────────────────────�
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                 [15-15 of 30 comments] 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                 [14-15 of 30 comments] 
  ↑↓ move▕ ↹ section▕ ↵ open▕ esc back▕ e edit▕ c comment▕ x close▕ + label▕ a owner▕ ? help▕ q quit                     

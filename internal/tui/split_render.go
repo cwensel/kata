@@ -184,7 +184,8 @@ func (dm detailModel) ViewSplit(width, height int, chrome viewChrome) string {
 	if width <= 0 || height < 6 {
 		return dm.renderTinyFallback(width)
 	}
-	header := dm.documentHeader(width, chrome, false)
+	sheetWidth := detailSheetWidth(width)
+	header := dm.documentHeader(sheetWidth, chrome)
 	hasChildren := len(dm.children) > 0
 	hasActivity := dm.hasActivity()
 	fixed := len(header) + 1
@@ -192,25 +193,25 @@ func (dm detailModel) ViewSplit(width, height int, chrome viewChrome) string {
 		fixed++
 	}
 	if hasActivity {
-		fixed += 2
+		fixed++
 	}
 	bodyA, childA, tabA := detailDocumentBudgets(height-fixed, len(dm.children), hasActivity)
-	bodyArea := dm.renderBody(width, bodyA)
+	bodyArea := dm.renderBody(sheetWidth, bodyA)
 	childrenArea := ""
 	if hasChildren {
-		childrenArea = dm.renderChildrenSection(width, childA)
+		childrenArea = dm.renderChildrenSection(sheetWidth, childA)
 	}
 	tabArea := ""
 	if hasActivity {
-		tabArea = dm.renderActiveTab(width, tabA)
+		tabArea = dm.renderActiveTab(sheetWidth, tabA)
 	}
 	parts := append([]string{}, header...)
-	parts = append(parts, renderDocumentRule("Body", width), bodyArea)
+	parts = append(parts, renderDocumentSectionHeader("Body", sheetWidth), bodyArea)
 	if hasChildren {
-		parts = append(parts, renderDocumentRule("Children", width), childrenArea)
+		parts = append(parts, renderDocumentSectionHeader("Children", sheetWidth), childrenArea)
 	}
 	if hasActivity {
-		parts = append(parts, renderDocumentRule("Activity", width), dm.renderTabStrip(), tabArea)
+		parts = append(parts, dm.renderActivityHeader(sheetWidth), tabArea)
 	}
 	return padDocumentContent(parts, height, width)
 }

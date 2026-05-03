@@ -1,20 +1,20 @@
  Project: —                                                                                                   kata かた 
+#42  fix login bug on Safari                                                              [open]                        
+authored by wesm                                                                                                        
+owner: none                                                                         labels: none                        
+parent: none                                                                      children: none                        
+Body                                                                                                                    
+Reproduces in Safari 17 only.                                                                                           
+Click the login button twice.                                                                                           
+Activity   Comments (2)   [ Events (2) ]   Links (1)                                                                    
+> [issue.created] 2026-04-30 10:00 alice — created                                                                      
+  [issue.commented] 2026-04-30 11:00 bob — added comment                                                                
                                                                                                                         
-issue #42
                                                                                                                         
-fix login bug on Safari                                                                                           [open]
                                                                                                                         
-authored by wesm
-owner: none                                                                                                 labels: none
-parent: none                                                                                              children: none
                                                                                                                         
-Body ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Reproduces in Safari 17 only.
-Click the login button twice.
-Activity ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Comments (2)  [ Events (2) ]  Links (1)
-> [issue.created] 2026-04-30 10:00 alice — created
-  [issue.commented] 2026-04-30 11:00 bob — added comment
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

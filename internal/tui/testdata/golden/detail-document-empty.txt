@@ -1,14 +1,14 @@
  Project: —                                                           kata かた 
-                                                                                
-issue #99
-                                                                                
-empty issue                                                               [open]
-                                                                                
+#99  empty issue                                                          [open]
 owner: none                                                         labels: none
 parent: none                                                      children: none
+Body                                                                            
+(no description)                                                                
                                                                                 
-Body ───────────────────────────────────────────────────────────────────────────
-(no description)
+                                                                                
+                                                                                
+                                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 

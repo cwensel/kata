@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestDetailDocumentPage80x50LayoutSignals(t *testing.T) {
@@ -22,7 +25,7 @@ func TestDetailDocumentPage80x50LayoutSignals(t *testing.T) {
 	assertLineCount(t, got, 50)
 	assertLinesFitWidth(t, got, 80)
 	for _, want := range []string{
-		"issue #42",
+		"#42",
 		"fix login bug on Safari",
 		"[open]",
 		"authored by wesm",
@@ -43,6 +46,114 @@ func TestDetailDocumentPage80x50LayoutSignals(t *testing.T) {
 		if strings.Contains(got, deny) {
 			t.Fatalf("detail document should use lowercase metadata labels, found %q:\n%s", deny, got)
 		}
+	}
+}
+
+func TestDetailCompactSheet_UsesDenseRhythmAndNoDecorativeRules(t *testing.T) {
+	defer snapshotInit(t)()
+	dm := snapDetailFixture()
+	dm.issue.Owner = ptrString("alice")
+	dm.issue.Labels = []string{"improvement"}
+
+	got := stripANSI(dm.View(80, 40, viewChrome{}))
+	lines := strings.Split(got, "\n")
+	title := indexOf(lines, "fix login bug on Safari")
+	if title < 0 {
+		t.Fatalf("missing title:\n%s", got)
+	}
+	if !strings.Contains(lines[title], "#42") {
+		t.Fatalf("issue number should share the title row:\n%s", got)
+	}
+	if strings.Contains(got, "issue #42") {
+		t.Fatalf("compact sheet should not render issue number as a separate lead-in:\n%s", got)
+	}
+	for _, deny := range []string{"Body ─", "Activity ─"} {
+		if strings.Contains(got, deny) {
+			t.Fatalf("compact sheet should not use decorative rule %q:\n%s", deny, got)
+		}
+	}
+	metadataEnd := indexOf(lines, "children:")
+	body := indexOf(lines, "Body")
+	if metadataEnd < 0 || body < 0 {
+		t.Fatalf("missing metadata/body:\n%s", got)
+	}
+	if body != metadataEnd+1 {
+		t.Fatalf("Body should immediately follow metadata; metadata=%d body=%d:\n%s",
+			metadataEnd, body, got)
+	}
+	bodyText := indexOf(lines, "Click the login button twice.")
+	activity := indexOf(lines, "Activity")
+	if bodyText < 0 || activity < 0 {
+		t.Fatalf("missing body text/activity:\n%s", got)
+	}
+	if activity > bodyText+2 {
+		t.Fatalf("Activity should follow short body without dead air; body=%d activity=%d:\n%s",
+			bodyText, activity, got)
+	}
+}
+
+func TestDetailCompactSheet_AdaptiveSurfaces(t *testing.T) {
+	applyColorMode(colorDark, io.Discard)
+	if !styleHasBackground(detailMetaStyle) {
+		t.Fatal("detailMetaStyle needs an adaptive background in color modes")
+	}
+	if !styleHasBackground(detailSectionHeaderStyle) {
+		t.Fatal("detailSectionHeaderStyle needs an adaptive background in color modes")
+	}
+	if markdownCodeBlockBackground() == nil {
+		t.Fatal("markdown code blocks need a subtle background in color modes")
+	}
+
+	applyColorMode(colorNone, io.Discard)
+	if styleHasBackground(detailMetaStyle) {
+		t.Fatal("detailMetaStyle must not paint a background in colorNone")
+	}
+	if styleHasBackground(detailSectionHeaderStyle) {
+		t.Fatal("detailSectionHeaderStyle must not paint a background in colorNone")
+	}
+	if markdownCodeBlockBackground() != nil {
+		t.Fatal("markdown code block background must be disabled in colorNone")
+	}
+}
+
+func TestMarkdownCodeBlockBackground_RespectsAutoDetectedBackground(t *testing.T) {
+	oldMode := activeColorMode
+	oldDark := activeHasDarkBackground
+	oldStyle := markdownCodeBlockStyle
+	defer func() {
+		activeColorMode = oldMode
+		activeHasDarkBackground = oldDark
+		markdownCodeBlockStyle = oldStyle
+	}()
+
+	activeColorMode = colorAuto
+	markdownCodeBlockStyle = lipgloss.NewStyle().Background(lipgloss.AdaptiveColor{
+		Light: "252",
+		Dark:  "236",
+	})
+
+	activeHasDarkBackground = false
+	if bg := markdownCodeBlockBackground(); bg == nil || *bg != "252" {
+		t.Fatalf("light terminal background = %v, want 252", bg)
+	}
+	activeHasDarkBackground = true
+	if bg := markdownCodeBlockBackground(); bg == nil || *bg != "236" {
+		t.Fatalf("dark terminal background = %v, want 236", bg)
+	}
+}
+
+func styleHasBackground(s lipgloss.Style) bool {
+	switch bg := s.GetBackground().(type) {
+	case nil:
+		return false
+	case lipgloss.NoColor:
+		return false
+	case lipgloss.Color:
+		return string(bg) != ""
+	case lipgloss.AdaptiveColor:
+		return bg.Light != "" || bg.Dark != ""
+	default:
+		return true
 	}
 }
 
@@ -71,10 +182,10 @@ func TestDetailDocument_NarrowStacksMetadata(t *testing.T) {
 
 	got := stripANSI(dm.View(72, 40, viewChrome{}))
 	assertLinesFitWidth(t, got, 72)
-	assertStringContains(t, got, "\nowner: alice\n")
-	assertStringContains(t, got, "\nlabels: [bug] [prio-1]\n")
-	assertStringContains(t, got, "\nparent: #12 workspace polish\n")
-	assertStringContains(t, got, "\nchildren: none\n")
+	assertStringContains(t, got, "owner: alice")
+	assertStringContains(t, got, "labels: [bug] [prio-1]")
+	assertStringContains(t, got, "parent: #12 workspace polish")
+	assertStringContains(t, got, "children: none")
 }
 
 func TestDetailDocument_EmptyBodyAndActivityOmitted(t *testing.T) {

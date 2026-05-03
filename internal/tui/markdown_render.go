@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	glamansi "github.com/charmbracelet/glamour/ansi"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -63,6 +64,7 @@ func markdownStyleConfig() glamansi.StyleConfig {
 	italic := true
 	zero := uint(0)
 	quoteToken := "| "
+	codeBackground := markdownCodeBlockBackground()
 	return glamansi.StyleConfig{
 		Document: glamansi.StyleBlock{Margin: &zero},
 		BlockQuote: glamansi.StyleBlock{
@@ -92,7 +94,12 @@ func markdownStyleConfig() glamansi.StyleConfig {
 			StylePrimitive: glamansi.StylePrimitive{Prefix: "`", Suffix: "`"},
 		},
 		CodeBlock: glamansi.StyleCodeBlock{
-			StyleBlock: glamansi.StyleBlock{Margin: &zero},
+			StyleBlock: glamansi.StyleBlock{
+				StylePrimitive: glamansi.StylePrimitive{
+					BackgroundColor: codeBackground,
+				},
+				Margin: &zero,
+			},
 		},
 		HorizontalRule: glamansi.StylePrimitive{Format: ""},
 		ImageText: glamansi.StylePrimitive{
@@ -103,4 +110,24 @@ func markdownStyleConfig() glamansi.StyleConfig {
 			LevelIndent: 2,
 		},
 	}
+}
+
+func markdownCodeBlockBackground() *string {
+	if activeColorMode == colorNone {
+		return nil
+	}
+	if bg, ok := markdownCodeBlockStyle.GetBackground().(lipgloss.Color); ok {
+		s := string(bg)
+		return &s
+	}
+	switch bg := markdownCodeBlockStyle.GetBackground().(type) {
+	case lipgloss.AdaptiveColor:
+		if activeColorMode == colorDark || activeHasDarkBackground {
+			s := bg.Dark
+			return &s
+		}
+		s := bg.Light
+		return &s
+	}
+	return nil
 }

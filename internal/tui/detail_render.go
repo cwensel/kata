@@ -23,10 +23,12 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	if width <= 0 || height < listMinHeight {
 		return dm.renderTinyFallback(width)
 	}
+	sheetWidth := detailSheetWidth(width)
 	helpRows := detailHelpRows(dm, chrome)
 	footerLines := helpLines(helpRows, width)
 	footer := renderFooterHelpTable(helpRows, width)
-	header := dm.documentHeader(width, chrome, true)
+	header := append([]string{renderTitleBar(width, chrome.scope, chrome.version)},
+		dm.documentHeader(sheetWidth, chrome)...)
 	hasChildren := len(dm.children) > 0
 	hasActivity := dm.hasActivity()
 	fixed := len(header) + 1 /* body rule */ + 1 /* info */ + footerLines
@@ -34,26 +36,26 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 		fixed++
 	}
 	if hasActivity {
-		fixed += 2 // activity rule + tabs
+		fixed++ // activity header
 	}
 	bodyA, childA, tabA := detailDocumentBudgets(height-fixed, len(dm.children), hasActivity)
-	bodyArea := dm.renderBody(width, bodyA)
+	bodyArea := dm.renderBody(sheetWidth, bodyA)
 	childrenArea := ""
 	if hasChildren {
-		childrenArea = dm.renderChildrenSection(width, childA)
+		childrenArea = dm.renderChildrenSection(sheetWidth, childA)
 	}
 	tabArea := ""
 	if hasActivity {
-		tabArea = dm.renderActiveTab(width, tabA)
+		tabArea = dm.renderActiveTab(sheetWidth, tabA)
 	}
 	infoLine := dm.renderInfoLine(width, chrome, tabA)
 	parts := append([]string{}, header...)
-	parts = append(parts, renderDocumentRule("Body", width), bodyArea)
+	parts = append(parts, renderDocumentSectionHeader("Body", sheetWidth), bodyArea)
 	if hasChildren {
-		parts = append(parts, renderDocumentRule("Children", width), childrenArea)
+		parts = append(parts, renderDocumentSectionHeader("Children", sheetWidth), childrenArea)
 	}
 	if hasActivity {
-		parts = append(parts, renderDocumentRule("Activity", width), dm.renderTabStrip(), tabArea)
+		parts = append(parts, dm.renderActivityHeader(sheetWidth), tabArea)
 	}
 	content := padDocumentContent(parts, height-1-footerLines, width)
 	return strings.Join([]string{content, infoLine, footer}, "\n")
@@ -65,14 +67,17 @@ func (dm detailModel) renderTinyFallback(width int) string {
 	return dm.renderBody(width, detailMinBodyRows)
 }
 
-func padDocumentContent(parts []string, rows, width int) string {
+func padDocumentContent(parts []string, rows, terminalWidth int) string {
 	if rows < 1 {
 		rows = 1
 	}
 	content := strings.Join(parts, "\n")
 	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = padToWidth(line, terminalWidth)
+	}
 	for len(lines) < rows {
-		lines = append(lines, blankLine(width))
+		lines = append(lines, blankLine(terminalWidth))
 	}
 	if len(lines) > rows {
 		lines = lines[:rows]
@@ -80,27 +85,13 @@ func padDocumentContent(parts []string, rows, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (dm detailModel) documentHeader(width int, chrome viewChrome, stacked bool) []string {
+func (dm detailModel) documentHeader(width int, chrome viewChrome) []string {
 	iss := *dm.issue
-	lines := []string{}
-	if stacked {
-		lines = append(lines, renderTitleBar(width, chrome.scope, chrome.version), blankLine(width))
-	}
-	lines = append(lines, subtleStyle.Render("issue #"+fmt.Sprint(iss.Number)))
-	if stacked {
-		lines = append(lines, blankLine(width))
-	}
-	lines = append(lines, renderDocumentTitleStatus(width, iss))
-	if stacked {
-		lines = append(lines, blankLine(width))
-	}
+	lines := []string{renderDocumentTitleStatus(width, iss)}
 	if byline := renderDocumentByline(width, iss); byline != "" {
 		lines = append(lines, byline)
 	}
 	lines = append(lines, renderDocumentMetadata(width, iss, dm.parent, dm.children, chrome.scope)...)
-	if stacked {
-		lines = append(lines, blankLine(width))
-	}
 	return lines
 }
 
@@ -108,11 +99,13 @@ func renderDocumentTitleStatus(width int, iss Issue) string {
 	status := renderStatusPill(iss)
 	statusPlain := stripANSI(status)
 	statusW := runewidth.StringWidth(statusPlain)
-	titleBudget := width - statusW - 2
+	prefix := subtleStyle.Render(fmt.Sprintf("#%d", iss.Number))
+	prefixW := runewidth.StringWidth(stripANSI(prefix)) + 2
+	titleBudget := width - prefixW - statusW - 2
 	if titleBudget < 1 {
 		titleBudget = 1
 	}
-	title := titleStyle.Render(truncate(sanitizeForDisplay(iss.Title), titleBudget))
+	title := prefix + "  " + titleStyle.Render(truncate(sanitizeForDisplay(iss.Title), titleBudget))
 	return padLeftRightInside(title, status, width)
 }
 
@@ -174,18 +167,31 @@ func renderDocumentMetadata(
 	if sc.allProjects {
 		rows = append(rows, "project: "+sanitizeForDisplay(sc.projectName))
 	}
-	owner := "owner: " + ownerDocumentText(iss.Owner)
-	labels := "labels: " + labelsDocumentText(iss.Labels, width-len("labels: "))
-	parentText := "parent: " + parentDocumentText(parent)
-	childrenText := "children: " + childrenDocumentText(children)
+	owner := metadataLabel("owner:") + " " + ownerDocumentText(iss.Owner)
+	labels := metadataLabel("labels:") + " " + labelsDocumentText(iss.Labels, width-len("labels: "))
+	parentText := metadataLabel("parent:") + " " + parentDocumentText(parent)
+	childrenText := metadataLabel("children:") + " " + childrenDocumentText(children)
 	if width < 80 {
-		return append(rows, owner, labels, parentText, childrenText)
+		rows = append(rows, owner, labels, parentText, childrenText)
+		return renderMetadataBand(rows, width)
 	}
 	rows = append(rows,
 		padLeftRightInside(owner, labels, width),
 		padLeftRightInside(parentText, childrenText, width),
 	)
-	return rows
+	return renderMetadataBand(rows, width)
+}
+
+func metadataLabel(label string) string {
+	return subtleStyle.Render(label)
+}
+
+func renderMetadataBand(rows []string, width int) []string {
+	out := make([]string, len(rows))
+	for i, row := range rows {
+		out[i] = detailMetaStyle.Render(padToWidth(row, width))
+	}
+	return out
 }
 
 func ownerDocumentText(owner *string) string {
@@ -219,16 +225,32 @@ func childrenDocumentText(children []Issue) string {
 	return childrenCountSummary(children)
 }
 
-func renderDocumentRule(label string, width int) string {
-	if width <= 0 {
-		return ""
+func renderDocumentSectionHeader(label string, width int) string {
+	return detailSectionHeaderStyle.Render(padToWidth(label, width))
+}
+
+func (dm detailModel) renderActivityHeader(width int) string {
+	tabs := [detailTabCount]string{
+		fmt.Sprintf("Comments (%d)", len(dm.comments)),
+		fmt.Sprintf("Events (%d)", len(dm.events)),
+		fmt.Sprintf("Links (%d)", len(dm.links)),
 	}
-	prefix := label + " "
-	prefixW := runewidth.StringWidth(prefix)
-	if prefixW >= width {
-		return separatorRuleStyle.Render(truncate(label, width))
+	parts := []string{"Activity"}
+	for i, tab := range tabs {
+		if detailTab(i) == dm.activeTab {
+			parts = append(parts, tabActive.Render("[ "+tab+" ]"))
+		} else {
+			parts = append(parts, tabInactive.Render(tab))
+		}
 	}
-	return separatorRuleStyle.Render(prefix + strings.Repeat("─", width-prefixW))
+	return detailSectionHeaderStyle.Render(padToWidth(strings.Join(parts, "   "), width))
+}
+
+func detailSheetWidth(width int) int {
+	if width > 96 {
+		return 96
+	}
+	return width
 }
 
 func blankLine(width int) string {

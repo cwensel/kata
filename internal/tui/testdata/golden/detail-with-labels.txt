@@ -1,21 +1,17 @@
  Project: —                                                                                                   kata かた 
+#42  fix login bug on Safari                                                              [open]                        
+authored by wesm                                                                                                        
+owner: alice                                               labels: [bug] [needs-design] [prio-1]                        
+parent: none                                                                      children: none                        
+Body                                                                                                                    
+Reproduces in Safari 17 only.                                                                                           
+Click the login button twice.                                                                                           
+Activity   [ Comments (2) ]   Events (2)   Links (1)                                                                    
+> alice  Apr 30 10:00                                                                                                   
+  I can repro on macOS.                                                                                                 
                                                                                                                         
-issue #42
-                                                                                                                        
-fix login bug on Safari                                                                                           [open]
-                                                                                                                        
-authored by wesm
-owner: alice                                                                       labels: [bug] [needs-design] [prio-1]
-parent: none                                                                                              children: none
-                                                                                                                        
-Body ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Reproduces in Safari 17 only.
-Click the login button twice.
-Activity ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-[ Comments (2) ]  Events (2)  Links (1)
-> alice  Apr 30 10:00
-  I can repro on macOS.
-
+  bob    Apr 30 11:00                                                                                                   
+  Looks like a race in oauth.                                                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -26,5 +22,9 @@ Activity ───────────────────────�
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                    [1-1 of 2 comments] 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
  ↑↓ move▕ ↹ section▕ ↵ open▕ esc back▕ e edit▕ c comment▕ x close▕ + label▕ a owner▕ ? help▕ q quit                     

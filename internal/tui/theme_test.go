@@ -75,6 +75,9 @@ func TestApplyColorMode_RebuildsAllStyles(t *testing.T) {
 	chipActive = sentinel
 	tabActive = sentinel
 	tabInactive = sentinel
+	detailMetaStyle = sentinel
+	detailSectionHeaderStyle = sentinel
+	markdownCodeBlockStyle = sentinel
 	titleBarStyle = sentinel
 	statsLineStyle = sentinel
 	tableHeaderStyle = sentinel
@@ -97,6 +100,7 @@ func TestApplyColorMode_RebuildsAllStyles(t *testing.T) {
 		openStyle, closedStyle, deletedStyle, helpKeyStyle,
 		helpDescStyle, errorStyle, toastStyle, chipStyle,
 		chipActive, tabActive, tabInactive,
+		detailMetaStyle, detailSectionHeaderStyle, markdownCodeBlockStyle,
 		titleBarStyle, statsLineStyle, tableHeaderStyle,
 		separatorRuleStyle, cursorRowStyle, altRowStyle,
 		normalRowStyle, footerBarStyle, modalBoxStyle,

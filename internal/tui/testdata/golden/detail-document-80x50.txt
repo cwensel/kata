@@ -1,27 +1,27 @@
  Project: kata                                                  kata かた · dev 
-                                                                                
-issue #42
-                                                                                
-fix login bug on Safari                                                   [open]
-                                                                                
-authored by wesm · created Apr 30 10:00 · updated 3h ago
+#42  fix login bug on Safari                                              [open]
+authored by wesm · created Apr 30 10:00 · updated 3h ago                        
 owner: alice                               labels: [bug] [needs-design] [prio-1]
 parent: #12 workspace polish parent                   children: 1 open / 2 total
-                                                                                
-Body ───────────────────────────────────────────────────────────────────────────
-Reproduces in Safari 17 only.
-Click the login button twice.
-Children ───────────────────────────────────────────────────────────────────────
+Body                                                                            
+Reproduces in Safari 17 only.                                                   
+Click the login button twice.                                                   
+Children                                                                        
   #43    open      detail hint bars incomplete            alice       1h ago    
   #44    closed    new issue form parent field            wesm        2h ago    
-Activity ───────────────────────────────────────────────────────────────────────
-[ Comments (2) ]  Events (2)  Links (1)
-> alice  Apr 30 10:00
-  I can repro on macOS.
-
-  bob    Apr 30 11:00
-  Looks like a race in oauth.
-
+Activity   [ Comments (2) ]   Events (2)   Links (1)                            
+> alice  Apr 30 10:00                                                           
+  I can repro on macOS.                                                         
+                                                                                
+  bob    Apr 30 11:00                                                           
+  Looks like a race in oauth.                                                   
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 

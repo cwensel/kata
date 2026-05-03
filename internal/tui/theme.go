@@ -45,24 +45,30 @@ func resolveColorMode() colorMode {
 // roborev's failStyle (red) with Faint so deleted rows read as
 // out-of-band rather than alarming.
 var (
-	titleStyle    lipgloss.Style
-	subtleStyle   lipgloss.Style
-	statusStyle   lipgloss.Style
-	selectedStyle lipgloss.Style
-	openStyle     lipgloss.Style
-	closedStyle   lipgloss.Style
-	deletedStyle  lipgloss.Style
-	helpKeyStyle  lipgloss.Style
-	helpDescStyle lipgloss.Style
-	errorStyle    lipgloss.Style
-	toastStyle    lipgloss.Style
-	chipStyle     lipgloss.Style
-	chipActive    lipgloss.Style
-	tabActive     lipgloss.Style
-	tabInactive   lipgloss.Style
+	titleStyle               lipgloss.Style
+	subtleStyle              lipgloss.Style
+	statusStyle              lipgloss.Style
+	selectedStyle            lipgloss.Style
+	openStyle                lipgloss.Style
+	closedStyle              lipgloss.Style
+	deletedStyle             lipgloss.Style
+	helpKeyStyle             lipgloss.Style
+	helpDescStyle            lipgloss.Style
+	errorStyle               lipgloss.Style
+	toastStyle               lipgloss.Style
+	chipStyle                lipgloss.Style
+	chipActive               lipgloss.Style
+	tabActive                lipgloss.Style
+	tabInactive              lipgloss.Style
+	detailMetaStyle          lipgloss.Style
+	detailSectionHeaderStyle lipgloss.Style
+	markdownCodeBlockStyle   lipgloss.Style
 )
 
-var activeColorMode = colorAuto
+var (
+	activeColorMode         = colorAuto
+	activeHasDarkBackground bool
+)
 
 // Border colors used by M3+ render code for panel chrome (focused vs
 // unfocused panes, form/prompt boxes). Stored as lipgloss.TerminalColor
@@ -117,7 +123,9 @@ func applyColorMode(m colorMode, w io.Writer) {
 		w = os.Stdout
 	}
 	r := lipgloss.NewRenderer(w)
+	activeHasDarkBackground = r.HasDarkBackground()
 	if m == colorNone {
+		activeHasDarkBackground = false
 		base := r.NewStyle()
 		titleStyle = base.Bold(true)
 		subtleStyle = base
@@ -134,6 +142,9 @@ func applyColorMode(m colorMode, w io.Writer) {
 		chipActive = base.Bold(true)
 		tabActive = base.Bold(true).Underline(true)
 		tabInactive = base.Faint(true)
+		detailMetaStyle = base
+		detailSectionHeaderStyle = base.Bold(true)
+		markdownCodeBlockStyle = base
 		// Borders carry no foreground in colorNone — lipgloss renders
 		// them in the default terminal color. NoColor is the closest
 		// stand-in for "use whatever the terminal would otherwise pick."
@@ -156,8 +167,10 @@ func applyColorMode(m colorMode, w io.Writer) {
 	pick := func(light, dark string) lipgloss.TerminalColor {
 		switch m {
 		case colorLight:
+			activeHasDarkBackground = false
 			return lipgloss.Color(light)
 		case colorDark:
+			activeHasDarkBackground = true
 			return lipgloss.Color(dark)
 		default:
 			return lipgloss.AdaptiveColor{Light: light, Dark: dark}
@@ -181,6 +194,9 @@ func applyColorMode(m colorMode, w io.Writer) {
 	chipActive = r.NewStyle().Bold(true).Foreground(pick("125", "205"))
 	tabActive = r.NewStyle().Bold(true).Underline(true).Foreground(pick("125", "205"))
 	tabInactive = r.NewStyle().Foreground(pick("242", "246"))
+	detailMetaStyle = r.NewStyle().Background(pick("251", "235"))
+	detailSectionHeaderStyle = r.NewStyle().Bold(true).Background(pick("250", "236"))
+	markdownCodeBlockStyle = r.NewStyle().Background(pick("252", "236"))
 	panelActiveBorder = pick("125", "205")
 	panelInactiveBorder = pick("242", "246")
 	// M3.5 chrome — adaptive bgs lifted from msgvault. titleBar uses a

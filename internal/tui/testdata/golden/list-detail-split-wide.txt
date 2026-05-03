@@ -1,20 +1,20 @@
  Project: kata                                                                                                                                  kata かた · dev 
 ┌──────────────────────────────────────────────────────────────────┐┌──────────────────────────────────────────────────────────────────────────────────────────┐
-│        #     status    title                   kids    updated   ││issue #42                                                                                 │
-│──────────────────────────────────────────────────────────────────││fix login bug on Safari                                                             [open]│
-│        #1    open      fix login bug on Safari         3h ago    ││authored by wesm                                                                          │
-│▶       #2    closed    rebuild search index            1h ago    ││owner: none                                                                   labels: none│
-│        #3    [deleted] purge stale tokens              2h ago    ││parent: none                                                                children: none│
-│                                                                  ││Body ─────────────────────────────────────────────────────────────────────────────────────│
+│        #     status    title                   kids    updated   ││#42  fix login bug on Safari                                                        [open]│
+│──────────────────────────────────────────────────────────────────││authored by wesm                                                                          │
+│        #1    open      fix login bug on Safari         3h ago    ││owner: none                                                                   labels: none│
+│▶       #2    closed    rebuild search index            1h ago    ││parent: none                                                                children: none│
+│        #3    [deleted] purge stale tokens              2h ago    ││Body                                                                                      │
 │                                                                  ││Reproduces in Safari 17 only.                                                             │
 │                                                                  ││Click the login button twice.                                                             │
-│                                                                  ││Activity ─────────────────────────────────────────────────────────────────────────────────│
-│                                                                  ││[ Comments (2) ]  Events (2)  Links (1)                                                   │
+│                                                                  ││Activity   [ Comments (2) ]   Events (2)   Links (1)                                      │
 │                                                                  ││> alice  Apr 30 10:00                                                                     │
 │                                                                  ││  I can repro on macOS.                                                                   │
 │                                                                  ││                                                                                          │
 │                                                                  ││  bob    Apr 30 11:00                                                                     │
 │                                                                  ││  Looks like a race in oauth.                                                             │
+│                                                                  ││                                                                                          │
+│                                                                  ││                                                                                          │
 │                                                                  ││                                                                                          │
 │                                                                  ││                                                                                          │
 │                                                                  ││                                                                                          │
