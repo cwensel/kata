@@ -175,6 +175,7 @@ func (dm detailModel) detailHelpRows() [][]helpItem {
 			{key: "↑↓", desc: "child"},
 			{key: "↵", desc: "open child"},
 			{key: "↹", desc: "section"},
+			{key: "pgup/pgdn", desc: "scroll body"},
 		}
 		return [][]helpItem{append(nav, actions...)}
 	}
@@ -182,6 +183,7 @@ func (dm detailModel) detailHelpRows() [][]helpItem {
 		{key: "↑↓", desc: "move"},
 		{key: "↹", desc: "section"},
 		{key: "↵", desc: "open"},
+		{key: "pgup/pgdn", desc: "scroll body"},
 	}
 	return [][]helpItem{append(nav, actions...)}
 }

@@ -240,6 +240,14 @@ func (dm detailModel) handleKey(
 // handleNavKey processes the navigation/cursor/scroll/tab bindings.
 // Returns ok=true when the key was consumed; handleKey forwards to
 // handleMutationKey otherwise.
+//
+// PageUp/PageDown are the dedicated body-scroll keys: they always
+// move dm.scroll regardless of focus, so a long issue body can be
+// skimmed even while the cursor is on a populated activity tab or
+// the children list. j/k stays bound to the focused section's cursor
+// (tab cursor in activity, child cursor in children) — without a
+// dedicated key the body scroll path was unreachable in practice
+// because the events tab almost always has at least one row.
 func (dm detailModel) handleNavKey(
 	msg tea.KeyMsg, km keymap, api detailAPI,
 ) (detailModel, tea.Cmd, bool) {
@@ -248,6 +256,10 @@ func (dm detailModel) handleNavKey(
 		dm = dm.cycleDetailFocus(1)
 	case km.PrevTab.matches(msg):
 		dm = dm.cycleDetailFocus(-1)
+	case km.PageUp.matches(msg):
+		return dm.scrollBodyUp(), nil, true
+	case km.PageDown.matches(msg):
+		return dm.scrollBodyDown(), nil, true
 	case km.Up.matches(msg):
 		return dm.handleUp(), nil, true
 	case km.Down.matches(msg):
@@ -262,6 +274,26 @@ func (dm detailModel) handleNavKey(
 		return dm, nil, false
 	}
 	return dm, nil, true
+}
+
+// detailBodyScrollStep is the per-keystroke body-scroll delta. Larger
+// than a single line so PageDown feels like an actual page jump,
+// smaller than a full visible window so the user keeps a few rows of
+// context across the seam. The renderer clamps the upper bound, so
+// over-eager scrolling on a short body is harmless.
+const detailBodyScrollStep = 8
+
+func (dm detailModel) scrollBodyUp() detailModel {
+	dm.scroll -= detailBodyScrollStep
+	if dm.scroll < 0 {
+		dm.scroll = 0
+	}
+	return dm
+}
+
+func (dm detailModel) scrollBodyDown() detailModel {
+	dm.scroll += detailBodyScrollStep
+	return dm
 }
 
 // handleUp moves the tab cursor up when the active tab has rows;

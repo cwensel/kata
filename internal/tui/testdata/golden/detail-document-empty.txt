@@ -26,7 +26,7 @@
                                                                                 
                                                                                 
                                                                                 
-                                                                                
- ↑↓ move▕ ↹ section ▕ ↵ open  ▕ e edit  ▕ c comment▕ + label▕ - unlabel         
- a owner▕ A unassign▕ x close ▕ r reopen▕ p parent ▕ b block▕ l link            
- N child▕ L layout  ▕ esc back▕ ? help  ▕ q quit                                
+ ↑↓ move ▕ ↹ section▕ ↵ open ▕ pgup/pgdn scroll body▕ e edit  ▕ c comment       
+ + label ▕ - unlabel▕ a owner▕ A unassign           ▕ x close ▕ r reopen        
+ p parent▕ b block  ▕ l link ▕ N child              ▕ L layout▕ esc back        
+ ? help  ▕ q quit                                                               

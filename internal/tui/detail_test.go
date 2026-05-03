@@ -167,6 +167,56 @@ func TestDetail_Scroll_DownIncreases(t *testing.T) {
 	}
 }
 
+// TestDetail_Scroll_PageDownScrollsBodyEvenWithActivityRows: the
+// dedicated body-scroll keys (pgup/pgdn) must scroll the body
+// regardless of focus or whether the active tab has rows. The j/k
+// path is reserved for the activity-tab cursor when the tab has data
+// (so users can navigate comments/events/links by line); pgup/pgdn
+// is the escape hatch for actually reading the issue body when it's
+// taller than the visible window.
+func TestDetail_Scroll_PageDownScrollsBodyEvenWithActivityRows(t *testing.T) {
+	dm := detailFixture() // has comments + events + links
+	km := newKeymap()
+	if dm.scroll != 0 {
+		t.Fatalf("setup: scroll = %d, want 0", dm.scroll)
+	}
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgDown}, km, nil)
+	if dm.scroll == 0 {
+		t.Fatalf("pgdown did not scroll body; scroll = %d, want >0", dm.scroll)
+	}
+	prev := dm.scroll
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgUp}, km, nil)
+	if dm.scroll >= prev {
+		t.Fatalf("pgup did not unwind body scroll; scroll = %d, prev = %d", dm.scroll, prev)
+	}
+}
+
+// TestDetail_Scroll_PageUpClampsAtTop: pgup at the top of the body is
+// a no-op, not a negative scroll.
+func TestDetail_Scroll_PageUpClampsAtTop(t *testing.T) {
+	dm := detailFixture()
+	km := newKeymap()
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgUp}, km, nil)
+	if dm.scroll != 0 {
+		t.Fatalf("scroll = %d, want 0 (clamped at top)", dm.scroll)
+	}
+}
+
+// TestDetail_Scroll_PageDownWorksOnChildrenFocus: pgup/pgdn target
+// the body regardless of which section the user is focused on, so a
+// long body can be skimmed even while the cursor is parked on the
+// children list.
+func TestDetail_Scroll_PageDownWorksOnChildrenFocus(t *testing.T) {
+	dm := detailFixture()
+	dm.children = []Issue{{Number: 99, Title: "child", Status: "open"}}
+	dm.detailFocus = focusChildren
+	km := newKeymap()
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgDown}, km, nil)
+	if dm.scroll == 0 {
+		t.Fatalf("pgdown on children focus did not scroll body; scroll = %d", dm.scroll)
+	}
+}
+
 // TestDetail_Back_EmitsPopMsg: esc returns a tea.Cmd that emits
 // popDetailMsg when the nav stack is empty.
 func TestDetail_Back_EmitsPopMsg(t *testing.T) {
