@@ -1,0 +1,308 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// scenarios_test.go drives the full Model dispatch path (Update +
+// View) for the most-traveled user interactions. The plain unit tests
+// (e.g. dm.handleUp directly) cover sub-component state transitions
+// and the snapshot tests (testdata/golden/*) pin rendered output for
+// fixed states; what's missing in between is the layer where keys
+// hit the top-level Model.Update, get routed through the global /
+// input / view dispatchers, mutate state, and the rendered output
+// reflects the change. The body-scroll bug fixed in a583806 was
+// reachable only through this layer — handleUp/handleDown was
+// state-correct in unit tests, and snapshots of one focus state
+// looked fine, but pressing PgDn on a populated detail produced no
+// observable change.
+//
+// We drive Model.Update directly (instead of through teatest's
+// program runner) because teatest's output buffer is consumed by
+// each WaitFor call, which made post-keystroke assertions race with
+// boot-time output. Direct Update lets the test step through
+// state synchronously and inspect the latest View() with no buffer
+// drama. Each scenario stays under 50 lines and runs in single-digit
+// milliseconds.
+
+// scenarioModel returns a Model + screen size pair seeded with the
+// listFixture issues in a single project, ready to render the list
+// view at the given size.
+func scenarioModel(t *testing.T, w, h int) Model {
+	t.Helper()
+	m := initialModel(Options{})
+	m.api = nil
+	m.scope = scope{projectID: 7, projectName: "kata"}
+	m.width, m.height = w, h
+	m.layout = pickLayout(w, h)
+	out, _ := m.Update(initialFetchMsg{
+		dispatchKey: cacheKey{projectID: 7, limit: queueFetchLimit},
+		issues:      listFixture(),
+	})
+	return out.(Model)
+}
+
+// scenarioOpenDetail puts the model into detail view for the first
+// list issue and seeds the four per-tab fetch responses so the detail
+// is fully populated. body is the issue body — pass a long body when
+// scrolling is the test's subject so the renderer's clamp doesn't
+// short-circuit the scroll. comments/events/links default to a small
+// non-empty set so the activity tab strip is realistic (the bug
+// being regressed was reachable only when the activity tab had rows).
+func scenarioOpenDetail(t *testing.T, m Model, body string) Model {
+	t.Helper()
+	iss := listFixture()[0]
+	iss.Body = body
+	out, _ := m.Update(openDetailMsg{issue: iss})
+	m = out.(Model)
+	gen := m.detail.gen
+	out, _ = m.Update(detailFetchedMsg{gen: gen, issue: &iss})
+	m = out.(Model)
+	out, _ = m.Update(commentsFetchedMsg{
+		gen: gen,
+		comments: []CommentEntry{
+			{ID: 1, Author: "alice", Body: "first comment"},
+		},
+	})
+	m = out.(Model)
+	out, _ = m.Update(eventsFetchedMsg{
+		gen: gen,
+		events: []EventLogEntry{
+			{ID: 9, Type: "issue.created", Actor: "alice", CreatedAt: time.Now()},
+		},
+	})
+	m = out.(Model)
+	out, _ = m.Update(linksFetchedMsg{gen: gen, links: nil})
+	return out.(Model)
+}
+
+// pressKey dispatches a tea.KeyMsg through Model.Update and returns
+// the new model. Drains a single follow-up Cmd via the same loop
+// pattern Update would use; for the scenarios in this file the
+// follow-ups are nil (key handlers in scope return nil cmds) so the
+// drain is defensive.
+func pressKey(t *testing.T, m Model, msg tea.KeyMsg) Model {
+	t.Helper()
+	out, _ := m.Update(msg)
+	return out.(Model)
+}
+
+func pressRune(t *testing.T, m Model, r rune) Model {
+	t.Helper()
+	return pressKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+}
+
+// pressN repeats a key message n times. Convenience for scrolling
+// tests where one PgDn is not enough to reach the bottom.
+func pressN(t *testing.T, m Model, msg tea.KeyMsg, n int) Model {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		m = pressKey(t, m, msg)
+	}
+	return m
+}
+
+// view is sugar for stripANSI(m.View()). Most assertions are easier
+// against plain UTF-8 because color modes can differ between dev and
+// CI but the textual layout is the same.
+func view(m Model) string { return stripANSI(m.View()) }
+
+// TestScenario_ReadAnIssue_BodyScrollsOnPageDown is the regression
+// for the body-scroll bug fixed in a583806. handleUp/handleDown
+// never reached the dm.scroll branch when the activity tab had rows
+// (the realistic case — every issue has at least an issue.created
+// event), so PageDown is the dedicated body-scroll key. Snapshot
+// tests didn't catch it because the bug was about an interaction,
+// not a static frame.
+func TestScenario_ReadAnIssue_BodyScrollsOnPageDown(t *testing.T) {
+	m := scenarioModel(t, 120, 30)
+	body := strings.Repeat("scrollable line\n", 60) + "TAIL_MARKER"
+	m = scenarioOpenDetail(t, m, body)
+	if strings.Contains(view(m), "TAIL_MARKER") {
+		t.Fatalf("setup invariant: TAIL_MARKER visible without scrolling:\n%s", view(m))
+	}
+	m = pressN(t, m, tea.KeyMsg{Type: tea.KeyPgDown}, 16)
+	if !strings.Contains(view(m), "TAIL_MARKER") {
+		t.Fatalf("PageDown did not scroll body to TAIL_MARKER; final view:\n%s", view(m))
+	}
+}
+
+// TestScenario_ReadAnIssue_PageUpClampsAtTop ensures the body-scroll
+// helpers never produce a negative offset: PgUp at the top scrolls
+// past zero only if the clamp is broken, in which case the renderer
+// would slice an empty window and lose the body's first line.
+func TestScenario_ReadAnIssue_PageUpClampsAtTop(t *testing.T) {
+	m := scenarioModel(t, 120, 30)
+	body := "FIRST_LINE_MARKER\n" + strings.Repeat("filler line\n", 30)
+	m = scenarioOpenDetail(t, m, body)
+	m = pressN(t, m, tea.KeyMsg{Type: tea.KeyPgUp}, 5)
+	if !strings.Contains(view(m), "FIRST_LINE_MARKER") {
+		t.Fatalf("PgUp from the top lost the first line; final view:\n%s", view(m))
+	}
+	if m.detail.scroll != 0 {
+		t.Fatalf("dm.scroll = %d after PgUp at top, want 0", m.detail.scroll)
+	}
+}
+
+// TestScenario_NavigateTabs_TabAdvancesActiveSection drives Tab and
+// asserts the active-tab bracket follows. Catches a class of bug
+// where Tab gets silently swallowed (e.g. eaten by an open modal,
+// double-bound, or clobbered by a global handler), which a snapshot
+// of one focus state can't see.
+func TestScenario_NavigateTabs_TabAdvancesActiveSection(t *testing.T) {
+	m := scenarioModel(t, 120, 30)
+	m = scenarioOpenDetail(t, m, "short body")
+	if !strings.Contains(view(m), "[ Comments (1) ]") {
+		t.Fatalf("setup invariant: Comments tab not active:\n%s", view(m))
+	}
+	m = pressKey(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if !strings.Contains(view(m), "[ Events (1) ]") {
+		t.Fatalf("Tab did not advance to Events:\n%s", view(m))
+	}
+	m = pressKey(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if !strings.Contains(view(m), "[ Links (0) ]") {
+		t.Fatalf("Tab did not advance to Links:\n%s", view(m))
+	}
+}
+
+// TestScenario_LayoutToggle_LFlipsAtSplitEligibleSize: at a size that
+// triggers split layout, pressing L flips to stacked. Catches the L
+// keymap conflict (pre-93e37ec, L in detail opened the link prompt
+// instead of toggling).
+func TestScenario_LayoutToggle_LFlipsAtSplitEligibleSize(t *testing.T) {
+	m := scenarioModel(t, 200, 40)
+	if m.layout != layoutSplit {
+		t.Fatalf("setup: layout=%v, want layoutSplit at 200x40", m.layout)
+	}
+	m = pressRune(t, m, 'L')
+	if m.layout != layoutStacked {
+		t.Fatalf("L did not flip to stacked: layout=%v", m.layout)
+	}
+	if !m.layoutLocked {
+		t.Error("layoutLocked = false after L; user toggle must stick")
+	}
+}
+
+// TestScenario_LayoutToggle_LStaysAcrossResize: once the user has
+// pressed L, a subsequent WindowSizeMsg cannot revert the layout via
+// pickLayout. Without the lock, "I pinned stacked, then resized" would
+// silently auto-flip back to split.
+func TestScenario_LayoutToggle_LStaysAcrossResize(t *testing.T) {
+	m := scenarioModel(t, 200, 40)
+	m = pressRune(t, m, 'L')
+	if m.layout != layoutStacked {
+		t.Fatalf("setup: L did not flip to stacked: layout=%v", m.layout)
+	}
+	out, _ := m.Update(tea.WindowSizeMsg{Width: 220, Height: 50})
+	m = out.(Model)
+	if m.layout != layoutStacked {
+		t.Fatalf("resize reverted layout: %v, want layoutStacked (locked)", m.layout)
+	}
+}
+
+// TestScenario_LDoesNotOpenLinkPromptInDetail: regression for the
+// L→AddLink keymap collision. AddLink moved to lowercase l in
+// 93e37ec; capital L is the layout toggle and must not surface the
+// link-input prompt.
+func TestScenario_LDoesNotOpenLinkPromptInDetail(t *testing.T) {
+	m := scenarioModel(t, 200, 40)
+	m = scenarioOpenDetail(t, m, "short body")
+	prevLayout := m.layout
+	m = pressRune(t, m, 'L')
+	if m.input.kind != inputNone {
+		t.Fatalf("L opened input %v in detail; want layout toggle, not link prompt", m.input.kind)
+	}
+	if m.layout == prevLayout && !m.layoutLocked {
+		t.Errorf("L did not toggle layout (was %v, still %v)", prevLayout, m.layout)
+	}
+}
+
+// TestScenario_LowercaseLOpensLinkPromptInDetail: the matching
+// positive path — lowercase l should still open the link prompt. If
+// this test fails, AddLink got accidentally rebound or removed.
+func TestScenario_LowercaseLOpensLinkPromptInDetail(t *testing.T) {
+	m := scenarioModel(t, 120, 30)
+	m = scenarioOpenDetail(t, m, "short body")
+	m = sendKeyAndDrain(t, m, runeKey('l'))
+	if m.input.kind != inputLinkPrompt {
+		t.Fatalf("lowercase l did not open link prompt; m.input.kind = %v", m.input.kind)
+	}
+}
+
+// sendKeyAndDrain dispatches a KeyMsg and then drains a single
+// follow-up Cmd, threading the resulting Msg back through Update.
+// Detail-mode mutation keys (l/c/+/p/...) emit openInputCmd, which
+// produces an openInputMsg consumed by Model.Update — so a one-step
+// drain is enough to observe m.input.kind change in the same test
+// iteration. Stops if the cmd is nil OR the cmd's first message is
+// not consumed (e.g. a tea.Batch — the test doesn't try to
+// recursively unwrap; flag it as a sign the helper needs extending).
+func sendKeyAndDrain(t *testing.T, m Model, msg tea.KeyMsg) Model {
+	t.Helper()
+	out, cmd := m.Update(msg)
+	m = out.(Model)
+	if cmd == nil {
+		return m
+	}
+	produced := cmd()
+	if produced == nil {
+		return m
+	}
+	out, _ = m.Update(produced)
+	return out.(Model)
+}
+
+// TestScenario_ChildCreatedRefetchesParentDetail: the SSE
+// regression I fixed in d8c8a3c. With the parent open, an
+// issue.created event whose payload carries a parent link must
+// trigger a parent-detail refetch — without it, the children
+// section sits stale until the user reloads.
+//
+// maybeRefetchOpenDetail short-circuits when m.api is nil (it can't
+// build a fetch cmd without a client), so we hand it a stub *Client.
+// The cmd it returns isn't invoked — we just assert it was produced,
+// which proves the SSE → detail-refetch routing is intact.
+func TestScenario_ChildCreatedRefetchesParentDetail(t *testing.T) {
+	m := scenarioModel(t, 120, 30)
+	m.api = NewClient("http://kata.invalid", nil)
+	m = scenarioOpenDetail(t, m, "short body")
+	parentNum := m.detail.issue.Number
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:   "issue.created",
+		projectID:   m.detail.scopePID,
+		issueNumber: 999,
+		link:        &linkPayload{Type: "parent", FromNumber: 999, ToNumber: parentNum},
+	})
+	if cmd == nil {
+		t.Fatal("issue.created with parent link did not dispatch parent-detail refetch")
+	}
+}
+
+// TestScenario_BodyScrollWorksWhileChildrenFocused covers the
+// children-focus + long body case. Even when the cursor is parked
+// on the children list, PageDown should still advance the body
+// scroll — the body-scroll keys are intentionally focus-agnostic.
+func TestScenario_BodyScrollWorksWhileChildrenFocused(t *testing.T) {
+	m := scenarioModel(t, 120, 30)
+	body := strings.Repeat("scrollable line\n", 60) + "BODY_TAIL"
+	m = scenarioOpenDetail(t, m, body)
+	// Seed a child so children focus is reachable.
+	m.detail.children = []Issue{{Number: 99, Title: "child", Status: "open"}}
+	// Cycle into children focus via Tab. The detail focus order is
+	// Children → Comments → Events → Links → Children, so one Tab
+	// from Comments gets us to Events, and Shift+Tab from Comments
+	// goes to Children. We use Shift+Tab so the test doesn't
+	// depend on which tab cycleDetailFocus(1) lands on.
+	m = pressKey(t, m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if m.detail.detailFocus != focusChildren {
+		t.Fatalf("setup: focus = %v, want focusChildren", m.detail.detailFocus)
+	}
+	m = pressN(t, m, tea.KeyMsg{Type: tea.KeyPgDown}, 16)
+	if !strings.Contains(view(m), "BODY_TAIL") {
+		t.Fatalf("PgDn on children focus did not scroll body to tail; view:\n%s", view(m))
+	}
+}
