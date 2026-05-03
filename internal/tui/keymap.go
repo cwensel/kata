@@ -32,7 +32,7 @@ func newKeymap() keymap {
 		Help:           key{Keys: []string{"?"}, Help: "help"},
 		Quit:           key{Keys: []string{"q", "ctrl+c"}, Help: "quit"},
 		ToggleScope:    key{Keys: []string{"R"}, Help: "scope toggle (gated)"},
-		ToggleLayout:   key{Keys: []string{"L"}, Help: "toggle split/stacked layout"},
+		ToggleLayout:   key{Keys: []string{"L"}, Help: "toggle layout"},
 		Up:             key{Keys: []string{"k", "up"}, Help: "up"},
 		Down:           key{Keys: []string{"j", "down"}, Help: "down"},
 		PageUp:         key{Keys: []string{"pgup"}, Help: "page up"},

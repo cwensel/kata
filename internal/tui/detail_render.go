@@ -409,7 +409,11 @@ func (dm detailModel) renderInfoLine(width int, chrome viewChrome, tabBudget int
 		// budget but total wrapped lines exceed it (#119 finding 2).
 		n := dm.activeRowCount()
 		if n > 0 && tabBudget > 0 {
-			chunks := dm.activeChunks(width)
+			// Chunk math uses the same content-width as the per-tab
+			// renderer (sheet, not terminal) so wrapped comment line
+			// counts match what's actually drawn — see roborev #17140
+			// finding 2.
+			chunks := dm.activeChunks(documentSheetWidth(width))
 			start, end := windowChunkBounds(chunks, dm.tabCursor, tabBudget)
 			if end-start < n {
 				body = rightAlignInside(

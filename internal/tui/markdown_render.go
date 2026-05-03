@@ -25,7 +25,14 @@ func renderMarkdownLines(markdown string, width int) []string {
 	lines := make([]string, 0, len(raw))
 	for _, line := range raw {
 		line = strings.TrimRight(line, " ")
-		lines = append(lines, ansi.Truncate(line, width, "…"))
+		// Glamour word-wraps prose to `width` but leaves preformatted
+		// content (code blocks, long URLs, table cells, stack traces)
+		// at its natural width. Truncating those would silently drop
+		// content the user has no way to scroll back to. Hardwrap
+		// instead so every byte stays on screen across multiple rows.
+		// preserveSpace=true keeps leading indentation on continued
+		// rows so wrapped code stays readable.
+		lines = append(lines, strings.Split(ansi.Hardwrap(line, width, true), "\n")...)
 	}
 	return lines
 }

@@ -98,16 +98,24 @@ type Model struct {
 	// it back, and handleLabelsFetched compares msg.gen >= entry.gen
 	// to decide whether to apply the result.
 	nextLabelsGen int64
-	// layout discriminates between the M1-M5 stacked single-view
-	// layout and the M6 split-pane layout (list + detail side-by-
-	// side). Re-evaluated on every WindowSizeMsg via pickLayout. See
-	// layout.go for the breakpoint thresholds and handleLayoutFlip.
+	// layout is the EFFECTIVE rendered layout — what the View functions
+	// actually draw. Re-evaluated on every WindowSizeMsg via
+	// resolveLayout, which consults preferredLayout + layoutLocked +
+	// canRenderSplit. See layout.go.
 	layout layoutMode
+	// preferredLayout is the user's stated intent (set on every
+	// toggleLayout). Only consulted when layoutLocked is true; without
+	// the lock, layout follows pickLayout's auto-pick. Tracked
+	// separately from m.layout so a transient narrow resize that
+	// degrades a locked split to stacked does NOT erase the split
+	// preference — once the terminal is wide enough again, layout
+	// returns to split (roborev #17173 finding 1).
+	preferredLayout layoutMode
 	// layoutLocked is set when the user explicitly toggles the layout
 	// via the ToggleLayout key (default: L). While locked, WindowSizeMsg
-	// preserves the user's chosen layout instead of re-running
-	// pickLayout — except that an outright too-narrow terminal still
-	// degrades to stacked so split never renders unusable UI.
+	// honors preferredLayout instead of re-running pickLayout —
+	// except that an outright too-narrow terminal still degrades to
+	// stacked so split never renders unusable UI.
 	layoutLocked bool
 	// focus names which pane owns key dispatch in split layout. In
 	// stacked layout m.view is authoritative; m.focus is only
@@ -457,6 +465,13 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		if prevLayout != m.layout {
 			m = m.handleLayoutFlip(prevLayout)
 		}
+		// Cache the terminal dimensions on the detail model so its
+		// PgDn/PgUp handlers can clamp body scroll against the
+		// approximate body viewport (roborev #17184). The renderer
+		// applies its own exact clamp per frame; this cache exists
+		// purely so dm.scroll itself doesn't grow unbounded past EOF.
+		m.detail.lastTermWidth = m.width
+		m.detail.lastTermHeight = m.height
 		return m, nil, true
 	case tea.KeyMsg:
 		// Modal owns input when active. Enter the modal-specific
@@ -1817,10 +1832,16 @@ func (m Model) handleJumpDetail(msg jumpDetailMsg) (tea.Model, tea.Cmd) {
 	pid := m.detail.scopePID
 	m.nextGen++
 	gen := m.nextGen
+	// tabExplicit carries forward with activeTab so a late-arriving
+	// fetch on the jumped-to issue cannot stomp the preserved tab via
+	// autoSelectActivityTab (roborev #17155 finding 2). Carrying the
+	// tab without marking it explicit silently undid the user's
+	// context when the new issue's first non-empty tab differed.
 	next := detailModel{
 		loading:         true,
 		gen:             gen,
 		activeTab:       m.detail.activeTab,
+		tabExplicit:     true,
 		navStack:        append(m.detail.navStack, prior),
 		scopePID:        pid,
 		allProjects:     m.detail.allProjects,

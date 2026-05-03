@@ -139,8 +139,13 @@ func renderHelpGroup(group []helpSection) string {
 	return strings.Join(parts, "\n")
 }
 
-// padColumns equalizes column heights and appends a 4-space gutter so
-// JoinHorizontal aligns at the top without columns running together.
+// padColumns equalizes column heights and appends a 4-space gutter to
+// every line of every non-final column so JoinHorizontal never abuts
+// the next column's content with no separation. Without the per-line
+// gutter, a long line in column N (e.g. "toggle split/stacked layout")
+// runs straight into column N+1's first row (roborev #17173 finding 2);
+// padding only the trailing blank line — the previous behaviour — left
+// the long row gutter-less.
 func padColumns(cols []string) []string {
 	maxN := 0
 	for _, c := range cols {
@@ -150,7 +155,16 @@ func padColumns(cols []string) []string {
 	}
 	out := make([]string, len(cols))
 	for i, c := range cols {
-		out[i] = c + strings.Repeat("\n", maxN-strings.Count(c, "\n")) + "    "
+		padded := c + strings.Repeat("\n", maxN-strings.Count(c, "\n"))
+		if i == len(cols)-1 {
+			out[i] = padded
+			continue
+		}
+		lines := strings.Split(padded, "\n")
+		for j := range lines {
+			lines[j] += "    "
+		}
+		out[i] = strings.Join(lines, "\n")
 	}
 	return out
 }

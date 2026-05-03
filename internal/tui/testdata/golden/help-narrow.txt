@@ -4,7 +4,7 @@ Global
 ?         help
 q/ctrl+c  quit
 R         scope toggle (gated)
-L         toggle split/stacked layout
+L         toggle layout
 
 Queue
 k/up    up
@@ -51,6 +51,6 @@ Filters
 s       cycle status filter
 f       filter (form)
 c       clear filters
-ctrl+r  reset filter form    
+ctrl+r  reset filter form
 
 press ? to return

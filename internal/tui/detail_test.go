@@ -217,6 +217,35 @@ func TestDetail_Scroll_PageDownWorksOnChildrenFocus(t *testing.T) {
 	}
 }
 
+// TestDetail_Scroll_PageDownClampsPastEOF / PageUpAfterOverscroll:
+// regression for roborev #17184. Without the clamp, repeated PgDn
+// past EOF lets dm.scroll grow unbounded; the renderer hides this
+// with its own per-frame clamp, but a follow-up PgUp then needs
+// many presses to bring scroll back into the visible range,
+// appearing stuck. The clamp keeps dm.scroll bounded so a single
+// PgUp always produces a visible movement.
+func TestDetail_Scroll_PageDownClampsPastEOFAndPageUpResponds(t *testing.T) {
+	dm := detailFixture()
+	dm.lastTermWidth, dm.lastTermHeight = 120, 30
+	km := newKeymap()
+	// The fixture's body is short, so any PgDn lands past the
+	// renderer's max start. Press PgDn 12 times — without a clamp,
+	// dm.scroll would be 96; with the clamp it stays at the body's
+	// approximate maxStart (<= a small number for short bodies).
+	for i := 0; i < 12; i++ {
+		dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgDown}, km, nil)
+	}
+	if dm.scroll > 24 {
+		t.Fatalf("PgDn past EOF should clamp dm.scroll, got scroll=%d", dm.scroll)
+	}
+	// One PgUp must produce a visible (smaller) scroll value.
+	prev := dm.scroll
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgUp}, km, nil)
+	if dm.scroll >= prev && prev > 0 {
+		t.Fatalf("PgUp after overscroll did not respond visually: scroll=%d, prev=%d", dm.scroll, prev)
+	}
+}
+
 // TestDetail_Back_EmitsPopMsg: esc returns a tea.Cmd that emits
 // popDetailMsg when the nav stack is empty.
 func TestDetail_Back_EmitsPopMsg(t *testing.T) {

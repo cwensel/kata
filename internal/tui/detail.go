@@ -111,6 +111,17 @@ type detailModel struct {
 	// (so a Comments(0)+Events(N) issue lands on Events) without
 	// stomping a user choice when a late-arriving fetch resolves.
 	tabExplicit bool
+	// lastTermWidth / lastTermHeight cache the most recent terminal
+	// dimensions seen by Model.routeTopLevel's WindowSizeMsg handler.
+	// scrollBodyDown reads them to clamp dm.scroll against the body's
+	// rendered max start so overscrolling past EOF doesn't let
+	// dm.scroll grow unbounded — without the clamp, a follow-up PgUp
+	// appears stuck until the inflated offset unwinds (roborev #17184).
+	// Approximate viewport math (chrome estimate) is acceptable here
+	// because the renderer applies its own per-frame clamp; this just
+	// keeps dm.scroll's drift bounded.
+	lastTermWidth  int
+	lastTermHeight int
 	// dm.modal was removed in M3b — the M3a/b input infrastructure on
 	// Model.input owns inline label/owner/link prompts now.
 }
@@ -194,11 +205,16 @@ func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
 // is a no-op once the user has cycled tabs (dm.tabExplicit) so an
 // in-flight fetch cannot yank focus off the user's choice. When all
 // tabs are empty the active tab keeps its default so the placeholder
-// strip (`[ Comments (0) ]`) still reads naturally.
+// strip (`[ Comments (0) ]`) still reads naturally. The tabCursor
+// resets only when the active tab actually changes — an unrelated
+// late fetch (e.g., links arriving after the user already scrolled
+// the comments tab) must not pull the cursor back to the top
+// (roborev #17155 finding 3).
 func (dm detailModel) autoSelectActivityTab() detailModel {
 	if dm.tabExplicit {
 		return dm
 	}
+	prev := dm.activeTab
 	switch {
 	case len(dm.comments) > 0:
 		dm.activeTab = tabComments
@@ -207,7 +223,9 @@ func (dm detailModel) autoSelectActivityTab() detailModel {
 	case len(dm.links) > 0:
 		dm.activeTab = tabLinks
 	}
-	dm.tabCursor = 0
+	if dm.activeTab != prev {
+		dm.tabCursor = 0
+	}
 	return dm
 }
 
@@ -283,6 +301,16 @@ func (dm detailModel) handleNavKey(
 // over-eager scrolling on a short body is harmless.
 const detailBodyScrollStep = 8
 
+// detailChromeRowsEstimate is a conservative cap on how many rows the
+// non-body chrome consumes (title + byline + metadata + section
+// labels + activity strip + info line + footer). Used only by
+// scrollBodyDown's overscroll clamp; the renderer computes the
+// exact body budget separately. Erring on the LARGE side here makes
+// the clamp's maxStart estimate STRICTER than the renderer's actual
+// maxStart, so dm.scroll stays inside the visible range and a
+// follow-up PgUp always responds visually.
+const detailChromeRowsEstimate = 18
+
 func (dm detailModel) scrollBodyUp() detailModel {
 	dm.scroll -= detailBodyScrollStep
 	if dm.scroll < 0 {
@@ -291,9 +319,49 @@ func (dm detailModel) scrollBodyUp() detailModel {
 	return dm
 }
 
+// scrollBodyDown advances the body scroll by detailBodyScrollStep
+// lines, clamped at the body's approximate maximum start position.
+// Without the clamp, repeated PgDn past EOF lets dm.scroll grow
+// unbounded; the renderer hides this with its own per-frame clamp,
+// but a follow-up PgUp would then appear stuck until the inflated
+// offset finally unwound (roborev #17184).
+//
+// The clamp is approximate — the exact body viewport depends on
+// children/activity flags + chrome heights, none of which are
+// available at keypress time without re-running the layout solver.
+// detailChromeRowsEstimate is a generous over-estimate of chrome,
+// so the computed maxStart sits at-or-below the renderer's actual
+// maxStart. dm.scroll therefore stays inside the renderer's visible
+// range and PgUp always produces a visible movement.
 func (dm detailModel) scrollBodyDown() detailModel {
 	dm.scroll += detailBodyScrollStep
+	maxStart := dm.bodyMaxStartEstimate()
+	if maxStart >= 0 && dm.scroll > maxStart {
+		dm.scroll = maxStart
+	}
 	return dm
+}
+
+// bodyMaxStartEstimate returns the largest valid dm.scroll value, or
+// -1 when the cap can't be computed (no issue, no cached terminal
+// width). Uses cached terminal dimensions (set on WindowSizeMsg) and
+// detailChromeRowsEstimate so the clamp is conservative — it never
+// over-estimates the visible body and never lets dm.scroll out-run
+// what the renderer will actually display.
+func (dm detailModel) bodyMaxStartEstimate() int {
+	if dm.issue == nil || dm.lastTermWidth <= 0 {
+		return -1
+	}
+	wrapped := renderMarkdownLines(dm.issue.Body, documentSheetWidth(dm.lastTermWidth))
+	bodyA := dm.lastTermHeight - detailChromeRowsEstimate
+	if bodyA < detailMinBodyRows {
+		bodyA = detailMinBodyRows
+	}
+	maxStart := len(wrapped) - bodyA
+	if maxStart < 0 {
+		return 0
+	}
+	return maxStart
 }
 
 // handleUp moves the tab cursor up when the active tab has rows;
@@ -398,16 +466,25 @@ func (dm detailModel) cycleDetailFocus(delta int) detailModel {
 	return dm
 }
 
+// detailFocusSlots enumerates the focus stops Tab can land on. Children
+// slot only appears when there are children; activity slots only appear
+// when the activity section is rendered (hasActivity() — covers loaded
+// data, in-flight fetches, and errors). Without this gate, a children-
+// only issue could Tab into invisible activity states and the cursor
+// would silently disappear (roborev #17131 finding 4).
 func (dm detailModel) detailFocusSlots() []detailFocusSlot {
 	slots := make([]detailFocusSlot, 0, 4)
 	if len(dm.children) > 0 {
 		slots = append(slots, detailFocusSlot{focus: focusChildren})
 	}
-	return append(slots,
-		detailFocusSlot{focus: focusActivity, tab: tabComments},
-		detailFocusSlot{focus: focusActivity, tab: tabEvents},
-		detailFocusSlot{focus: focusActivity, tab: tabLinks},
-	)
+	if dm.hasActivity() {
+		slots = append(slots,
+			detailFocusSlot{focus: focusActivity, tab: tabComments},
+			detailFocusSlot{focus: focusActivity, tab: tabEvents},
+			detailFocusSlot{focus: focusActivity, tab: tabLinks},
+		)
+	}
+	return slots
 }
 
 func (dm detailModel) currentFocusSlotIndex(slots []detailFocusSlot) int {
@@ -496,6 +573,12 @@ func (dm detailModel) activeRowCount() int {
 //
 // width is the rendered width of the tab pane (the same width passed
 // to the tab renderers from renderActiveTab).
+//
+// The comments path uses renderMarkdownLines with the same width-2
+// budget renderCommentsTab uses (detail_tabs.go:39) so the indicator
+// math matches what's actually drawn — wrapBody used to under-count
+// Markdown-formatted comments and could suppress the indicator when
+// wrapped lines exceeded the visible budget (roborev #17131 finding 3).
 func (dm detailModel) activeChunks(width int) []entryChunk {
 	switch dm.activeTab {
 	case tabComments:
@@ -505,7 +588,7 @@ func (dm detailModel) activeChunks(width int) []entryChunk {
 				fmt.Sprintf("[%s] %s",
 					sanitizeForDisplay(c.Author), fmtTime(c.CreatedAt)),
 			}
-			for _, ln := range wrapBody(sanitizeForDisplay(c.Body), max(1, width-2)) {
+			for _, ln := range renderMarkdownLines(c.Body, max(1, width-2)) {
 				lines = append(lines, "  "+ln)
 			}
 			lines = append(lines, "")

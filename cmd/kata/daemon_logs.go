@@ -134,18 +134,19 @@ func runHookLogOnce(stdout, stderr io.Writer, limit int, f *hookLogFilter) (acti
 		mark    activeMark
 	)
 	for _, p := range files {
-		m, err := readMatchesFromFile(p, stderr, f)
+		m, info, err := readMatchesFromFile(p, stderr, f)
 		if err != nil {
 			return mark, err
 		}
 		matches = append(matches, m...)
-		if filepath.Base(p) == "runs.jsonl" {
-			// Stat AFTER reading so mark.size matches the byte boundary
-			// the bufio scanner consumed. Stat'ing before would race
-			// with concurrent appends and could leave a gap.
-			if info, statErr := os.Stat(p); statErr == nil {
-				mark = activeMark{set: true, info: info, size: info.Size()}
-			}
+		if filepath.Base(p) == "runs.jsonl" && info != nil {
+			// info comes from fh.Stat() on the same open handle the
+			// scan consumed, and the scan was capped at info.Size()
+			// via io.LimitReader. So mark.size IS the byte boundary
+			// the read stopped at — no race window with concurrent
+			// appends or rotation between read and mark, since both
+			// the size and the consumed bytes derive from one stat.
+			mark = activeMark{set: true, info: info, size: info.Size()}
 		}
 	}
 	start := 0
@@ -168,18 +169,27 @@ func writeLine(w io.Writer, s string) {
 }
 
 // readMatchesFromFile reads one file and returns its matching records.
-// Missing-file is not an error (rotation can race with read).
-func readMatchesFromFile(path string, stderr io.Writer, f *hookLogFilter) ([]string, error) {
+// Missing-file is not an error (rotation can race with read). Also
+// returns the os.FileInfo from the open handle (or nil when the file
+// is missing); the scan is bounded to exactly info.Size() bytes via
+// io.LimitReader so the caller's "we consumed up to here" boundary
+// is atomic with the stat — a concurrent append after fh.Stat() is
+// invisible to this snapshot and belongs to follow's window instead.
+func readMatchesFromFile(path string, stderr io.Writer, f *hookLogFilter) ([]string, os.FileInfo, error) {
 	fh, err := os.Open(path) //nolint:gosec // G304: path is daemon-controlled state-dir filename
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = fh.Close() }()
+	info, err := fh.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
 	var matches []string
-	scanner := bufio.NewScanner(fh)
+	scanner := bufio.NewScanner(io.LimitReader(fh, info.Size()))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	lineNo := 0
 	for scanner.Scan() {
@@ -198,9 +208,9 @@ func readMatchesFromFile(path string, stderr io.Writer, f *hookLogFilter) ([]str
 		matches = append(matches, string(rec))
 	}
 	if err := scanner.Err(); err != nil {
-		return matches, fmt.Errorf("scanning %s: %w", path, err)
+		return matches, info, fmt.Errorf("scanning %s: %w", path, err)
 	}
-	return matches, nil
+	return matches, info, nil
 }
 
 // runHookLogTail prints the last `limit` matches from existing files,

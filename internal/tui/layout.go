@@ -97,33 +97,44 @@ func canRenderSplit(width, height int) bool {
 
 // resolveLayout returns the layoutMode the model should render for
 // its current width/height + lock state. When unlocked, defers to
-// pickLayout. When locked, honors m.layout but degrades to stacked
-// if the terminal cannot fit split — the lock represents intent,
-// not a guarantee that split fits.
+// pickLayout. When locked, honors preferredLayout but degrades to
+// stacked if the terminal cannot fit split — the lock represents
+// intent, not a guarantee that split fits.
+//
+// preferredLayout is read here (not m.layout) so a prior degraded
+// resize that pushed m.layout to stacked does not silently erase a
+// locked split preference: when the terminal is wide enough again,
+// resolveLayout returns layoutSplit because preferredLayout still
+// says split.
 func (m Model) resolveLayout() layoutMode {
 	if !m.layoutLocked {
 		return pickLayout(m.width, m.height)
 	}
-	if m.layout == layoutSplit && !canRenderSplit(m.width, m.height) {
+	if m.preferredLayout == layoutSplit && !canRenderSplit(m.width, m.height) {
 		return layoutStacked
 	}
-	return m.layout
+	return m.preferredLayout
 }
 
-// toggleLayout flips between split and stacked, sets layoutLocked so
-// a subsequent WindowSizeMsg cannot revert the user's choice, and
-// runs handleLayoutFlip so view/focus migrate consistently with the
-// auto-flip path. When the user requests split on a too-narrow
-// terminal the request is honored as intent (layoutLocked is set)
-// but the rendered layout stays stacked.
+// toggleLayout flips the user's layout preference, sets layoutLocked
+// so subsequent WindowSizeMsgs honor it, and runs handleLayoutFlip
+// so view/focus migrate consistently with the auto-flip path.
+//
+// The flip is computed against the EFFECTIVE rendered layout
+// (m.layout), not the previously-stored preferredLayout: pressing L
+// is the user reacting to what they currently see. Once locked, the
+// rendered layout may degrade to stacked if the terminal is too
+// narrow, but preferredLayout retains the user's intent so a wider
+// resize restores the chosen split layout (roborev #17173 finding 1).
 func (m Model) toggleLayout() Model {
 	prev := m.layout
 	m.layoutLocked = true
 	if m.layout == layoutSplit {
-		m.layout = layoutStacked
-	} else if canRenderSplit(m.width, m.height) {
-		m.layout = layoutSplit
+		m.preferredLayout = layoutStacked
+	} else {
+		m.preferredLayout = layoutSplit
 	}
+	m.layout = m.resolveLayout()
 	if prev != m.layout {
 		m = m.handleLayoutFlip(prev)
 	}

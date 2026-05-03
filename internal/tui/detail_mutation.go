@@ -14,11 +14,24 @@ import (
 // clear-owner fire immediately; the others open a modal and the actual
 // mutation runs from handleModalKey on Enter. ok=true means the key was
 // consumed.
+//
+// NewChild opens the new-issue form pre-wired with the current issue
+// as parent. The key is consumed even before dm.issue is seeded so a
+// stray N during detail load does not bleed into other bindings; if
+// the issue isn't ready yet, the press becomes a no-op rather than
+// triggering an unintended mutation.
 func (dm detailModel) handleMutationKey(
 	msg tea.KeyMsg, km keymap, api detailAPI,
 ) (detailModel, tea.Cmd, bool) {
 	if next, cmd, ok := dm.handleStatusKey(msg, km, api); ok {
 		return next, cmd, true
+	}
+	if km.NewChild.matches(msg) {
+		if dm.issue == nil {
+			return dm, nil, true
+		}
+		dm.status = ""
+		return dm, openNewChildInputCmd(dm.issue.Number), true
 	}
 	return dm.handleModalOpenKey(msg, km)
 }

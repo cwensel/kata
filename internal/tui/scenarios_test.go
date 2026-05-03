@@ -204,10 +204,48 @@ func TestScenario_LayoutToggle_LStaysAcrossResize(t *testing.T) {
 	}
 }
 
+// TestScenario_LayoutToggle_NarrowThenWidePreservesSplitIntent: the
+// regression for roborev #17173 finding 1. After locking split and
+// resizing too narrow to render it, the rendered layout degrades to
+// stacked — but the user's split intent must survive: resizing wide
+// again must return to split. Before the fix, m.layout was stomped
+// with the degraded value and the split preference vanished, so the
+// terminal staying wide forever after still rendered stacked.
+func TestScenario_LayoutToggle_NarrowThenWidePreservesSplitIntent(t *testing.T) {
+	m := scenarioModel(t, 200, 40)
+	if m.layout != layoutSplit {
+		t.Fatalf("setup: layout=%v, want layoutSplit at 200x40", m.layout)
+	}
+	// Lock split via two L presses (split → stacked → split, locked).
+	m = pressRune(t, m, 'L')
+	m = pressRune(t, m, 'L')
+	if m.layout != layoutSplit || !m.layoutLocked {
+		t.Fatalf("setup: layout=%v locked=%v, want layoutSplit + locked",
+			m.layout, m.layoutLocked)
+	}
+	// Resize too narrow for split — rendered must degrade to stacked.
+	out, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m = out.(Model)
+	if m.layout != layoutStacked {
+		t.Fatalf("narrow resize: layout=%v, want layoutStacked (degraded)",
+			m.layout)
+	}
+	// Resize wide again — rendered must return to split because the
+	// user's preference was never lost.
+	out, _ = m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	m = out.(Model)
+	if m.layout != layoutSplit {
+		t.Fatalf("wide resize: layout=%v, want layoutSplit (preference restored)",
+			m.layout)
+	}
+}
+
 // TestScenario_LDoesNotOpenLinkPromptInDetail: regression for the
 // L→AddLink keymap collision. AddLink moved to lowercase l in
 // 93e37ec; capital L is the layout toggle and must not surface the
-// link-input prompt.
+// link-input prompt. Two assertions are independent — a regression
+// that flips one but not both must still fail (roborev #17192
+// finding 1).
 func TestScenario_LDoesNotOpenLinkPromptInDetail(t *testing.T) {
 	m := scenarioModel(t, 200, 40)
 	m = scenarioOpenDetail(t, m, "short body")
@@ -216,8 +254,11 @@ func TestScenario_LDoesNotOpenLinkPromptInDetail(t *testing.T) {
 	if m.input.kind != inputNone {
 		t.Fatalf("L opened input %v in detail; want layout toggle, not link prompt", m.input.kind)
 	}
-	if m.layout == prevLayout && !m.layoutLocked {
+	if m.layout == prevLayout {
 		t.Errorf("L did not toggle layout (was %v, still %v)", prevLayout, m.layout)
+	}
+	if !m.layoutLocked {
+		t.Errorf("L press did not set layoutLocked")
 	}
 }
 

@@ -322,15 +322,18 @@ func padLeftRightInside(left, right string, innerWidth int) string {
 	lw := runewidth.StringWidth(stripANSI(left))
 	rw := runewidth.StringWidth(stripANSI(right))
 	if lw >= innerWidth {
-		return runewidth.Truncate(left, innerWidth, "…")
+		// ANSI-aware cut: renderStatsLine and several callers pass
+		// styled chips here; runewidth.Truncate would slice inside an
+		// SGR sequence and corrupt the row (roborev #17162 finding 1).
+		return ansi.Truncate(left, innerWidth, "…")
 	}
 	if lw+rw+1 > innerWidth {
-		// Right doesn't fit; truncate it.
+		// Right doesn't fit; truncate it (ANSI-aware — see above).
 		availableForRight := innerWidth - lw - 1
 		if availableForRight < 1 {
 			return left + " "
 		}
-		right = runewidth.Truncate(right, availableForRight, "…")
+		right = ansi.Truncate(right, availableForRight, "…")
 		rw = runewidth.StringWidth(stripANSI(right))
 	}
 	gap := innerWidth - lw - rw
@@ -341,11 +344,13 @@ func padLeftRightInside(left, right string, innerWidth int) string {
 }
 
 // rightAlignInside returns s right-aligned within innerWidth cells.
-// Used by the scroll indicator.
+// Used by the scroll indicator. ANSI-aware: stripANSI for measurement,
+// ansi.Truncate for the cut so escape sequences are never sliced
+// mid-byte when the indicator carries styling.
 func rightAlignInside(s string, innerWidth int) string {
 	w := runewidth.StringWidth(stripANSI(s))
 	if w >= innerWidth {
-		return runewidth.Truncate(s, innerWidth, "…")
+		return ansi.Truncate(s, innerWidth, "…")
 	}
 	return strings.Repeat(" ", innerWidth-w) + s
 }
