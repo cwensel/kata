@@ -194,3 +194,61 @@ func TestListProjectsAndShow(t *testing.T) {
 	assert.Equal(t, 200, resp2.StatusCode)
 	assert.Contains(t, string(body2), `"aliases":`)
 }
+
+func TestRenameProject_UpdatesNameAndKeepsIdentity(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+	ts := newTestServer(t)
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": dir})
+
+	_, rb := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{"start_path": dir})
+	var rbody struct {
+		Project struct{ ID int64 }
+	}
+	require.NoError(t, json.Unmarshal(rb, &rbody))
+
+	resp, bs := patchJSON(t, ts, "/api/v1/projects/"+strconv.FormatInt(rbody.Project.ID, 10), map[string]any{
+		"name": "Kata Tracker",
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"identity":"github.com/wesm/kata"`)
+	assert.Contains(t, string(bs), `"name":"Kata Tracker"`)
+	assert.Contains(t, string(bs), `"aliases":`)
+
+	resp2, err := http.Get(ts.URL + "/api/v1/projects/" + strconv.FormatInt(rbody.Project.ID, 10))
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	body2, _ := io.ReadAll(resp2.Body)
+	assert.Equal(t, 200, resp2.StatusCode)
+	assert.Contains(t, string(body2), `"name":"Kata Tracker"`)
+}
+
+func TestRenameProject_RejectsBlankName(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+	ts := newTestServer(t)
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": dir})
+
+	_, rb := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{"start_path": dir})
+	var rbody struct {
+		Project struct{ ID int64 }
+	}
+	require.NoError(t, json.Unmarshal(rb, &rbody))
+
+	resp, bs := patchJSON(t, ts, "/api/v1/projects/"+strconv.FormatInt(rbody.Project.ID, 10), map[string]any{
+		"name": "   ",
+	})
+	assert.Equal(t, 400, resp.StatusCode)
+	assert.Contains(t, string(bs), "name must be non-empty")
+}
+
+func TestRenameProject_MissingIs404(t *testing.T) {
+	ts := newTestServer(t)
+	resp, bs := patchJSON(t, ts, "/api/v1/projects/9999", map[string]any{
+		"name": "Missing",
+	})
+	assert.Equal(t, 404, resp.StatusCode)
+	assert.Contains(t, string(bs), "project_not_found")
+}

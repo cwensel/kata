@@ -49,6 +49,36 @@ func TestCreateProject_DuplicateIdentity(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRenameProject_UpdatesNameOnly(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	require.NoError(t, err)
+	alias, err := d.AttachAlias(ctx, p.ID, "github.com/wesm/kata", "git", "/tmp/kata")
+	require.NoError(t, err)
+
+	renamed, err := d.RenameProject(ctx, p.ID, "Kata Tracker")
+	require.NoError(t, err)
+	assert.Equal(t, p.ID, renamed.ID)
+	assert.Equal(t, "github.com/wesm/kata", renamed.Identity)
+	assert.Equal(t, "Kata Tracker", renamed.Name)
+	assert.Equal(t, p.NextIssueNumber, renamed.NextIssueNumber)
+
+	got, err := d.ProjectByID(ctx, p.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Kata Tracker", got.Name)
+	aliases, err := d.ProjectAliases(ctx, p.ID)
+	require.NoError(t, err)
+	require.Len(t, aliases, 1)
+	assert.Equal(t, alias.ID, aliases[0].ID)
+}
+
+func TestRenameProject_MissingReturnsErrNotFound(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.RenameProject(context.Background(), 9999, "missing")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
 func TestAttachAlias_AndLookup(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

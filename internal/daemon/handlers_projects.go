@@ -82,6 +82,32 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		out.Body.Aliases = aliases
 		return out, nil
 	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "renameProject",
+		Method:      "PATCH",
+		Path:        "/api/v1/projects/{project_id}",
+	}, func(ctx context.Context, in *api.RenameProjectRequest) (*api.ShowProjectResponse, error) {
+		name := strings.TrimSpace(in.Body.Name)
+		if name == "" {
+			return nil, api.NewError(400, "validation", "name must be non-empty", "", nil)
+		}
+		p, err := cfg.DB.RenameProject(ctx, in.ProjectID, name)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		aliases, err := cfg.DB.ProjectAliases(ctx, p.ID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.ShowProjectResponse{}
+		out.Body.Project = p
+		out.Body.Aliases = aliases
+		return out, nil
+	})
 }
 
 // resolveProject implements the strict resolution flow per spec §2.4. Order:

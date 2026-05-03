@@ -216,6 +216,7 @@ kata events [--after N] [--limit N]
 kata events --tail [--last-event-id N]
 kata projects list
 kata projects show <id>
+kata projects rename <id> <name>
 ```
 
 Destructive operations are explicit:

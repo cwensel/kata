@@ -38,6 +38,23 @@ func (d *DB) ProjectByIdentity(ctx context.Context, identity string) (Project, e
 	return scanProject(row)
 }
 
+// RenameProject updates a project's display name without changing its stable
+// identity, aliases, or issue numbering.
+func (d *DB) RenameProject(ctx context.Context, id int64, name string) (Project, error) {
+	res, err := d.ExecContext(ctx, `UPDATE projects SET name = ? WHERE id = ?`, name, id)
+	if err != nil {
+		return Project{}, fmt.Errorf("rename project: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Project{}, fmt.Errorf("rename project rows affected: %w", err)
+	}
+	if n == 0 {
+		return Project{}, ErrNotFound
+	}
+	return d.ProjectByID(ctx, id)
+}
+
 // ListProjects returns every project ordered by id ASC.
 func (d *DB) ListProjects(ctx context.Context) ([]Project, error) {
 	rows, err := d.QueryContext(ctx, projectSelect+` ORDER BY id ASC`)

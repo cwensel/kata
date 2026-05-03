@@ -78,6 +78,14 @@ type ShowProjectResponse struct {
 	}
 }
 
+// RenameProjectRequest is PATCH /api/v1/projects/{id}.
+type RenameProjectRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Body      struct {
+		Name string `json:"name" required:"true"`
+	}
+}
+
 // CreateIssueRequest is POST /api/v1/projects/{id}/issues.
 //
 // IdempotencyKey is read from the Idempotency-Key HTTP header (spec §4.4).
