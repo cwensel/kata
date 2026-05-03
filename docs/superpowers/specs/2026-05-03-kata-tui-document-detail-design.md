@@ -200,7 +200,10 @@ Use Charmbracelet Glamour, scoped to body/comment rendering only:
   - auto -> match the resolved app color mode
 - Use a custom style config or post-style setup that guarantees **no painted backgrounds**, including code blocks.
 - Pass the actual body/comment width every render. Re-render on resize.
-- Fenced code blocks, inline code, bold, and lists are in scope.
+- Fenced code blocks, inline code, bold, headings, blockquotes, links, and lists are in scope.
+- Tables degrade to a width-safe plain-text grid rather than overflowing the detail pane.
+- Horizontal rules are ignored; section rules already provide page structure.
+- Images render as `[image: alt]`, falling back to `[image]` when no alt text exists.
 - Fallback to sanitized plain text only when renderer construction fails, the terminal style is unsupported, or panic recovery catches a renderer panic. Do not fallback merely because the rendered Markdown is aesthetically imperfect.
 
 ## Focus And Navigation
@@ -212,6 +215,8 @@ Initial focus lands on the first non-empty interactive section:
 3. Events, if events exist.
 4. Links, if links exist.
 5. Comments as the default activity target when no interactive rows exist.
+
+For a brand-new issue with no children, comments, events, or links, focus still targets the empty Comments tab. The cursor is invisible until the first comment exists; pressing `c` opens the comment form.
 
 `tab` cycles through visible interactive sections. Skip Children when empty. Keep the existing detail navigation stack for `enter` on children, events, and links.
 

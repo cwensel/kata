@@ -1009,7 +1009,7 @@ git commit -m "feat(tui): model issue parent and children in detail"
 
 ---
 
-## Task 6: Context-Aware Footer And Help Registry
+## Task 6: Roborev-Style Contextual Hint Tables
 
 **Files:**
 
@@ -1021,37 +1021,42 @@ git commit -m "feat(tui): model issue parent and children in detail"
 - Modify: `internal/tui/help.go`
 - Modify: `internal/tui/help_test.go`
 
-- [ ] **Step 6.1: Add footer context types**
+**Reference pattern:** port the hint table shape from roborev:
+
+- `/Users/wesm/code/roborev/cmd/roborev/tui/types.go` (`helpItem`)
+- `/Users/wesm/code/roborev/cmd/roborev/tui/tui.go` (`reflowHelpRows`, `renderHelpTable`)
+- `/Users/wesm/code/roborev/cmd/roborev/tui/render_queue.go` (`queueHelpRows`, `queueHelpLines`, `queueCompact`, dynamic visible-row reservation)
+
+Kata already depends on `lipgloss/table` and `runewidth`, so this task adds no hint-bar dependencies.
+
+- [ ] **Step 6.1: Add help item primitives and per-view row builders**
 
 Create `footer_hints.go`:
 
 ```go
-type footerContext struct {
-	view        viewID
-	layout      layoutMode
-	pane        focusPane
-	input       inputKind
-	modal       modalKind
-	detailFocus detailFocus
-	activeTab   detailTab
-	hasRows     bool
-	hasChildren bool
+type helpItem struct {
+	key  string
+	desc string
 }
 ```
 
-Add:
+Do not introduce a separate `footerContext` registry. Build hint rows from current model/view state using per-view methods, for example:
 
 ```go
-func footerHints(ctx footerContext) []helpRow
+func (m Model) queueHelpRows() [][]helpItem
+func (m Model) detailHelpRows() [][]helpItem
+func (m Model) formHelpRows() [][]helpItem
+func (m Model) modalHelpRows() [][]helpItem
 ```
 
-Populate existing list/detail/default hints first, plus named context slots for children and forms.
+Conditional inclusion should be ordinary state logic inside those methods. For example, append `N child` only when a queue row is selected, append `space expand` only when the focused row has children, and use children-specific rows only when `detailFocus == focusChildren`.
 
 - [ ] **Step 6.2: Write footer matrix tests**
 
 In `footer_hints_test.go`, add tests:
 
 - footer descriptions use arrow notation for movement (`↑↓ move`, `↑↓ child`); the full help screen lists `j/k` aliases, but persistent footers do not use `j/k`
+- per-view methods return `[][]helpItem`, not a flat slice
 - list with rows includes `N new child`
 - list without rows omits `N new child`
 - list leaf may include `space expand` only if `hasChildren`; otherwise omit
@@ -1060,28 +1065,65 @@ In `footer_hints_test.go`, add tests:
 - search bar includes commit/cancel/clear
 - filter form includes apply/cancel/reset
 - quit modal includes confirm/cancel
+- each main view's reflowed help table fits at width 80
+- extreme narrow width reflows to one item per row rather than truncating item text
 
 Run:
 
 ```bash
-go test ./internal/tui -run TestFooterHints -count=1
+go test ./internal/tui -run 'TestHelpRows|TestHelpTable' -count=1
 ```
 
 Expected: FAIL.
 
-- [ ] **Step 6.3: Implement footer matrix**
+- [ ] **Step 6.3: Port adaptive hint table rendering**
 
-Fill the registry. Keep descriptions short enough for 80-column fallback, and use `↑↓` for footer movement labels consistently across queue, detail, children, and form contexts.
+Copy and adapt roborev's `reflowHelpRows` and `renderHelpTable` into `internal/tui/footer_hints.go`.
+
+Add an attribution comment:
+
+```go
+// Adapted from roborev cmd/roborev/tui/tui.go.
+```
+
+Preserve the important behavior:
+
+- Start with the maximum number of items per row.
+- Drop column count until the aligned table fits the available width.
+- Fall back to one item per row at extreme widths.
+- Render with `lipgloss/table`, no heavy borders, and the thin `▕` divider between non-empty cells.
+- Use existing kata `helpKeyStyle` and `helpDescStyle`; the current gray/dim styling matches the document-detail spec's footer tier.
+- Keep persistent footer movement labels as `↑↓`, consistently across queue, detail, children, forms, prompts, and modals.
 
 Run Step 6.2. Expected: PASS.
 
-- [ ] **Step 6.4: Wire renderers through footer registry**
+- [ ] **Step 6.4: Add dynamic help-line reservation**
 
-Replace hand-built `listFooterItemsFor`, `detailFooterItemsFor`, and split footer branching with calls to `footerHints`.
+Add helpers mirroring roborev's line-count pattern:
 
-At this stage, pass conservative `hasChildren`/`hasRows` from existing state; rendering task will refine exact context.
+```go
+func (m Model) queueHelpLines() int
+func (m Model) detailHelpLines() int
+func helpLines(rows [][]helpItem, width int) int
+```
 
-- [ ] **Step 6.5: Update full help groups**
+Wire list, detail, and split rendering so body height subtracts the reflowed help-line count, not a hard-coded one-line footer. This keeps footer tables correct when width forces two or three rows.
+
+- [ ] **Step 6.5: Wire renderers through per-view hint rows**
+
+Replace hand-built `renderFooterBar` item assembly, `listFooterItemsFor`, `detailFooterItemsFor`, and split footer branching with `renderHelpTable(<view>HelpRows(), width)`.
+
+Keep the existing info/status line behavior above the hint table. If height is too small, use compact mode rather than clipping the hint table unpredictably.
+
+- [ ] **Step 6.6: Add compact mode**
+
+Mirror roborev's `queueCompact` idea for kata:
+
+- Hide nonessential chrome at small heights, initially `height < 15`, or when a future distraction-free flag exists.
+- In compact mode, keep the minimum content needed to orient the user and avoid rendering multi-line hint tables into unusable space.
+- Apply consistently to list, detail, and split panes where the existing layout would otherwise run out of vertical space.
+
+- [ ] **Step 6.7: Update full help groups**
 
 In `help.go`, group by:
 
@@ -1097,7 +1139,7 @@ Add coverage tests that every keymap binding appears in either full help or an e
 Run:
 
 ```bash
-go test ./internal/tui -run 'TestHelp|TestFooterHints' -count=1
+go test ./internal/tui -run 'TestHelp|TestHelpRows|TestHelpTable' -count=1
 ```
 
 Expected: PASS.
@@ -1106,7 +1148,7 @@ Commit:
 
 ```bash
 git add internal/tui/footer_hints.go internal/tui/footer_hints_test.go internal/tui/list_render.go internal/tui/detail_render.go internal/tui/split_render.go internal/tui/help.go internal/tui/help_test.go
-git commit -m "feat(tui): centralize contextual footer hints"
+git commit -m "feat(tui): port adaptive contextual hint tables"
 ```
 
 ---
