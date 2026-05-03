@@ -11,8 +11,21 @@ import (
 )
 
 // View renders the stacked detail view as a document page. The page
-// reads top-to-bottom: issue lead, title/status, metadata, body,
-// optional children, optional activity, then the info/footer chrome.
+// reads top-to-bottom:
+//
+//   - line 1: full-width project/title bar (kept in sync with the
+//     list view so the global chrome reads as a single window)
+//   - line 2: blank breather under the chrome
+//   - sheet: issue lead + body + (optional children) + (optional
+//     activity), each row prefixed with documentGutter cells of
+//     space and capped at documentSheetWidth(width) cells of content
+//   - line H-1: info line (chrome row)
+//   - line H:   footer help table (chrome row)
+//
+// Content lives inside a 96-cell maximum measure. Spare terminal
+// width to the right is left blank — the redesign avoids stretching
+// section bands across wide terminals so the page reads as a focused
+// document, not a half-empty workspace.
 func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	if dm.loading {
 		return statusStyle.Render("loading…")
@@ -23,39 +36,40 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	if width <= 0 || height < listMinHeight {
 		return dm.renderTinyFallback(width)
 	}
-	sheetWidth := detailSheetWidth(width)
+	sheetWidth := documentSheetWidth(width)
 	helpRows := detailHelpRows(dm, chrome)
 	footerLines := helpLines(helpRows, width)
 	footer := renderFooterHelpTable(helpRows, width)
-	header := append([]string{renderTitleBar(width, chrome.scope, chrome.version)},
-		dm.documentHeader(sheetWidth, chrome)...)
+	titleBar := renderTitleBar(width, chrome.scope, chrome.version)
+	header := append([]string{titleBar, ""}, dm.documentHeader(sheetWidth, chrome)...)
 	hasChildren := len(dm.children) > 0
 	hasActivity := dm.hasActivity()
-	fixed := len(header) + 1 /* body rule */ + 1 /* info */ + footerLines
+	fixed := len(header) + 1 /* body label */ + 1 /* blank gap before activity */ +
+		1 /* info */ + footerLines
 	if hasChildren {
-		fixed++
+		fixed += 2 /* children label + blank gap */
 	}
 	if hasActivity {
-		fixed++ // activity header
+		fixed += 2 /* activity header + blank gap */
 	}
 	bodyA, childA, tabA := detailDocumentBudgets(height-fixed, len(dm.children), hasActivity)
-	bodyArea := dm.renderBody(sheetWidth, bodyA)
+	bodyArea := withGutter(dm.renderBody(sheetWidth, bodyA))
 	childrenArea := ""
 	if hasChildren {
-		childrenArea = dm.renderChildrenSection(sheetWidth, childA)
+		childrenArea = withGutter(dm.renderChildrenSection(sheetWidth, childA))
 	}
 	tabArea := ""
 	if hasActivity {
-		tabArea = dm.renderActiveTab(sheetWidth, tabA)
+		tabArea = withGutter(dm.renderActiveTab(sheetWidth, tabA))
 	}
 	infoLine := dm.renderInfoLine(width, chrome, tabA)
 	parts := append([]string{}, header...)
-	parts = append(parts, renderDocumentSectionHeader("Body", sheetWidth), bodyArea)
+	parts = append(parts, "", renderDocumentSectionHeader("Body"), bodyArea)
 	if hasChildren {
-		parts = append(parts, renderDocumentSectionHeader("Children", sheetWidth), childrenArea)
+		parts = append(parts, "", renderDocumentSectionHeader("Children"), childrenArea)
 	}
 	if hasActivity {
-		parts = append(parts, dm.renderActivityHeader(sheetWidth), tabArea)
+		parts = append(parts, "", dm.renderActivityHeader(sheetWidth), tabArea)
 	}
 	content := padDocumentContent(parts, height-1-footerLines, width)
 	return strings.Join([]string{content, infoLine, footer}, "\n")
@@ -85,13 +99,18 @@ func padDocumentContent(parts []string, rows, terminalWidth int) string {
 	return strings.Join(lines, "\n")
 }
 
+// documentHeader builds the issue-lead block: title row, byline,
+// and the compact metadata strip. Each line is gutter-prefixed so
+// the sheet reads as one indented column under the project bar.
 func (dm detailModel) documentHeader(width int, chrome viewChrome) []string {
 	iss := *dm.issue
-	lines := []string{renderDocumentTitleStatus(width, iss)}
+	lines := []string{withGutter(renderDocumentTitleStatus(width, iss))}
 	if byline := renderDocumentByline(width, iss); byline != "" {
-		lines = append(lines, byline)
+		lines = append(lines, withGutter(byline))
 	}
-	lines = append(lines, renderDocumentMetadata(width, iss, dm.parent, dm.children, chrome.scope)...)
+	for _, row := range renderDocumentMetadata(width, iss, dm.parent, dm.children, chrome.scope) {
+		lines = append(lines, withGutter(row))
+	}
 	return lines
 }
 
@@ -160,6 +179,17 @@ func formatDocumentTime(t time.Time) string {
 	return t.Format("Jan 2 15:04")
 }
 
+// renderDocumentMetadata returns the compact metadata strip that
+// sits below the byline. Owner and parent are always shown — the
+// "none" placeholder is informative because both fields are used as
+// triage signals. Labels and children are omitted entirely when
+// empty so the page does not carry rows like `labels: none` whose
+// only payload is a placeholder.
+//
+// In all-projects scope the project name leads on its own row so
+// the user can tell which project a cross-project result lives in
+// without consulting the global title bar (which reads "all" in
+// that scope).
 func renderDocumentMetadata(
 	width int, iss Issue, parent *IssueRef, children []Issue, sc scope,
 ) []string {
@@ -168,30 +198,36 @@ func renderDocumentMetadata(
 		rows = append(rows, "project: "+sanitizeForDisplay(sc.projectName))
 	}
 	owner := metadataLabel("owner:") + " " + ownerDocumentText(iss.Owner)
-	labels := metadataLabel("labels:") + " " + labelsDocumentText(iss.Labels, width-len("labels: "))
 	parentText := metadataLabel("parent:") + " " + parentDocumentText(parent)
-	childrenText := metadataLabel("children:") + " " + childrenDocumentText(children)
-	if width < 80 {
-		rows = append(rows, owner, labels, parentText, childrenText)
-		return renderMetadataBand(rows, width)
+	rows = append(rows, joinMetadataRow(owner, parentText, width)...)
+	if len(iss.Labels) > 0 {
+		labelsBudget := width - runewidth.StringWidth("labels: ")
+		labels := metadataLabel("labels:") + " " + labelsDocumentText(iss.Labels, labelsBudget)
+		rows = append(rows, truncate(labels, width))
 	}
-	rows = append(rows,
-		padLeftRightInside(owner, labels, width),
-		padLeftRightInside(parentText, childrenText, width),
-	)
-	return renderMetadataBand(rows, width)
+	if len(children) > 0 {
+		count := metadataLabel("children:") + " " + childrenCountSummary(children)
+		rows = append(rows, truncate(count, width))
+	}
+	return rows
+}
+
+// joinMetadataRow returns the (owner, parent) pair as one inline row
+// when both fit the sheet width, or as two stacked rows when the
+// combined width would overflow. Stacking — rather than truncating —
+// preserves the parent reference text on narrow terminals where the
+// title would otherwise be lost to ellipsis.
+func joinMetadataRow(left, right string, width int) []string {
+	lw := runewidth.StringWidth(stripANSI(left))
+	rw := runewidth.StringWidth(stripANSI(right))
+	if lw+3+rw <= width {
+		return []string{left + "   " + right}
+	}
+	return []string{truncate(left, width), truncate(right, width)}
 }
 
 func metadataLabel(label string) string {
 	return subtleStyle.Render(label)
-}
-
-func renderMetadataBand(rows []string, width int) []string {
-	out := make([]string, len(rows))
-	for i, row := range rows {
-		out[i] = detailMetaStyle.Render(padToWidth(row, width))
-	}
-	return out
 }
 
 func ownerDocumentText(owner *string) string {
@@ -218,24 +254,26 @@ func parentDocumentText(parent *IssueRef) string {
 	return fmt.Sprintf("#%d %s", parent.Number, sanitizeForDisplay(parent.Title))
 }
 
-func childrenDocumentText(children []Issue) string {
-	if len(children) == 0 {
-		return "none"
-	}
-	return childrenCountSummary(children)
+// renderDocumentSectionHeader renders a section label (Body /
+// Children / Activity). The label sits inside the gutter without a
+// background slab — the redesign relies on bold weight + position
+// rather than a chrome band so the page reads as a quiet document.
+func renderDocumentSectionHeader(label string) string {
+	return withGutter(detailSectionHeaderStyle.Render(label))
 }
 
-func renderDocumentSectionHeader(label string, width int) string {
-	return detailSectionHeaderStyle.Render(padToWidth(label, width))
-}
-
+// renderActivityHeader is a section header with the three tab chips
+// trailing the label. Active tab is wrapped in `[ ]` brackets so the
+// active state survives `KATA_COLOR_MODE=none`. The full strip is
+// truncated to `width` cells so a narrow terminal never produces an
+// overflow row that wraps under the gutter.
 func (dm detailModel) renderActivityHeader(width int) string {
 	tabs := [detailTabCount]string{
 		fmt.Sprintf("Comments (%d)", len(dm.comments)),
 		fmt.Sprintf("Events (%d)", len(dm.events)),
 		fmt.Sprintf("Links (%d)", len(dm.links)),
 	}
-	parts := []string{"Activity"}
+	parts := []string{detailSectionHeaderStyle.Render("Activity")}
 	for i, tab := range tabs {
 		if detailTab(i) == dm.activeTab {
 			parts = append(parts, tabActive.Render("[ "+tab+" ]"))
@@ -243,14 +281,48 @@ func (dm detailModel) renderActivityHeader(width int) string {
 			parts = append(parts, tabInactive.Render(tab))
 		}
 	}
-	return detailSectionHeaderStyle.Render(padToWidth(strings.Join(parts, "   "), width))
+	return withGutter(truncate(strings.Join(parts, "   "), width))
 }
 
-func detailSheetWidth(width int) int {
-	if width > 96 {
-		return 96
+// documentGutter is the left-side cell padding for content rows in
+// the stacked detail view. The gutter visually separates the document
+// content from the global title/info chrome at the page edges.
+const documentGutter = 2
+
+// documentSheetMaxWidth caps the readable measure of issue content
+// rows. Wider terminals leave the spare cells blank rather than
+// stretching backgrounds across the screen.
+const documentSheetMaxWidth = 96
+
+// documentSheetWidth returns the per-row content budget — the cells
+// available for issue content after the gutter is reserved, capped at
+// documentSheetMaxWidth so wide terminals do not blow out paragraph
+// measure.
+func documentSheetWidth(termWidth int) int {
+	w := termWidth - documentGutter
+	if w > documentSheetMaxWidth {
+		w = documentSheetMaxWidth
 	}
-	return width
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+// withGutter prefixes each newline-separated line in s with the
+// document gutter. Empty input returns the gutter alone so blank
+// rows still carry the indent and the page reads as a uniform
+// column.
+func withGutter(s string) string {
+	if s == "" {
+		return strings.Repeat(" ", documentGutter)
+	}
+	gutter := strings.Repeat(" ", documentGutter)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = gutter + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func blankLine(width int) string {

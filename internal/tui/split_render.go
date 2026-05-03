@@ -172,8 +172,12 @@ func renderSplitFooter(width int, m Model) string {
 }
 
 // ViewSplit renders the detail document inside the M6 split-mode
-// pane. The shared split frame owns the global title and footer, but
-// the issue content keeps the same document grammar as stacked detail.
+// pane. The shared split frame owns the global title bar and footer
+// chrome, so the pane skips the title bar but keeps the same
+// gutter + sheet grammar as stacked detail. The pane already has a
+// 1-cell border on every side (lipgloss border), so the content
+// already sits indented from the surrounding chrome — the gutter
+// just adds breathing room inside the panel.
 func (dm detailModel) ViewSplit(width, height int, chrome viewChrome) string {
 	if dm.loading {
 		return statusStyle.Render("loading…")
@@ -184,34 +188,34 @@ func (dm detailModel) ViewSplit(width, height int, chrome viewChrome) string {
 	if width <= 0 || height < 6 {
 		return dm.renderTinyFallback(width)
 	}
-	sheetWidth := detailSheetWidth(width)
+	sheetWidth := documentSheetWidth(width)
 	header := dm.documentHeader(sheetWidth, chrome)
 	hasChildren := len(dm.children) > 0
 	hasActivity := dm.hasActivity()
-	fixed := len(header) + 1
+	fixed := len(header) + 1 /* body label */
 	if hasChildren {
-		fixed++
+		fixed += 2 /* children label + gap */
 	}
 	if hasActivity {
-		fixed++
+		fixed += 2 /* activity header + gap */
 	}
 	bodyA, childA, tabA := detailDocumentBudgets(height-fixed, len(dm.children), hasActivity)
-	bodyArea := dm.renderBody(sheetWidth, bodyA)
+	bodyArea := withGutter(dm.renderBody(sheetWidth, bodyA))
 	childrenArea := ""
 	if hasChildren {
-		childrenArea = dm.renderChildrenSection(sheetWidth, childA)
+		childrenArea = withGutter(dm.renderChildrenSection(sheetWidth, childA))
 	}
 	tabArea := ""
 	if hasActivity {
-		tabArea = dm.renderActiveTab(sheetWidth, tabA)
+		tabArea = withGutter(dm.renderActiveTab(sheetWidth, tabA))
 	}
 	parts := append([]string{}, header...)
-	parts = append(parts, renderDocumentSectionHeader("Body", sheetWidth), bodyArea)
+	parts = append(parts, renderDocumentSectionHeader("Body"), bodyArea)
 	if hasChildren {
-		parts = append(parts, renderDocumentSectionHeader("Children", sheetWidth), childrenArea)
+		parts = append(parts, "", renderDocumentSectionHeader("Children"), childrenArea)
 	}
 	if hasActivity {
-		parts = append(parts, dm.renderActivityHeader(sheetWidth), tabArea)
+		parts = append(parts, "", dm.renderActivityHeader(sheetWidth), tabArea)
 	}
 	return padDocumentContent(parts, height, width)
 }

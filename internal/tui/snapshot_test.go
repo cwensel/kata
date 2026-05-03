@@ -512,6 +512,44 @@ func TestSnapshot_Detail_DocumentPage80x50(t *testing.T) {
 	assertGolden(t, "detail-document-80x50", got)
 }
 
+// TestSnapshot_Detail_DocumentWide160x32 locks down the redesigned
+// stacked detail at the screenshot-scale terminal that previous
+// iterations failed in. The handoff cited a wide live render with
+// no project bar, no gutter, and `��` artifacts on the metadata
+// rows; this golden is the canonical "what the user should see"
+// reference for that scale. The fixture flows through applyFetched
+// so the auto-select-first-non-empty-activity-tab path runs (the
+// real binary's first-open behavior) and Events lights up instead
+// of an empty Comments tab.
+func TestSnapshot_Detail_DocumentWide160x32(t *testing.T) {
+	defer snapshotInit(t)()
+	iss := Issue{
+		ProjectID: 7, Number: 1,
+		Title: "fix the tui to be less shitty", Status: "open",
+		Author:    "anonymous",
+		Body:      "enter some stuff here",
+		CreatedAt: time.Date(2026, 5, 2, 19, 15, 0, 0, time.UTC),
+		UpdatedAt: snapshotFixedNow.Add(-21 * time.Hour),
+	}
+	dm := detailModel{issue: &iss, scopePID: 7}
+	dm = dm.applyFetched(commentsFetchedMsg{gen: dm.gen, comments: nil})
+	dm = dm.applyFetched(eventsFetchedMsg{
+		gen: dm.gen,
+		events: []EventLogEntry{
+			{
+				ID: 1, Type: "issue.created", Actor: "anonymous",
+				CreatedAt: time.Date(2026, 5, 2, 19, 16, 0, 0, time.UTC),
+			},
+		},
+	})
+	dm = dm.applyFetched(linksFetchedMsg{gen: dm.gen, links: nil})
+	got := dm.View(160, 32, viewChrome{
+		scope:   scope{projectID: 7, projectName: "kata"},
+		version: "dev",
+	})
+	assertGolden(t, "detail-document-wide-160x32", got)
+}
+
 func TestSnapshot_Detail_DocumentNarrow(t *testing.T) {
 	defer snapshotInit(t)()
 	dm := snapDetailFixture()

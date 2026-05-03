@@ -72,13 +72,17 @@ func TestDetailCompactSheet_UsesDenseRhythmAndNoDecorativeRules(t *testing.T) {
 			t.Fatalf("compact sheet should not use decorative rule %q:\n%s", deny, got)
 		}
 	}
-	metadataEnd := indexOf(lines, "children:")
+	// The redesign separates metadata and Body with one blank breather
+	// row so the page reads as a quiet document. Body should land
+	// within two rows of the last metadata line — close enough to feel
+	// connected, not far enough to leak dead air.
+	metadataEnd := indexOf(lines, "labels:")
 	body := indexOf(lines, "Body")
 	if metadataEnd < 0 || body < 0 {
 		t.Fatalf("missing metadata/body:\n%s", got)
 	}
-	if body != metadataEnd+1 {
-		t.Fatalf("Body should immediately follow metadata; metadata=%d body=%d:\n%s",
+	if body-metadataEnd > 2 {
+		t.Fatalf("Body should follow metadata within one blank row; metadata=%d body=%d:\n%s",
 			metadataEnd, body, got)
 	}
 	bodyText := indexOf(lines, "Click the login button twice.")
@@ -86,19 +90,27 @@ func TestDetailCompactSheet_UsesDenseRhythmAndNoDecorativeRules(t *testing.T) {
 	if bodyText < 0 || activity < 0 {
 		t.Fatalf("missing body text/activity:\n%s", got)
 	}
-	if activity > bodyText+2 {
-		t.Fatalf("Activity should follow short body without dead air; body=%d activity=%d:\n%s",
+	// Same one-blank-row rhythm between body content and Activity.
+	if activity > bodyText+3 {
+		t.Fatalf("Activity should follow short body within one blank row; body=%d activity=%d:\n%s",
 			bodyText, activity, got)
 	}
 }
 
+// TestDetailCompactSheet_AdaptiveSurfaces locks down the redesigned
+// surface choices: only the markdown code block keeps a subtle
+// background in color modes; the metadata band and section header
+// styles render flat. Earlier iterations painted full-width slabs
+// behind those rows and looked like heavy chrome competing with the
+// issue body — the redesign drops them so the page reads as a quiet
+// document.
 func TestDetailCompactSheet_AdaptiveSurfaces(t *testing.T) {
 	applyColorMode(colorDark, io.Discard)
-	if !styleHasBackground(detailMetaStyle) {
-		t.Fatal("detailMetaStyle needs an adaptive background in color modes")
+	if styleHasBackground(detailMetaStyle) {
+		t.Fatal("detailMetaStyle should not paint a background slab in color modes")
 	}
-	if !styleHasBackground(detailSectionHeaderStyle) {
-		t.Fatal("detailSectionHeaderStyle needs an adaptive background in color modes")
+	if styleHasBackground(detailSectionHeaderStyle) {
+		t.Fatal("detailSectionHeaderStyle should not paint a background slab in color modes")
 	}
 	if markdownCodeBlockBackground() == nil {
 		t.Fatal("markdown code blocks need a subtle background in color modes")
@@ -173,6 +185,11 @@ func TestDetailDocument_DoesNotPadBodyBeforeChildren(t *testing.T) {
 	}
 }
 
+// TestDetailDocument_NarrowStacksMetadata verifies that on a narrow
+// terminal where owner+parent cannot fit on one row, the metadata
+// stacks vertically rather than overflowing the sheet. Empty
+// labels/children are still omitted entirely — the stacking is a
+// fallback for the present rows, not an excuse to render placeholders.
 func TestDetailDocument_NarrowStacksMetadata(t *testing.T) {
 	defer snapshotInit(t)()
 	dm := snapDetailFixture()
@@ -185,7 +202,9 @@ func TestDetailDocument_NarrowStacksMetadata(t *testing.T) {
 	assertStringContains(t, got, "owner: alice")
 	assertStringContains(t, got, "labels: [bug] [prio-1]")
 	assertStringContains(t, got, "parent: #12 workspace polish")
-	assertStringContains(t, got, "children: none")
+	if strings.Contains(got, "children: none") {
+		t.Fatalf("empty children should be omitted, not labeled `children: none`:\n%s", got)
+	}
 }
 
 func TestDetailDocument_EmptyBodyAndActivityOmitted(t *testing.T) {

@@ -138,6 +138,12 @@ func (lm listModel) queueHelpRows() [][]helpItem {
 	return [][]helpItem{items}
 }
 
+// detailHelpRows is the persistent footer for the detail view. Only
+// navigation primitives stay on the bar so the footer reads quieter
+// than the issue content; secondary actions (e/c/x/+/a, q quit) are
+// reachable from `?` help. Children focus keeps its own short row
+// because the navigation surface (↑↓ child, ↵ open child, N new
+// child, p parent) is genuinely different from the activity tabs.
 func (dm detailModel) detailHelpRows() [][]helpItem {
 	if dm.detailFocus == focusChildren && len(dm.children) > 0 {
 		return [][]helpItem{{
@@ -148,7 +154,6 @@ func (dm detailModel) detailHelpRows() [][]helpItem {
 			{key: "↹", desc: "section"},
 			{key: "esc", desc: "back"},
 			{key: "?", desc: "help"},
-			{key: "q", desc: "quit"},
 		}}
 	}
 	return [][]helpItem{{
@@ -156,13 +161,7 @@ func (dm detailModel) detailHelpRows() [][]helpItem {
 		{key: "↹", desc: "section"},
 		{key: "↵", desc: "open"},
 		{key: "esc", desc: "back"},
-		{key: "e", desc: "edit"},
-		{key: "c", desc: "comment"},
-		{key: "x", desc: "close"},
-		{key: "+", desc: "label"},
-		{key: "a", desc: "owner"},
 		{key: "?", desc: "help"},
-		{key: "q", desc: "quit"},
 	}}
 }
 

@@ -31,6 +31,12 @@ func TestQueueHelpRows_ConditionalItems(t *testing.T) {
 		helpItem{key: "N", desc: "child"})
 }
 
+// TestDetailHelpRows_Contexts: the persistent detail footer carries
+// only navigation primitives (move, section, open, back, help). The
+// secondary action keys (e/c/x/+/a, q) live on the help screen, not
+// the persistent footer — verified here so a future regression that
+// re-inflates the footer reads as a deliberate choice rather than
+// drift.
 func TestDetailHelpRows_Contexts(t *testing.T) {
 	activity := Model{detail: detailModel{
 		issue:       &Issue{Number: 1, Title: "issue", Status: "open"},
@@ -38,12 +44,23 @@ func TestDetailHelpRows_Contexts(t *testing.T) {
 		activeTab:   tabComments,
 	}}
 	for _, want := range []helpItem{
+		{key: "↑↓", desc: "move"},
+		{key: "↹", desc: "section"},
+		{key: "↵", desc: "open"},
+		{key: "esc", desc: "back"},
+		{key: "?", desc: "help"},
+	} {
+		assertHelpItemPresent(t, flattenHelpRows(activity.detailHelpRows()), want)
+	}
+	for _, deny := range []helpItem{
 		{key: "c", desc: "comment"},
 		{key: "e", desc: "edit"},
 		{key: "+", desc: "label"},
 		{key: "a", desc: "owner"},
+		{key: "x", desc: "close"},
+		{key: "q", desc: "quit"},
 	} {
-		assertHelpItemPresent(t, flattenHelpRows(activity.detailHelpRows()), want)
+		assertHelpItemAbsent(t, flattenHelpRows(activity.detailHelpRows()), deny)
 	}
 
 	children := Model{detail: detailModel{

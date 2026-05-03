@@ -104,6 +104,13 @@ type detailModel struct {
 	allProjects     bool
 	actor           string
 	status          string
+	// tabExplicit tracks whether the user has manually selected the
+	// active activity tab. False on a fresh detail open; flipped to
+	// true the first time the tab cycler runs. applyFetched uses this
+	// to auto-pick the first non-empty activity tab on initial load
+	// (so a Comments(0)+Events(N) issue lands on Events) without
+	// stomping a user choice when a late-arriving fetch resolves.
+	tabExplicit bool
 	// dm.modal was removed in M3b — the M3a/b input infrastructure on
 	// Model.input owns inline label/owner/link prompts now.
 }
@@ -134,6 +141,12 @@ func (dm detailModel) Update(msg tea.Msg, km keymap, api detailAPI) (detailModel
 // does not match dm.gen are dropped so an in-flight fetch cannot
 // pollute a different issue after Esc + reopen or an Enter-jump to a
 // referenced issue.
+//
+// After per-tab payloads land, autoSelectActivityTab promotes the
+// active tab to the first non-empty one — but only when the user has
+// not yet picked a tab manually (dm.tabExplicit). This keeps the
+// initial-load Comments(0) → Events(N) jump from pulling focus away
+// once the user has cycled tabs themselves.
 func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
 	switch m := msg.(type) {
 	case detailFetchedMsg:
@@ -155,6 +168,7 @@ func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
 		dm.commentsLoading = false
 		dm.comments = m.comments
 		dm.commentsErr = m.err
+		dm = dm.autoSelectActivityTab()
 	case eventsFetchedMsg:
 		if m.gen != dm.gen {
 			return dm
@@ -162,6 +176,7 @@ func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
 		dm.eventsLoading = false
 		dm.events = m.events
 		dm.eventsErr = m.err
+		dm = dm.autoSelectActivityTab()
 	case linksFetchedMsg:
 		if m.gen != dm.gen {
 			return dm
@@ -169,7 +184,30 @@ func (dm detailModel) applyFetched(msg tea.Msg) detailModel {
 		dm.linksLoading = false
 		dm.links = m.links
 		dm.linksErr = m.err
+		dm = dm.autoSelectActivityTab()
 	}
+	return dm
+}
+
+// autoSelectActivityTab picks the first non-empty activity tab the
+// first time fetches resolve, in order Comments → Events → Links. It
+// is a no-op once the user has cycled tabs (dm.tabExplicit) so an
+// in-flight fetch cannot yank focus off the user's choice. When all
+// tabs are empty the active tab keeps its default so the placeholder
+// strip (`[ Comments (0) ]`) still reads naturally.
+func (dm detailModel) autoSelectActivityTab() detailModel {
+	if dm.tabExplicit {
+		return dm
+	}
+	switch {
+	case len(dm.comments) > 0:
+		dm.activeTab = tabComments
+	case len(dm.events) > 0:
+		dm.activeTab = tabEvents
+	case len(dm.links) > 0:
+		dm.activeTab = tabLinks
+	}
+	dm.tabCursor = 0
 	return dm
 }
 
@@ -321,6 +359,7 @@ func (dm detailModel) cycleDetailFocus(delta int) detailModel {
 	if slot.focus == focusActivity {
 		dm.activeTab = slot.tab
 		dm.tabCursor = 0
+		dm.tabExplicit = true
 	} else {
 		dm.childCursor = clampInt(dm.childCursor, 0, len(dm.children)-1)
 	}

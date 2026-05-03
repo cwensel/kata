@@ -176,7 +176,12 @@ func applyColorMode(m colorMode, w io.Writer) {
 			return lipgloss.AdaptiveColor{Light: light, Dark: dark}
 		}
 	}
-	titleStyle = r.NewStyle().Bold(true).Foreground(pick("125", "205"))
+	// titleStyle is bold without a saturated foreground so the issue
+	// header reads as the page lead rather than a magenta announcement.
+	// The full chrome stack (project bar accent, status pill, focused
+	// borders) still carries hue; the title leans on weight + position
+	// to be the visual anchor.
+	titleStyle = r.NewStyle().Bold(true)
 	subtleStyle = r.NewStyle().Foreground(pick("242", "246"))
 	statusStyle = r.NewStyle().Foreground(pick("242", "246"))
 	selectedStyle = r.NewStyle().Background(pick("153", "24"))
@@ -194,8 +199,13 @@ func applyColorMode(m colorMode, w io.Writer) {
 	chipActive = r.NewStyle().Bold(true).Foreground(pick("125", "205"))
 	tabActive = r.NewStyle().Bold(true).Underline(true).Foreground(pick("125", "205"))
 	tabInactive = r.NewStyle().Foreground(pick("242", "246"))
-	detailMetaStyle = r.NewStyle().Background(pick("251", "235"))
-	detailSectionHeaderStyle = r.NewStyle().Bold(true).Background(pick("250", "236"))
+	// detailMetaStyle and detailSectionHeaderStyle no longer paint a
+	// background band. The earlier full-width slabs read as heavy
+	// chrome that competed with the issue body. Section labels lean on
+	// bold weight + position; metadata rows lean on subtleStyle for
+	// the label half and plain text for the value half.
+	detailMetaStyle = r.NewStyle()
+	detailSectionHeaderStyle = r.NewStyle().Bold(true)
 	markdownCodeBlockStyle = r.NewStyle().Background(pick("252", "236"))
 	panelActiveBorder = pick("125", "205")
 	panelInactiveBorder = pick("242", "246")

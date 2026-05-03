@@ -1,13 +1,15 @@
  Project: —                                                                                                   kata かた 
-#42  fix login bug on Safari                                                              [open]                        
-authored by wesm                                                                                                        
-owner: none                                                                         labels: none                        
-parent: none                                                                      children: none                        
-Body                                                                                                                    
-Reproduces in Safari 17 only.                                                                                           
-Click the login button twice.                                                                                           
-Activity   Comments (2)   Events (2)   [ Links (1) ]                                                                    
-> [blocks] → #7 ← #42  by wesm @ 2026-04-30 10:00                                                                       
+                                                                                                                        
+  #42  fix login bug on Safari                                                              [open]                      
+  authored by wesm                                                                                                      
+  owner: none   parent: none                                                                                            
+                                                                                                                        
+  Body                                                                                                                  
+  Reproduces in Safari 17 only.                                                                                         
+  Click the login button twice.                                                                                         
+                                                                                                                        
+  Activity   Comments (2)   Events (2)   [ Links (1) ]                                                                  
+  > [blocks] → #7 ← #42  by wesm @ 2026-04-30 10:00                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -25,6 +27,4 @@ Activity   Comments (2)   Events (2)   [ Links (1) ]
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
- ↑↓ move▕ ↹ section▕ ↵ open▕ esc back▕ e edit▕ c comment▕ x close▕ + label▕ a owner▕ ? help▕ q quit                     
+ ↑↓ move▕ ↹ section▕ ↵ open▕ esc back▕ ? help                                                                           

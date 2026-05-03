@@ -1,23 +1,21 @@
  Project: —                                                                                                   kata かた 
-#42  fix login bug on Safari                                                              [open]                        
-authored by wesm                                                                                                        
-owner: none                                                                         labels: none                        
-parent: #12 workspace polish parent                                   children: 1 open / 2 total                        
-Body                                                                                                                    
-Reproduces in Safari 17 only.                                                                                           
-Click the login button twice.                                                                                           
-Children                                                                                                                
-  #43    open      detail hint bars incomplete                            alice       1h ago                            
-> #44    closed    new issue form parent field                            wesm        2h ago                            
-Activity   [ Comments (2) ]   Events (2)   Links (1)                                                                    
-> alice  Apr 30 10:00                                                                                                   
-  I can repro on macOS.                                                                                                 
                                                                                                                         
-  bob    Apr 30 11:00                                                                                                   
-  Looks like a race in oauth.                                                                                           
+  #42  fix login bug on Safari                                                              [open]                      
+  authored by wesm                                                                                                      
+  owner: none   parent: #12 workspace polish parent                                                                     
+  children: 1 open / 2 total                                                                                            
                                                                                                                         
+  Body                                                                                                                  
+  Reproduces in Safari 17 only.                                                                                         
+  Click the login button twice.                                                                                         
                                                                                                                         
+  Children                                                                                                              
+    #43    open      detail hint bars incomplete                            alice       1h ago                          
+  > #44    closed    new issue form parent field                            wesm        2h ago                          
                                                                                                                         
+  Activity   [ Comments (2) ]   Events (2)   Links (1)                                                                  
+  > alice  Apr 30 10:00                                                                                                 
+    I can repro on macOS.                                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -29,4 +27,6 @@ Activity   [ Comments (2) ]   Events (2)   Links (1)
                                                                                                                         
                                                                                                                         
                                                                                                                         
- ↑↓ child▕ ↵ open child▕ N child▕ p parent▕ ↹ section▕ esc back▕ ? help▕ q quit                                         
+                                                                                                                        
+                                                                                                    [1-1 of 2 comments] 
+ ↑↓ child▕ ↵ open child▕ N child▕ p parent▕ ↹ section▕ esc back▕ ? help                                                 
