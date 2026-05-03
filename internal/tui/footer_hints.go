@@ -138,31 +138,50 @@ func (lm listModel) queueHelpRows() [][]helpItem {
 	return [][]helpItem{items}
 }
 
-// detailHelpRows is the persistent footer for the detail view. Only
-// navigation primitives stay on the bar so the footer reads quieter
-// than the issue content; secondary actions (e/c/x/+/a, q quit) are
-// reachable from `?` help. Children focus keeps its own short row
-// because the navigation surface (↑↓ child, ↵ open child, N new
-// child, p parent) is genuinely different from the activity tabs.
+// detailHelpRows is the persistent footer for the detail view. The
+// detail surface is action-rich (edit/comment/label/owner/parent/
+// blocker/link/close/reopen) and the user explicitly asked for the
+// footer to be comprehensive — every key handled by the detail
+// view's Update loop appears here so the user is never stranded
+// looking for an action. The reflowHelpRows packer wraps the row
+// across multiple lines when the terminal is too narrow.
+//
+// Children focus swaps the navigation header (↑↓ child / ↵ open
+// child / N new child / p parent) but keeps the same action surface
+// because the same mutations apply to the parent issue regardless
+// of which section the cursor is on.
 func (dm detailModel) detailHelpRows() [][]helpItem {
+	actions := []helpItem{
+		{key: "e", desc: "edit"},
+		{key: "c", desc: "comment"},
+		{key: "+", desc: "label"},
+		{key: "-", desc: "unlabel"},
+		{key: "a", desc: "owner"},
+		{key: "A", desc: "unassign"},
+		{key: "x", desc: "close"},
+		{key: "r", desc: "reopen"},
+		{key: "p", desc: "parent"},
+		{key: "b", desc: "block"},
+		{key: "L", desc: "link"},
+		{key: "N", desc: "child"},
+		{key: "esc", desc: "back"},
+		{key: "?", desc: "help"},
+		{key: "q", desc: "quit"},
+	}
 	if dm.detailFocus == focusChildren && len(dm.children) > 0 {
-		return [][]helpItem{{
+		nav := []helpItem{
 			{key: "↑↓", desc: "child"},
 			{key: "↵", desc: "open child"},
-			{key: "N", desc: "child"},
-			{key: "p", desc: "parent"},
 			{key: "↹", desc: "section"},
-			{key: "esc", desc: "back"},
-			{key: "?", desc: "help"},
-		}}
+		}
+		return [][]helpItem{append(nav, actions...)}
 	}
-	return [][]helpItem{{
+	nav := []helpItem{
 		{key: "↑↓", desc: "move"},
 		{key: "↹", desc: "section"},
 		{key: "↵", desc: "open"},
-		{key: "esc", desc: "back"},
-		{key: "?", desc: "help"},
-	}}
+	}
+	return [][]helpItem{append(nav, actions...)}
 }
 
 func modalHelpRows(kind modalKind) [][]helpItem {

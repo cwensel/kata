@@ -209,15 +209,19 @@ func TestSplit_NewIssueFormOverlaysWholeTerminal(t *testing.T) {
 
 // TestSplit_HelpRowSwapsWithFocus: focus=list shows list footer
 // bindings (e.g. "search"); switching to focus=detail shows the
-// reduced detail footer ("section"). Secondary detail actions
-// (edit/comment/close/label/owner) live on the help screen, not the
-// persistent footer, so this asserts the focus-specific keyword.
+// comprehensive detail footer (which carries detail-only keywords
+// like "section" and the action surface "edit"/"comment"). The
+// list footer must not carry detail-only keywords; the detail
+// footer must not carry list-only keywords (search/filter).
 func TestSplit_HelpRowSwapsWithFocus(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
 	listView := m.View()
 	if !strings.Contains(listView, "search") {
 		t.Errorf("list-focus footer missing 'search' hint:\n%s", listView)
+	}
+	if strings.Contains(listView, "section") {
+		t.Errorf("list-focus footer should not carry detail 'section' keyword:\n%s", listView)
 	}
 	iss := m.list.issues[0]
 	m.detail.issue = &iss
@@ -226,8 +230,8 @@ func TestSplit_HelpRowSwapsWithFocus(t *testing.T) {
 	if !strings.Contains(detailView, "section") {
 		t.Errorf("detail-focus footer missing 'section' hint:\n%s", detailView)
 	}
-	if strings.Contains(detailView, " edit") {
-		t.Errorf("detail-focus footer should not carry 'edit' (moved to ?):\n%s", detailView)
+	if !strings.Contains(detailView, "edit") {
+		t.Errorf("detail-focus footer missing comprehensive 'edit' hint:\n%s", detailView)
 	}
 }
 

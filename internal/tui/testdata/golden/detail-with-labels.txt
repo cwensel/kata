@@ -13,8 +13,6 @@
   > alice  Apr 30 10:00                                                                                                 
     I can repro on macOS.                                                                                               
                                                                                                                         
-    bob    Apr 30 11:00                                                                                                 
-    Looks like a race in oauth.                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,4 +25,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
- ↑↓ move▕ ↹ section▕ ↵ open▕ esc back▕ ? help                                                                           
+                                                                                                    [1-1 of 2 comments] 
+ ↑↓ move▕ ↹ section▕ ↵ open ▕ e edit  ▕ c comment▕ + label▕ - unlabel▕ a owner▕ A unassign▕ x close▕ r reopen▕ p parent 
+ b block▕ L link   ▕ N child▕ esc back▕ ? help   ▕ q quit                                                               

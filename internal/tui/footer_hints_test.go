@@ -31,12 +31,13 @@ func TestQueueHelpRows_ConditionalItems(t *testing.T) {
 		helpItem{key: "N", desc: "child"})
 }
 
-// TestDetailHelpRows_Contexts: the persistent detail footer carries
-// only navigation primitives (move, section, open, back, help). The
-// secondary action keys (e/c/x/+/a, q) live on the help screen, not
-// the persistent footer — verified here so a future regression that
-// re-inflates the footer reads as a deliberate choice rather than
-// drift.
+// TestDetailHelpRows_Contexts: the persistent detail footer is
+// comprehensive — every detail-mode binding handled by the Update
+// loop appears so the user is not stranded looking for an action.
+// The activity-focus row carries navigation primitives plus the
+// full mutation surface (edit/comment/label/owner/parent/blocker/
+// link/close/reopen/quit). Children focus swaps the navigation
+// header (↑↓ child / ↵ open child) but keeps the action surface.
 func TestDetailHelpRows_Contexts(t *testing.T) {
 	activity := Model{detail: detailModel{
 		issue:       &Issue{Number: 1, Title: "issue", Status: "open"},
@@ -47,20 +48,20 @@ func TestDetailHelpRows_Contexts(t *testing.T) {
 		{key: "↑↓", desc: "move"},
 		{key: "↹", desc: "section"},
 		{key: "↵", desc: "open"},
-		{key: "esc", desc: "back"},
-		{key: "?", desc: "help"},
-	} {
-		assertHelpItemPresent(t, flattenHelpRows(activity.detailHelpRows()), want)
-	}
-	for _, deny := range []helpItem{
-		{key: "c", desc: "comment"},
 		{key: "e", desc: "edit"},
+		{key: "c", desc: "comment"},
 		{key: "+", desc: "label"},
 		{key: "a", desc: "owner"},
 		{key: "x", desc: "close"},
+		{key: "r", desc: "reopen"},
+		{key: "p", desc: "parent"},
+		{key: "b", desc: "block"},
+		{key: "L", desc: "link"},
+		{key: "esc", desc: "back"},
+		{key: "?", desc: "help"},
 		{key: "q", desc: "quit"},
 	} {
-		assertHelpItemAbsent(t, flattenHelpRows(activity.detailHelpRows()), deny)
+		assertHelpItemPresent(t, flattenHelpRows(activity.detailHelpRows()), want)
 	}
 
 	children := Model{detail: detailModel{
@@ -69,8 +70,13 @@ func TestDetailHelpRows_Contexts(t *testing.T) {
 		detailFocus: focusChildren,
 	}}
 	for _, want := range []helpItem{
+		{key: "↑↓", desc: "child"},
 		{key: "↵", desc: "open child"},
 		{key: "N", desc: "child"},
+		{key: "e", desc: "edit"},
+		{key: "x", desc: "close"},
+		{key: "?", desc: "help"},
+		{key: "q", desc: "quit"},
 	} {
 		assertHelpItemPresent(t, flattenHelpRows(children.detailHelpRows()), want)
 	}

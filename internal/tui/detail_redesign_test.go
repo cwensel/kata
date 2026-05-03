@@ -200,11 +200,13 @@ func TestDetailRedesign_ExplicitTabPickStaysSticky(t *testing.T) {
 	}
 }
 
-// TestDetailRedesign_FooterHintsAreCompact ensures the persistent
-// detail footer carries only navigation primitives. Secondary actions
-// (e/c/x/+/a) should move to the help screen. Spec calls for the
-// detail footer to read quieter than the issue content.
-func TestDetailRedesign_FooterHintsAreCompact(t *testing.T) {
+// TestDetailRedesign_FooterHintsAreComprehensive ensures the
+// persistent detail footer surfaces every detail-mode action so the
+// user is never stranded looking for a binding. The footer is
+// expected to wrap across multiple rows on narrow terminals via
+// reflowHelpRows; this test only checks the row content, not the
+// rendered width.
+func TestDetailRedesign_FooterHintsAreComprehensive(t *testing.T) {
 	dm := detailModel{
 		issue:       &Issue{Number: 1, Title: "issue", Status: "open"},
 		detailFocus: focusActivity,
@@ -218,17 +220,15 @@ func TestDetailRedesign_FooterHintsAreCompact(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"↑↓ move", "↹ section", "↵ open", "esc back", "? help",
+		"↑↓ move", "↹ section", "↵ open",
+		"e edit", "c comment", "+ label", "- unlabel",
+		"a owner", "A unassign",
+		"x close", "r reopen",
+		"p parent", "b block", "L link", "N child",
+		"esc back", "? help", "q quit",
 	} {
 		if !keys[want] {
 			t.Fatalf("expected detail footer to carry %q; got rows=%+v", want, rows)
-		}
-	}
-	for _, deny := range []string{
-		"e edit", "c comment", "x close", "+ label", "a owner", "q quit",
-	} {
-		if keys[deny] {
-			t.Fatalf("expected detail footer to omit %q; got rows=%+v", deny, rows)
 		}
 	}
 }

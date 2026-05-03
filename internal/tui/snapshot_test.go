@@ -593,7 +593,11 @@ func TestSnapshot_Detail_DocumentMarkdown(t *testing.T) {
 // TestSnapshot_Detail_LabelsNarrow_OverflowAndDegrade verifies the
 // chip strip degrades gracefully on narrow terminals: at 60 cells
 // the +N overflow appears; at 20 cells the strip collapses to the
-// `[N labels]` ultra-narrow fallback.
+// `[N labels]` ultra-narrow fallback. Heights are deliberately tall
+// enough that the comprehensive detail footer (which reflows to
+// one item per row at narrow widths) does not crowd the labels
+// row out of the document body — the test is about width-driven
+// chip behaviour, not height-driven layout collapse.
 func TestSnapshot_Detail_LabelsNarrow_OverflowAndDegrade(t *testing.T) {
 	defer snapshotInit(t)()
 	dm := snapDetailFixture()
@@ -602,13 +606,13 @@ func TestSnapshot_Detail_LabelsNarrow_OverflowAndDegrade(t *testing.T) {
 		"alpha-pretty-long", "beta-pretty-long", "gamma-pretty-long",
 		"delta-pretty-long", "epsilon-pretty-long",
 	}
-	overflow := dm.View(60, 24, viewChrome{})
+	overflow := dm.View(60, 40, viewChrome{})
 	if !strings.Contains(overflow, "+") {
 		t.Fatalf("expected +N overflow at width 60, got:\n%s", overflow)
 	}
-	degrade := dm.View(20, 24, viewChrome{})
+	degrade := dm.View(20, 60, viewChrome{})
 	if !strings.Contains(degrade, "labels]") {
-		t.Fatalf("expected [N labels] degrade at width 30, got:\n%s", degrade)
+		t.Fatalf("expected [N labels] degrade at width 20, got:\n%s", degrade)
 	}
 }
 

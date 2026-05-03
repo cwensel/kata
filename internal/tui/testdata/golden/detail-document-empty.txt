@@ -27,6 +27,6 @@
                                                                                 
                                                                                 
                                                                                 
-                                                                                
-                                                                                
- ↑↓ move▕ ↹ section▕ ↵ open▕ esc back▕ ? help                                   
+ ↑↓ move▕ ↹ section ▕ ↵ open ▕ e edit  ▕ c comment▕ + label▕ - unlabel          
+ a owner▕ A unassign▕ x close▕ r reopen▕ p parent ▕ b block▕ L link             
+ N child▕ esc back  ▕ ? help ▕ q quit                                           
