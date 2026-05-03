@@ -352,10 +352,19 @@ func rightAlignInside(s string, innerWidth int) string {
 
 // padToWidth right-pads s with spaces so the rendered cell fills
 // `width` cells. Used for chrome lines that need a uniform width.
+// ANSI-aware on the truncate path: stripANSI for measurement, then
+// ansi.Truncate for the cut so escape sequences are never sliced
+// mid-byte. The previous implementation used runewidth.Truncate
+// which sliced inside SGR sequences when the input carried ANSI —
+// the terminal then rendered the dangling escape fragment as a
+// stray suffix and chopped most of the title bar off the screen.
 func padToWidth(s string, width int) string {
 	w := runewidth.StringWidth(stripANSI(s))
-	if w >= width {
-		return runewidth.Truncate(s, width, "…")
+	if w == width {
+		return s
+	}
+	if w > width {
+		return ansi.Truncate(s, width, "…")
 	}
 	return s + strings.Repeat(" ", width-w)
 }
@@ -894,14 +903,24 @@ func ownerText(owner *string) string {
 	return *owner
 }
 
-// truncate cuts s to terminal-width w, appending an ellipsis. Width
-// is measured in cells, so wide East-Asian glyphs and zero-width
-// joiners are handled correctly.
+// truncate cuts s to visible-cell width w, appending an ellipsis. Width
+// is measured in visible cells (ANSI escape sequences and wide
+// East-Asian glyphs are handled correctly), and the cut itself is
+// ANSI-aware via ansi.Truncate so escape sequences are never sliced
+// in half. The previous implementation used runewidth.Truncate which
+// counted every byte of an escape sequence as a cell — passing a
+// styled string would over-count the width, then the cut would slice
+// mid-sequence, leaving the terminal to render `�` glyphs and
+// fragments of the SGR command (the source of the screenshot's `??`
+// artifacts on the active activity tab).
 func truncate(s string, w int) string {
-	if w <= 0 || runewidth.StringWidth(s) <= w {
+	if w <= 0 {
 		return s
 	}
-	return runewidth.Truncate(s, w-1, "…")
+	if runewidth.StringWidth(stripANSI(s)) <= w {
+		return s
+	}
+	return ansi.Truncate(s, w, "…")
 }
 
 // renderNow is the clock injection point for humanizeRelative.
