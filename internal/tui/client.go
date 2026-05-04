@@ -164,14 +164,15 @@ func (c *Client) EditBody(
 
 // ResolveProject runs the §4.2 resolution flow against startPath.
 //
-// When the workspace has a readable .kata.toml, the project identity
-// is sent and the daemon skips its filesystem walk — required for
-// remote-client mode where the daemon cannot stat the client's path.
-// Otherwise the start_path fallback walks the daemon's filesystem.
+// When the workspace has a readable .kata.toml at startPath or any
+// ancestor directory, the project identity is sent and the daemon
+// skips its filesystem walk — required for remote-client mode where
+// the daemon cannot stat the client's path. Otherwise the start_path
+// fallback walks the daemon's filesystem.
 func (c *Client) ResolveProject(ctx context.Context, startPath string) (*ResolveResp, error) {
 	var resp ResolveResp
 	req := map[string]string{}
-	if cfg, err := config.ReadProjectConfig(startPath); err == nil && cfg.Project.Identity != "" {
+	if cfg, _, err := config.FindProjectConfig(startPath); err == nil && cfg.Project.Identity != "" {
 		req["project_identity"] = cfg.Project.Identity
 	} else {
 		req["start_path"] = startPath

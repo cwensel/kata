@@ -47,11 +47,16 @@ func envHTTPTimeout(def time.Duration) time.Duration {
 // and TUI share one resolution path; tests still inject a base URL via
 // daemonclient.BaseURLKey{} on the context.
 //
+// When --workspace points at a specific directory, that path anchors
+// the .kata.local.toml walk so a workspace-local [server] override is
+// honored even when the user is invoking kata from outside the repo.
+//
 // If a remote is explicitly configured (via KATA_SERVER or
 // .kata.local.toml) but does not respond, the CLI surfaces this as a
 // daemon-unavailable error so callers see a stable exit code and shape.
 func ensureDaemon(ctx context.Context) (string, error) {
-	baseURL, err := daemonclient.EnsureRunning(ctx)
+	workspaceStart := workspaceStartForRemote()
+	baseURL, err := daemonclient.EnsureRunningInWorkspace(ctx, workspaceStart)
 	if err == nil {
 		return baseURL, nil
 	}
@@ -63,6 +68,22 @@ func ensureDaemon(ctx context.Context) (string, error) {
 		}
 	}
 	return "", err
+}
+
+// workspaceStartForRemote returns the absolute --workspace path when
+// the flag is set, or "" to let .kata.local.toml discovery walk from
+// CWD. Resolution errors fall through to CWD so a bad --workspace
+// surfaces later as a clearer "workspace path" error rather than
+// confusing remote-config resolution.
+func workspaceStartForRemote() string {
+	if flags.Workspace == "" {
+		return ""
+	}
+	abs, err := resolveStartPath(flags.Workspace)
+	if err != nil {
+		return ""
+	}
+	return abs
 }
 
 // discoverDaemon returns the live daemon URL without auto-starting one.

@@ -112,3 +112,51 @@ name     = "kata"
 	require.NoError(t, err)
 	assert.Empty(t, cfg.Server.URL)
 }
+
+func TestFindProjectConfig_FromSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	writeKataTOML(t, root, `version = 1
+
+[project]
+identity = "github.com/wesm/kata"
+name     = "kata"
+`)
+	sub := filepath.Join(root, "internal", "tui")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+
+	cfg, foundDir, err := config.FindProjectConfig(sub)
+	require.NoError(t, err)
+	assert.Equal(t, root, foundDir)
+	assert.Equal(t, "github.com/wesm/kata", cfg.Project.Identity)
+}
+
+func TestFindProjectConfig_FromExactDir(t *testing.T) {
+	root := t.TempDir()
+	writeKataTOML(t, root, `version = 1
+
+[project]
+identity = "github.com/wesm/kata"
+`)
+	cfg, foundDir, err := config.FindProjectConfig(root)
+	require.NoError(t, err)
+	assert.Equal(t, root, foundDir)
+	assert.Equal(t, "github.com/wesm/kata", cfg.Project.Identity)
+}
+
+func TestFindProjectConfig_MissingReturnsSentinel(t *testing.T) {
+	root := t.TempDir()
+	cfg, foundDir, err := config.FindProjectConfig(root)
+	assert.Nil(t, cfg)
+	assert.Empty(t, foundDir)
+	assert.ErrorIs(t, err, config.ErrProjectConfigMissing)
+}
+
+func TestFindProjectConfig_PropagatesParseError(t *testing.T) {
+	root := t.TempDir()
+	writeKataTOML(t, root, "this is not toml = = =")
+	cfg, foundDir, err := config.FindProjectConfig(root)
+	assert.Nil(t, cfg)
+	assert.Empty(t, foundDir)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, config.ErrProjectConfigMissing)
+}

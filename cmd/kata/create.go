@@ -136,22 +136,25 @@ func validateCreateLabels(labels []string) error {
 // resolveProjectID resolves the project ID for a given workspace start
 // path by calling POST /api/v1/projects/resolve on the daemon.
 //
-// When the workspace has a readable .kata.toml, the project identity is
-// sent and the daemon skips its filesystem walk. This is what lets a
-// client on host B resolve a project registered on host A's daemon —
-// the daemon cannot stat the client's startPath, but it can look up
-// the project by its committed identity.
+// When the workspace has a readable .kata.toml at startPath or any
+// ancestor directory, the project identity is sent and the daemon
+// skips its filesystem walk. This is what lets a client on host B
+// resolve a project registered on host A's daemon — the daemon cannot
+// stat the client's startPath, but it can look up the project by its
+// committed identity. Walking upward also matches user expectations:
+// `kata create` from a subdirectory of an initialized workspace
+// behaves the same as from the workspace root.
 //
-// When .kata.toml is absent or unreadable (the usual case mid-init),
-// the start_path fallback engages and the daemon walks its own
-// filesystem as before. Local-mode behavior is unchanged.
+// When no .kata.toml is found (the usual case mid-init), the
+// start_path fallback engages and the daemon walks its own filesystem
+// as before. Local-mode behavior is unchanged.
 func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, error) {
 	client, err := httpClientFor(ctx, baseURL)
 	if err != nil {
 		return 0, err
 	}
 	body := map[string]any{}
-	if cfg, err := config.ReadProjectConfig(startPath); err == nil && cfg.Project.Identity != "" {
+	if cfg, _, err := config.FindProjectConfig(startPath); err == nil && cfg.Project.Identity != "" {
 		body["project_identity"] = cfg.Project.Identity
 	} else {
 		body["start_path"] = startPath

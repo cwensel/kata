@@ -38,11 +38,27 @@ var (
 //
 // Test callers can short-circuit discovery by stashing a base URL on ctx
 // under BaseURLKey{}.
+//
+// .kata.local.toml discovery walks upward from CWD. Commands that
+// target a specific workspace via --workspace should call
+// EnsureRunningInWorkspace instead so the walk anchors to the
+// targeted workspace.
 func EnsureRunning(ctx context.Context) (string, error) {
+	return EnsureRunningInWorkspace(ctx, "")
+}
+
+// EnsureRunningInWorkspace is the workspace-aware variant of
+// EnsureRunning. workspaceStart is the absolute path to begin the
+// .kata.local.toml walk from; pass "" to fall back to CWD. Empty is
+// the right value when no --workspace flag is in play; non-empty is
+// required so that running `kata --workspace /repo create ...` from
+// outside the repo still picks up /repo/.kata.local.toml's [server]
+// override instead of falling through to local auto-start.
+func EnsureRunningInWorkspace(ctx context.Context, workspaceStart string) (string, error) {
 	if v, ok := ctx.Value(BaseURLKey{}).(string); ok && v != "" {
 		return v, nil
 	}
-	if url, ok, err := resolveRemote(ctx); err != nil {
+	if url, ok, err := resolveRemote(ctx, workspaceStart); err != nil {
 		return "", err
 	} else if ok {
 		return url, nil

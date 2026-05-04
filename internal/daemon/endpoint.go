@@ -112,6 +112,14 @@ var cgnatBlock = &net.IPNet{
 	Mask: net.CIDRMask(10, 32),
 }
 
+// ValidateNonPublicAddress runs the same address rules used by
+// TCPEndpointAny.Listen() / .Dial() without actually binding or
+// dialing. Useful as a CLI preflight: a `kata daemon start --listen`
+// caller wants the validation error before the server starts up,
+// without a listen-then-close TOCTOU window where the bound port
+// could be claimed by another process. Returns nil on success.
+func ValidateNonPublicAddress(addr string) error { return requireNonPublic(addr) }
+
 // requireNonPublic accepts loopback, RFC1918 (via IsPrivate), CGNAT,
 // link-local, and ULA. Rejects public IPv4, GUA IPv6, the unspecified
 // address (0.0.0.0 / ::), and any hostname.
@@ -134,12 +142,18 @@ func requireNonPublic(addr string) error {
 }
 
 // ParseAddress decodes a serialized form (unix:///path or host:port).
+// TCP addresses are returned as TCPEndpointAny: this is the runtime-file
+// readback path and the file is written by the daemon itself under
+// $KATA_HOME (0700). A daemon started with --listen on a non-loopback
+// private address (RFC1918, CGNAT, link-local, ULA) must be re-dialable
+// from the same host's discovery code, so the strict loopback-only form
+// is wrong here. Public addresses still get rejected on Listen/Dial.
 func ParseAddress(s string) (DaemonEndpoint, error) {
 	if strings.HasPrefix(s, "unix://") {
 		return UnixEndpoint(strings.TrimPrefix(s, "unix://")), nil
 	}
 	if strings.Contains(s, ":") {
-		return TCPEndpoint(s), nil
+		return TCPEndpointAny(s), nil
 	}
 	return nil, fmt.Errorf("unrecognized address: %q", s)
 }

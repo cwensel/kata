@@ -76,6 +76,41 @@ func TestInit_GitignoreIsIdempotent(t *testing.T) {
 	assert.Contains(t, string(content), "node_modules/")
 }
 
+// TestInit_GitignoreLandsAtWorkspaceRoot exercises the nested-init case:
+// when `kata init` runs from a subdirectory of the git workspace, the
+// daemon writes .kata.toml at the git root and reports that root in
+// workspace_root. The CLI must place .gitignore beside .kata.toml at
+// the workspace root, not at the cwd subdirectory.
+func TestInit_GitignoreLandsAtWorkspaceRoot(t *testing.T) {
+	env := testenv.New(t)
+	root := t.TempDir()
+	runGit(t, root, "init", "--quiet")
+	runGit(t, root, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	sub := filepath.Join(root, "internal", "tui")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+
+	flags.JSON = true
+	t.Cleanup(func() { flags.JSON = false })
+
+	_, err := callInit(context.Background(), env.URL, sub, callInitOpts{})
+	require.NoError(t, err)
+
+	// .kata.toml is written by the daemon at the git root, not the subdir.
+	assert.FileExists(t, filepath.Join(root, ".kata.toml"))
+	assert.NoFileExists(t, filepath.Join(sub, ".kata.toml"))
+
+	// .gitignore must follow .kata.toml — at the git root.
+	rootIgnore := filepath.Join(root, ".gitignore")
+	assert.FileExists(t, rootIgnore)
+	content, err := os.ReadFile(rootIgnore)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), ".kata.local.toml")
+
+	// And nothing was written in the subdir.
+	assert.NoFileExists(t, filepath.Join(sub, ".gitignore"))
+}
+
 func TestInit_GitignoreAppendsToExisting(t *testing.T) {
 	env := testenv.New(t)
 	dir := t.TempDir()

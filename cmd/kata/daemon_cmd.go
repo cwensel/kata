@@ -254,9 +254,12 @@ func runDaemonWithListen(ctx context.Context, listen string) error {
 }
 
 // chooseEndpoint picks the daemon's listener: Unix socket when listen is
-// empty (default, auto-start path) or TCPEndpointAny otherwise. The
-// validation lives in TCPEndpointAny.Listen so this helper does not
-// duplicate the rules.
+// empty (default, auto-start path) or TCPEndpointAny otherwise. We
+// pre-flight the address-rule check via ValidateNonPublicAddress so
+// the CLI surfaces a clear error before the server starts, without
+// the listen-then-close TOCTOU window where the validating bind could
+// race with another process or, with port 0, lose the bound port.
+// The actual bind happens once inside server.Run.
 func chooseEndpoint(ns *daemon.Namespace, listen string) (daemon.DaemonEndpoint, error) {
 	if listen == "" {
 		socketPath := filepath.Join(ns.SocketDir, "daemon.sock")
@@ -265,16 +268,10 @@ func chooseEndpoint(ns *daemon.Namespace, listen string) (daemon.DaemonEndpoint,
 	if _, _, err := net.SplitHostPort(listen); err != nil {
 		return nil, fmt.Errorf("kata daemon: invalid --listen value %q: %v", listen, err)
 	}
-	ep := daemon.TCPEndpointAny(listen)
-	// Pre-flight the validator so the error surfaces before we attempt to
-	// Listen — easier to read in a CLI error than after launchd reports
-	// "started then died".
-	l, err := ep.Listen()
-	if err != nil {
+	if err := daemon.ValidateNonPublicAddress(listen); err != nil {
 		return nil, fmt.Errorf("kata daemon: invalid --listen value %q: %v", listen, err)
 	}
-	_ = l.Close()
-	return ep, nil
+	return daemon.TCPEndpointAny(listen), nil
 }
 
 // setupHooks loads hooks.toml, materializes $KATA_HOME, and constructs

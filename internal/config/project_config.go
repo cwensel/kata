@@ -68,6 +68,33 @@ func ReadProjectConfig(workspaceRoot string) (*ProjectConfig, error) {
 	return &cfg, nil
 }
 
+// FindProjectConfig walks upward from startPath looking for a readable
+// .kata.toml. Returns the parsed config and the directory it was found
+// in. Returns ErrProjectConfigMissing if no .kata.toml is found at any
+// ancestor directory. Stops at the filesystem root.
+//
+// This is the discovery counterpart to ReadProjectConfig. Callers that
+// know the exact workspace root should use ReadProjectConfig directly;
+// callers running from arbitrary cwds inside a workspace (CLI, TUI)
+// use this to find the binding without forcing the user to `cd` first.
+func FindProjectConfig(startPath string) (*ProjectConfig, string, error) {
+	dir := startPath
+	for {
+		cfg, err := ReadProjectConfig(dir)
+		if err == nil {
+			return cfg, dir, nil
+		}
+		if !errors.Is(err, ErrProjectConfigMissing) {
+			return nil, "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil, "", ErrProjectConfigMissing
+		}
+		dir = parent
+	}
+}
+
 // WriteProjectConfig writes a v1 .kata.toml at <workspaceRoot>/.kata.toml.
 // If name is empty the last `/` or `:` segment of identity is used.
 func WriteProjectConfig(workspaceRoot, identity, name string) error {

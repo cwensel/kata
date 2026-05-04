@@ -173,19 +173,31 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 		return "", apiErrFromBody(status, bs)
 	}
 
-	// Decode the response to extract project identity and name for display.
+	// Decode the response to extract project identity, name, and the
+	// workspace root (where the daemon wrote .kata.toml) so the
+	// .gitignore entry lands beside it. Without that, a `kata init`
+	// run from a subdirectory could update the wrong .gitignore.
 	var resp struct {
 		Project struct {
 			Identity string `json:"identity"`
 			Name     string `json:"name"`
 		} `json:"project"`
-		Created bool `json:"created"`
+		WorkspaceRoot string `json:"workspace_root,omitempty"`
+		Created       bool   `json:"created"`
 	}
 	if err := json.Unmarshal(bs, &resp); err != nil {
 		return "", fmt.Errorf("decode response: %w", err)
 	}
 
-	if err := ensureGitignoreEntry(startPath, ".kata.local.toml"); err != nil {
+	gitignoreDir := resp.WorkspaceRoot
+	if gitignoreDir == "" {
+		// Older daemons may not return workspace_root; fall back to
+		// startPath. The original behavior is preserved for the
+		// single-directory init case (where startPath == workspace
+		// root).
+		gitignoreDir = startPath
+	}
+	if err := ensureGitignoreEntry(gitignoreDir, ".kata.local.toml"); err != nil {
 		fmt.Fprintf(os.Stderr, "kata: warning: could not update .gitignore: %v\n", err)
 	}
 

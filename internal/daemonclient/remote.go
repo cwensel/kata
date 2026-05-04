@@ -26,14 +26,20 @@ var ErrRemoteUnavailable = errors.New("kata server not responding")
 // resolveRemote checks the two opt-in remote sources, in order:
 //
 //  1. KATA_SERVER env (highest precedence)
-//  2. .kata.local.toml [server].url walked up from CWD
+//  2. .kata.local.toml [server].url walked up from workspaceStart
+//     (CWD when workspaceStart is empty)
 //
 // If neither is set, returns ("", false, nil) and the caller falls
 // through to local Discover/auto-start. If a URL is configured, the
 // helper probes /api/v1/ping; on success it returns (url, true, nil),
 // on failure it returns ("", false, ErrRemoteUnavailable wrapped with
 // the URL and the source name) so the user sees which input is wrong.
-func resolveRemote(ctx context.Context) (string, bool, error) {
+//
+// workspaceStart lets callers that target a specific workspace (via
+// `--workspace`) anchor the .kata.local.toml walk there instead of
+// CWD; otherwise running from outside the repo with `--workspace`
+// would silently miss the workspace's local override.
+func resolveRemote(ctx context.Context, workspaceStart string) (string, bool, error) {
 	if v := os.Getenv(remoteServerEnvVar); v != "" {
 		u, err := normalizeRemoteURL(v)
 		if err != nil {
@@ -44,7 +50,7 @@ func resolveRemote(ctx context.Context) (string, bool, error) {
 		}
 		return u, true, nil
 	}
-	root, path, ok := findLocalConfig()
+	root, path, ok := findLocalConfig(workspaceStart)
 	if !ok {
 		return "", false, nil
 	}
@@ -68,13 +74,21 @@ func resolveRemote(ctx context.Context) (string, bool, error) {
 	return u, true, nil
 }
 
-// findLocalConfig walks upward from CWD looking for .kata.local.toml.
+// findLocalConfig walks upward from start looking for .kata.local.toml.
 // Returns the directory containing it, the full path (for error
-// messages), and ok=true. Stops at the filesystem root.
-func findLocalConfig() (root, path string, ok bool) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", "", false
+// messages), and ok=true. Stops at the filesystem root. When start is
+// empty the walk begins at the process CWD; commands targeting a
+// specific workspace via --workspace pass that path so the walk
+// honors the targeted workspace rather than wherever the user
+// happens to be.
+func findLocalConfig(start string) (root, path string, ok bool) {
+	dir := start
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return "", "", false
+		}
 	}
 	for {
 		candidate := filepath.Join(dir, config.LocalConfigFilename)

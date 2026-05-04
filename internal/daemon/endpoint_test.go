@@ -97,6 +97,31 @@ func TestParseAddress(t *testing.T) {
 	}
 }
 
+// TestParseAddress_TCPAcceptsNonLoopbackPrivate guards the runtime-file
+// readback path: when a daemon writes its --listen TCP address (e.g. a
+// CGNAT/RFC1918 endpoint) into daemon.<pid>.json, ParseAddress must
+// reconstruct an endpoint whose Listen()/Dial() do not reject the
+// private address. Strict loopback-only is correct for untrusted input
+// but wrong for the file we wrote ourselves. We exercise Listen on the
+// loopback case (CGNAT/RFC1918 may not be routable in the test
+// environment) and rely on TCPEndpointAny's own table tests for the
+// other private ranges.
+func TestParseAddress_TCPAcceptsNonLoopbackPrivate(t *testing.T) {
+	// CGNAT-style address must round-trip through ParseAddress without
+	// the validator rejecting it. We don't need to bind — we just need
+	// to confirm ParseAddress doesn't return the strict-loopback form.
+	ep, err := daemon.ParseAddress("100.64.0.5:7777")
+	require.NoError(t, err)
+	require.Equal(t, "tcp", ep.Kind())
+
+	// And Listen actually works on a private-range loopback addr.
+	loopback, err := daemon.ParseAddress("127.0.0.1:0")
+	require.NoError(t, err)
+	l, err := loopback.Listen()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+}
+
 func TestTCPEndpointAny_AcceptsLoopback(t *testing.T) {
 	ep := daemon.TCPEndpointAny("127.0.0.1:0")
 	l, err := ep.Listen()

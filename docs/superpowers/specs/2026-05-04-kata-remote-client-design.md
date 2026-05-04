@@ -27,7 +27,7 @@
 These are settled and not re-litigated by the implementation plan.
 
 1. **Daemon `--listen host:port` flag is admin-only.** Auto-start never produces a `--listen`-bound daemon. The flag is consumed only by `kata daemon start`.
-2. **Default daemon binding is unchanged.** Without `--listen`, the daemon binds a Unix socket exactly as today, and `requireLoopback` continues to apply to any TCP endpoint produced by `ParseAddress`.
+2. **Default daemon binding is unchanged.** Without `--listen`, the daemon binds a Unix socket exactly as today. TCP endpoints produced by `ParseAddress` accept the same non-public address set as `--listen` (`requireNonPublic`); see §4.1 for why the runtime-file readback path can't be loopback-only once `--listen` is in play.
 3. **`--listen` rejects clearly-public addresses.** Loopback, RFC1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64/10`), link-local (`169.254/16`, `fe80::/10`), and ULA (`fc00::/7`) are accepted. Anything else (public IPv4, GUA IPv6, `0.0.0.0`, `::`) is rejected with a clear error. This catches typos like `--listen 0.0.0.0:7777` and prevents accidentally exposing kata on a public interface; it deliberately does not encode any specific VPN's address ranges.
 4. **`KATA_SERVER` is the env name** (value: full URL like `http://100.64.0.5:7777`). Env wins over file so CI and ad-hoc overrides do not require editing checked-in or developer-local files.
 5. **`.kata.local.toml` reuses the `.kata.toml` struct.** Same `version = 1`, same `[project]`, same optional `[server]` block. One parser, one struct, one merge step. Validation differs slightly: in the local file `[project]` is optional (since a developer may want to set only `[server]`), while in `.kata.toml` it remains required.
@@ -55,7 +55,7 @@ func TCPEndpointAny(addr string) DaemonEndpoint { return tcpAnyEndpoint{addr: ad
 - `0.0.0.0` and `::` (unspecified — wildcard bind),
 - non-IP hostnames (same rule as `requireLoopback`: callers must resolve hostnames to literal IPs).
 
-The existing `TCPEndpoint` and `requireLoopback` are unchanged. `ParseAddress` is unchanged — it produces the strict (`requireLoopback`) form, which is what the runtime-file readback path needs.
+The existing `TCPEndpoint` and `requireLoopback` are unchanged for callers that explicitly construct them — they remain the strict form for any future code path that wants loopback-only TCP. `ParseAddress`, however, returns `TCPEndpointAny` for TCP inputs: it serves the runtime-file readback path, where the daemon writes its own `--listen` address (which may be a non-loopback private address like `100.64.x.x`) and a same-host client must be able to dial that record back. Strict loopback-only would silently break local discovery on hosts that opted into `--listen`. The runtime file lives under `$KATA_HOME` (mode 0700) so it's a trusted source; public addresses still get rejected on Listen/Dial.
 
 ### 4.2 `cmd/kata/daemon_cmd.go`
 
@@ -63,6 +63,8 @@ The existing `TCPEndpoint` and `requireLoopback` are unchanged. `ParseAddress` i
 
 - empty (default) → existing path: `daemon.UnixEndpoint(<runtime>/daemon.sock)`.
 - non-empty → `daemon.TCPEndpointAny(value)`. Logs `kata daemon: listening on <addr>` to stderr at startup so launchd journals show the bound address.
+
+Address-rule preflight goes through the non-binding `daemon.ValidateNonPublicAddress(addr)` helper rather than a listen-then-close, so the CLI surfaces a clear error before the server starts without a TOCTOU window where another process could claim the bound port (or, with port `0`, where the validating bind would discard the OS-allocated port). The actual bind happens once inside `server.Run`.
 
 The runtime file written under `<KATA_HOME>/runtime/<dbhash>/daemon.<pid>.json` records the actual bound address (via `endpoint.Address()`), exactly as it does today for Unix sockets. Local discovery on the *server* host therefore picks up the listening daemon with no further work.
 
@@ -83,6 +85,8 @@ type ServerConfig struct {
 ```
 
 The existing `ReadProjectConfig` continues to validate `version == 1` and a non-empty `project.identity`. `[server]` is optional; an empty struct is the legitimate "no server" state.
+
+A new `FindProjectConfig(startPath)` helper walks upward from `startPath` looking for a readable `.kata.toml` and returns the parsed config plus the directory it lives in. Path-free remote-client resolution (`cmd/kata/create.go`'s `resolveProjectID`, `internal/tui/client.go`'s `ResolveProject`) uses this helper so a CLI invocation from a workspace subdirectory still sends `project_identity` instead of falling back to the daemon-side `start_path` walk — required for remote daemons that cannot stat the client's filesystem. Bootstrap callers (`kata init`) keep the exact-dir `ReadProjectConfig` since `.kata.toml` may not exist yet.
 
 ### 4.4 `internal/config/local_config.go` (new)
 
@@ -116,14 +120,18 @@ The "ignore divergent identity" rule is a guardrail: a developer's local overrid
 
 ### 4.5 `internal/daemonclient/ensure.go`
 
-`EnsureRunning` gains a precedence head before the existing `Discover` / auto-start path:
+`EnsureRunning` gains a precedence head before the existing `Discover` / auto-start path. The workspace-aware variant `EnsureRunningInWorkspace(ctx, workspaceStart)` takes the absolute path that anchors the `.kata.local.toml` walk; `EnsureRunning(ctx)` is a thin wrapper that passes `""` (CWD anchor):
 
 ```go
 func EnsureRunning(ctx context.Context) (string, error) {
+    return EnsureRunningInWorkspace(ctx, "")
+}
+
+func EnsureRunningInWorkspace(ctx context.Context, workspaceStart string) (string, error) {
     if v, ok := ctx.Value(BaseURLKey{}).(string); ok && v != "" {
         return v, nil // test injection, unchanged
     }
-    if url, ok, err := resolveRemote(ctx); err != nil {
+    if url, ok, err := resolveRemote(ctx, workspaceStart); err != nil {
         return "", err
     } else if ok {
         return url, nil
@@ -132,10 +140,12 @@ func EnsureRunning(ctx context.Context) (string, error) {
 }
 ```
 
+CLI commands that already accept `--workspace` plumb the resolved absolute path through `EnsureRunningInWorkspace`. The TUI starts in CWD and uses `EnsureRunning` directly.
+
 `resolveRemote` is the new helper:
 
 1. If `KATA_SERVER` is set and non-empty, treat it as the URL.
-2. Else, walk up from CWD to find `.kata.local.toml`. If found and parses with `[server].url` non-empty, treat that as the URL.
+2. Else, walk up from the workspace anchor to find `.kata.local.toml`. The anchor is the absolute `--workspace` path when set, otherwise CWD — without this, running `kata --workspace /repo create` from outside the repo would silently miss `/repo/.kata.local.toml`. If found and parses with `[server].url` non-empty, treat that as the URL.
 3. Else, return `("", false, nil)` — no remote configured, fall through.
 
 When a URL is found, **probe it** via the existing `Probe(ctx, client, url)`. If probe succeeds, return the URL. If probe fails, return a `kindDaemonUnavail` error citing both the URL and the source ("KATA_SERVER" or path to `.kata.local.toml`). No fallback to local.
@@ -144,11 +154,13 @@ Discovery runtime files are not consulted when a remote URL is in effect, so the
 
 ### 4.6 `cmd/kata/init.go`
 
-`kata init` (or its underlying handler) appends a single line `.kata.local.toml` to the workspace's `.gitignore` after writing `.kata.toml`. Behavior:
+`kata init` appends a single line `.kata.local.toml` to the workspace root's `.gitignore` after the daemon writes `.kata.toml`. The CLI uses the `workspace_root` field from the init response (already part of `ProjectResolveBody`) so the `.gitignore` lands beside `.kata.toml` even when init is invoked from a subdirectory of the workspace. Behavior:
 
 - `.gitignore` does not exist → create it with one line.
 - `.gitignore` exists and already contains `.kata.local.toml` → no-op.
 - `.gitignore` exists without that line → append it (preserving existing newline style).
+
+If an older daemon doesn't return `workspace_root`, the CLI falls back to the resolved start path; this preserves the original single-directory behavior. New daemons always populate the field.
 
 This mirrors how most tools that produce both committed and local config files behave.
 
@@ -158,7 +170,7 @@ For a kata client (CLI or TUI) on any host:
 
 1. `ctx.Value(BaseURLKey{})` — test-only injection, unchanged.
 2. `KATA_SERVER` env, if non-empty → probe, return on success, error on failure.
-3. `.kata.local.toml` walked from CWD, if it exists and `[server].url` is non-empty → probe, return on success, error on failure.
+3. `.kata.local.toml` walked from the workspace anchor (absolute `--workspace` if set, else CWD), if it exists and `[server].url` is non-empty → probe, return on success, error on failure.
 4. Existing `Discover` over local runtime files, then auto-start if none found — unchanged.
 
 Steps 2 and 3 deliberately bypass local discovery and auto-start. A bot host with `KATA_SERVER` set creates no Unix socket and never spawns a daemon; if the remote is down, the command fails loudly.
@@ -220,7 +232,7 @@ These are captured here so the implementation plan does not silently absorb them
 2. **Per-machine fallback `~/.kata/config.toml`.** Same shape as `.kata.local.toml`, lower precedence. Defer until we see whether multiple repos on one machine actually want different defaults — if not, the workspace-local file plus env is enough.
 3. **TLS / HTTPS.** Deployments that need it use a reverse proxy. Native TLS would require cert handling and opens questions (LetsEncrypt? user-supplied?) we do not need to answer yet.
 4. **Identity-divergence handling.** Currently a warning. If field experience shows accidental divergence is a real source of bug-misfiling, escalate to a hard error.
-5. **`.kata.local.toml` discovery semantics.** Today: walk up from CWD, same as `.kata.toml`. If we ever support nested kata workspaces (one repo, sub-projects each with its own `.kata.toml`), the walk semantics will need a more careful spec.
+5. **`.kata.local.toml` discovery semantics.** Today: walk up from the workspace anchor (absolute `--workspace` if set, else CWD). If we ever support nested kata workspaces (one repo, sub-projects each with its own `.kata.toml`), the walk semantics will need a more careful spec.
 
 ## 11. Relationship to federation foundation
 
