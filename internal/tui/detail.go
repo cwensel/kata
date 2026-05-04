@@ -119,6 +119,13 @@ type detailModel struct {
 	// appears stuck until the inflated offset unwinds (roborev #17184).
 	lastTermWidth  int
 	lastTermHeight int
+	// lastDetail* caches the actual detail viewport when the model can compute
+	// it (notably split-pane mode, where the detail pane is narrower/shorter
+	// than the terminal). When unset, body scroll clamping falls back to the
+	// stacked full-terminal calculation.
+	lastDetailWidth  int
+	lastDetailHeight int
+	lastDetailSplit  bool
 	// dm.modal was removed in M3b — the M3a/b input infrastructure on
 	// Model.input owns inline label/owner/link prompts now.
 }
@@ -326,12 +333,23 @@ func (dm detailModel) scrollBodyDown() detailModel {
 // width). It mirrors the renderer's body-budget calculation so it
 // never lets dm.scroll out-run what the renderer will display.
 func (dm detailModel) bodyMaxStartEstimate() int {
-	if dm.issue == nil || dm.lastTermWidth <= 0 || dm.lastTermHeight <= 0 {
+	if dm.issue == nil {
 		return -1
 	}
-	sheetWidth := documentSheetWidth(dm.lastTermWidth)
+	width, height := dm.lastTermWidth, dm.lastTermHeight
+	if dm.lastDetailWidth > 0 && dm.lastDetailHeight > 0 {
+		width, height = dm.lastDetailWidth, dm.lastDetailHeight
+	}
+	if width <= 0 || height <= 0 {
+		return -1
+	}
+	sheetWidth := documentSheetWidth(width)
 	wrapped := renderMarkdownLines(dm.issue.Body, sheetWidth)
-	maxStart := len(wrapped) - dm.renderedBodyRows(dm.lastTermWidth, dm.lastTermHeight, sheetWidth)
+	bodyRows := dm.renderedBodyRows(width, height, sheetWidth)
+	if dm.lastDetailSplit {
+		bodyRows = dm.renderedSplitBodyRows(height, sheetWidth)
+	}
+	maxStart := len(wrapped) - bodyRows
 	if maxStart < 0 {
 		return 0
 	}
@@ -354,6 +372,21 @@ func (dm detailModel) renderedBodyRows(termWidth, termHeight, sheetWidth int) in
 		fixed += 2
 	}
 	bodyRows, _, _ := detailDocumentBudgets(termHeight-fixed, len(dm.children), hasActivity)
+	return bodyRows
+}
+
+func (dm detailModel) renderedSplitBodyRows(height, sheetWidth int) int {
+	header := dm.documentHeader(sheetWidth, viewChrome{})
+	hasChildren := len(dm.children) > 0
+	hasActivity := dm.hasActivity()
+	fixed := len(header) + 1
+	if hasChildren {
+		fixed += 2
+	}
+	if hasActivity {
+		fixed += 2
+	}
+	bodyRows, _, _ := detailDocumentBudgets(height-fixed, len(dm.children), hasActivity)
 	return bodyRows
 }
 

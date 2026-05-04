@@ -273,6 +273,29 @@ func TestDetail_Scroll_BodyMaxStartEstimateDoesNotExceedRenderedMax(t *testing.T
 	}
 }
 
+func TestDetail_Scroll_SplitBodyMaxStartUsesSplitViewport(t *testing.T) {
+	dm := detailFixture()
+	dm.comments = nil
+	dm.events = nil
+	dm.links = nil
+	dm.issue.Body = strings.Repeat("line\n", 59) + "tail"
+	width, height := 72, 24
+	dm.lastDetailWidth, dm.lastDetailHeight = width, height
+	dm.lastDetailSplit = true
+
+	sheetWidth := documentSheetWidth(width)
+	header := dm.documentHeader(sheetWidth, viewChrome{})
+	bodyRows, _, _ := detailDocumentBudgets(height-(len(header)+1), 0, false)
+	renderedMaxStart := len(renderMarkdownLines(dm.issue.Body, sheetWidth)) - bodyRows
+	if renderedMaxStart < 0 {
+		renderedMaxStart = 0
+	}
+
+	if got := dm.bodyMaxStartEstimate(); got != renderedMaxStart {
+		t.Fatalf("split bodyMaxStartEstimate=%d, want rendered maxStart=%d", got, renderedMaxStart)
+	}
+}
+
 // TestDetail_Back_EmitsPopMsg: esc returns a tea.Cmd that emits
 // popDetailMsg when the nav stack is empty.
 func TestDetail_Back_EmitsPopMsg(t *testing.T) {

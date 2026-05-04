@@ -3,6 +3,7 @@ package daemonclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -103,6 +104,35 @@ func TestStopRunningDaemonsDoesNotSignalUnverifiedRuntimePID(t *testing.T) {
 		t.Fatalf("unverified runtime PID was signaled; process exited with %v", err)
 	case <-time.After(200 * time.Millisecond):
 	}
+}
+
+func TestStopRunningDaemonsRemovesUnverifiableIncompatibleRuntime(t *testing.T) {
+	t.Setenv("KATA_SKIP_DAEMON_VERSION_CHECK", "")
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/ping" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"service": "kata",
+			"version": "old-version",
+		})
+	}))
+	t.Cleanup(server.Close)
+	require.NoError(t, writeRuntimeRecordForPID(t, tmp, os.Getpid(), strings.TrimPrefix(server.URL, "http://")))
+	ns, err := daemon.NewNamespace()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	require.NoError(t, stopRunningDaemons(ctx, ns.DataDir))
+
+	_, err = os.Stat(filepath.Join(ns.DataDir, fmt.Sprintf("daemon.%d.json", os.Getpid())))
+	assert.True(t, os.IsNotExist(err), "unverifiable incompatible runtime file should be removed")
 }
 
 func writeRuntimeRecord(t *testing.T, home, addr string) error {

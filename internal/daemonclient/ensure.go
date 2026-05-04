@@ -107,6 +107,7 @@ func stopRunningDaemons(ctx context.Context, dataDir string) error {
 			continue
 		}
 		if info.PID == 0 || info.PID != r.PID {
+			_ = os.Remove(filepath.Join(dataDir, fmt.Sprintf("daemon.%d.json", r.PID)))
 			continue
 		}
 		p, err := os.FindProcess(r.PID)

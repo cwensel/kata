@@ -82,6 +82,7 @@ func TestImportRefusesDaemon(t *testing.T) {
 	var ce *cliError
 	require.ErrorAs(t, err, &ce)
 	assert.Contains(t, ce.Message, "daemon is running")
+	assert.NotContains(t, ce.Message, "--allow-running-daemon")
 }
 
 func writeExportFixture(t *testing.T, home string) string {

@@ -23,7 +23,8 @@ func newImportCmd() *cobra.Command {
 			if target == "" {
 				return &cliError{Message: "import requires --target", Kind: kindValidation, ExitCode: ExitValidation}
 			}
-			if err := refuseRunningDaemon(cmd.Context()); err != nil {
+			if err := refuseRunningDaemonWithMessage(cmd.Context(),
+				"daemon is running for this database; stop it before importing"); err != nil {
 				return err
 			}
 			if _, err := os.Stat(target); err == nil && !force {

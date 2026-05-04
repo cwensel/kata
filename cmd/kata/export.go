@@ -80,13 +80,18 @@ func newExportCmd() *cobra.Command {
 }
 
 func refuseRunningDaemon(ctx context.Context) error {
+	return refuseRunningDaemonWithMessage(ctx,
+		"daemon is running for this database; stop it or pass --allow-running-daemon")
+}
+
+func refuseRunningDaemonWithMessage(ctx context.Context, message string) error {
 	ns, err := daemon.NewNamespace()
 	if err != nil {
 		return err
 	}
 	if _, ok := daemonclient.Discover(ctx, ns.DataDir); ok {
 		return &cliError{
-			Message:  "daemon is running for this database; stop it or pass --allow-running-daemon",
+			Message:  message,
 			Kind:     kindValidation,
 			ExitCode: ExitValidation,
 		}

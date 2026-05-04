@@ -465,13 +465,11 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		if prevLayout != m.layout {
 			m = m.handleLayoutFlip(prevLayout)
 		}
-		// Cache the terminal dimensions on the detail model so its
-		// PgDn/PgUp handlers can clamp body scroll against the
-		// approximate body viewport (roborev #17184). The renderer
-		// applies its own exact clamp per frame; this cache exists
-		// purely so dm.scroll itself doesn't grow unbounded past EOF.
+		// Cache the terminal/detail viewport so PgDn can clamp body
+		// scroll against the same dimensions the renderer will use.
 		m.detail.lastTermWidth = m.width
 		m.detail.lastTermHeight = m.height
+		m.detail = m.cacheDetailViewport(m.detail)
 		return m, nil, true
 	case tea.KeyMsg:
 		// Modal owns input when active. Enter the modal-specific
@@ -507,6 +505,36 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 	return m, nil, false
+}
+
+func (m Model) cacheDetailViewport(dm detailModel) detailModel {
+	dm.lastDetailWidth = 0
+	dm.lastDetailHeight = 0
+	dm.lastDetailSplit = false
+	if m.layout != layoutSplit {
+		return dm
+	}
+	footerLines := helpLines(m.splitHelpRows(), m.width)
+	bodyHeight := m.height - 2 - footerLines
+	if bodyHeight < 4 {
+		bodyHeight = 4
+	}
+	detailW := m.width - splitListPaneWidth(m.width)
+	if detailW < 20 {
+		detailW = 20
+	}
+	innerW := detailW - 2
+	innerH := bodyHeight - 2
+	if innerW < 10 {
+		innerW = 10
+	}
+	if innerH < 2 {
+		innerH = 2
+	}
+	dm.lastDetailWidth = innerW
+	dm.lastDetailHeight = innerH
+	dm.lastDetailSplit = true
+	return dm
 }
 
 // openInput constructs the inputState for a kind and applies the
