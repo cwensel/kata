@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/testenv"
+	"github.com/wesm/kata/internal/uid"
 )
 
 // httptestServerHandle bundles a httptest.Server with the on-disk workspace
@@ -61,6 +62,58 @@ func TestIssues_CreateRoundtrip(t *testing.T) {
 	assert.Equal(t, "first", body.Issue.Title)
 	assert.Equal(t, "open", body.Issue.Status)
 	assert.Equal(t, "issue.created", body.Event.Type)
+}
+
+func TestIssues_UIDWireShapeAndLookup(t *testing.T) {
+	h, projectID := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	resp, bs := postJSON(t, ts,
+		"/api/v1/projects/"+strconv.FormatInt(projectID, 10)+"/issues",
+		map[string]any{"actor": "agent-1", "title": "uid issue"})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var created struct {
+		Issue struct {
+			UID        string `json:"uid"`
+			ProjectUID string `json:"project_uid"`
+			Number     int64  `json:"number"`
+		} `json:"issue"`
+		Event struct {
+			ProjectUID string  `json:"project_uid"`
+			IssueUID   *string `json:"issue_uid"`
+		} `json:"event"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &created))
+	assert.True(t, uid.Valid(created.Issue.UID))
+	assert.True(t, uid.Valid(created.Issue.ProjectUID))
+	assert.Equal(t, created.Issue.ProjectUID, created.Event.ProjectUID)
+	require.NotNil(t, created.Event.IssueUID)
+	assert.Equal(t, created.Issue.UID, *created.Event.IssueUID)
+
+	respList, err := http.Get(ts.URL + "/api/v1/projects/" + strconv.FormatInt(projectID, 10) + "/issues")
+	require.NoError(t, err)
+	defer func() { _ = respList.Body.Close() }()
+	listBS, err := io.ReadAll(respList.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(listBS), `"uid":"`+created.Issue.UID+`"`)
+	assert.Contains(t, string(listBS), `"project_uid":"`+created.Issue.ProjectUID+`"`)
+
+	respByUID, err := http.Get(ts.URL + "/api/v1/issues/" + created.Issue.UID)
+	require.NoError(t, err)
+	defer func() { _ = respByUID.Body.Close() }()
+	byUIDBS, err := io.ReadAll(respByUID.Body)
+	require.NoError(t, err)
+	require.Equal(t, 200, respByUID.StatusCode, string(byUIDBS))
+	assert.Contains(t, string(byUIDBS), `"number":`+strconv.FormatInt(created.Issue.Number, 10))
+	assert.Contains(t, string(byUIDBS), `"uid":"`+created.Issue.UID+`"`)
+
+	respBad, err := http.Get(ts.URL + "/api/v1/issues/not-a-ulid")
+	require.NoError(t, err)
+	defer func() { _ = respBad.Body.Close() }()
+	badBS, err := io.ReadAll(respBad.Body)
+	require.NoError(t, err)
+	assert.Equal(t, 400, respBad.StatusCode, string(badBS))
+	assert.Contains(t, string(badBS), `"code":"validation"`)
 }
 
 func TestIssues_ListAndShow(t *testing.T) {

@@ -972,7 +972,7 @@ git commit -m "jsonl: fill UIDs during v1 cutover"
 - Modify: `internal/daemon/handlers_destructive.go`
 - Test: `internal/daemon/handlers_*_test.go`
 
-- [ ] **Step 1: Write failing handler tests**
+- [x] **Step 1: Write failing handler tests**
 
 Cover:
 
@@ -983,7 +983,7 @@ Cover:
 - purge response includes `purge_log.issue_uid` and `project_uid`
 - `GET /api/v1/issues/{uid}` returns issue or `issue_not_found`
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [x] **Step 2: Run focused tests and confirm failure**
 
 ```bash
 go test ./internal/daemon -run 'UID|IssueByUID|Event.*UID|Purge.*UID' -count=1
@@ -991,7 +991,7 @@ go test ./internal/daemon -run 'UID|IssueByUID|Event.*UID|Purge.*UID' -count=1
 
 Expected: fail until wire shape is updated.
 
-- [ ] **Step 3: Add API DTO fields**
+- [x] **Step 3: Add API DTO fields**
 
 Update `EventEnvelope`:
 
@@ -1001,7 +1001,7 @@ IssueUID *string `json:"issue_uid,omitempty"`
 RelatedIssueUID *string `json:"related_issue_uid,omitempty"`
 ```
 
-- [ ] **Step 4: Implement UID lookup endpoint**
+- [x] **Step 4: Implement UID lookup endpoint**
 
 Add route:
 
@@ -1011,11 +1011,11 @@ GET /api/v1/issues/{uid}
 
 Validate ULID syntax before DB lookup.
 
-- [ ] **Step 5: Update event envelope builders**
+- [x] **Step 5: Update event envelope builders**
 
 Every path that converts `db.Event` to `api.EventEnvelope` must carry UID fields.
 
-- [ ] **Step 6: Run focused tests**
+- [x] **Step 6: Run focused tests**
 
 ```bash
 go test ./internal/daemon -run 'UID|IssueByUID|Event.*UID|Purge.*UID' -count=1
@@ -1023,7 +1023,7 @@ go test ./internal/daemon -run 'UID|IssueByUID|Event.*UID|Purge.*UID' -count=1
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/api internal/daemon

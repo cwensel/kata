@@ -12,6 +12,7 @@ import (
 	"github.com/wesm/kata/internal/api"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/similarity"
+	"github.com/wesm/kata/internal/uid"
 )
 
 // registerIssuesHandlers installs the four issue routes (create/list/show/edit)
@@ -132,44 +133,25 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		if issue.DeletedAt != nil && !in.IncludeDeleted {
-			return nil, api.NewError(404, "issue_not_found",
-				"issue not found",
-				"pass include_deleted=true to view soft-deleted issues",
-				nil)
+		return buildShowIssueResponse(ctx, cfg, issue, in.IncludeDeleted)
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "showIssueByUID",
+		Method:      "GET",
+		Path:        "/api/v1/issues/{uid}",
+	}, func(ctx context.Context, in *api.ShowIssueByUIDRequest) (*api.ShowIssueResponse, error) {
+		if !uid.Valid(in.UID) {
+			return nil, api.NewError(400, "validation", "uid must be a valid ULID", "", nil)
 		}
-		comments, err := listComments(ctx, cfg.DB, issue.ID)
+		issue, err := cfg.DB.IssueByUID(ctx, in.UID)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		links, err := loadLinkOuts(ctx, cfg.DB, issue.ID)
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		labels, err := cfg.DB.LabelsByIssue(ctx, issue.ID)
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		parent, err := loadParentRef(ctx, cfg.DB, issue)
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		children, err := cfg.DB.ChildrenOfIssue(ctx, in.ProjectID, issue.ID)
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		childOuts, err := hydrateIssueOuts(ctx, cfg.DB, in.ProjectID, children)
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		out := &api.ShowIssueResponse{}
-		out.Body.Issue = issue
-		out.Body.Comments = comments
-		out.Body.Links = links
-		out.Body.Labels = labels
-		out.Body.Parent = parent
-		out.Body.Children = childOuts
-		return out, nil
+		return buildShowIssueResponse(ctx, cfg, issue, in.IncludeDeleted)
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -210,6 +192,47 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		out.Body.Changed = changed
 		return out, nil
 	})
+}
+
+func buildShowIssueResponse(ctx context.Context, cfg ServerConfig, issue db.Issue, includeDeleted bool) (*api.ShowIssueResponse, error) {
+	if issue.DeletedAt != nil && !includeDeleted {
+		return nil, api.NewError(404, "issue_not_found",
+			"issue not found",
+			"pass include_deleted=true to view soft-deleted issues",
+			nil)
+	}
+	comments, err := listComments(ctx, cfg.DB, issue.ID)
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	links, err := loadLinkOuts(ctx, cfg.DB, issue.ID)
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	labels, err := cfg.DB.LabelsByIssue(ctx, issue.ID)
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	parent, err := loadParentRef(ctx, cfg.DB, issue)
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	children, err := cfg.DB.ChildrenOfIssue(ctx, issue.ProjectID, issue.ID)
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	childOuts, err := hydrateIssueOuts(ctx, cfg.DB, issue.ProjectID, children)
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	out := &api.ShowIssueResponse{}
+	out.Body.Issue = issue
+	out.Body.Comments = comments
+	out.Body.Links = links
+	out.Body.Labels = labels
+	out.Body.Parent = parent
+	out.Body.Children = childOuts
+	return out, nil
 }
 
 func issueRefFromDB(iss db.Issue) api.IssueRef {
@@ -283,13 +306,15 @@ func loadLinkOuts(ctx context.Context, store *db.DB, issueID int64) ([]api.LinkO
 			return nil, err
 		}
 		out = append(out, api.LinkOut{
-			ID:         l.ID,
-			ProjectID:  l.ProjectID,
-			FromNumber: from.Number,
-			ToNumber:   to.Number,
-			Type:       l.Type,
-			Author:     l.Author,
-			CreatedAt:  l.CreatedAt,
+			ID:           l.ID,
+			ProjectID:    l.ProjectID,
+			FromNumber:   from.Number,
+			FromIssueUID: l.FromIssueUID,
+			ToNumber:     to.Number,
+			ToIssueUID:   l.ToIssueUID,
+			Type:         l.Type,
+			Author:       l.Author,
+			CreatedAt:    l.CreatedAt,
 		})
 	}
 	return out, nil

@@ -101,6 +101,10 @@ func TestPurge_RequiresConfirmHeaderAndRemovesAllRows(t *testing.T) {
 	pidStr := strconv.FormatInt(pid, 10)
 	_, _ = postJSON(t, ts, "/api/v1/projects/"+pidStr+"/issues",
 		map[string]any{"actor": "agent", "title": "purge me"})
+	issue, err := h.DB().IssueByNumber(t.Context(), pid, 1)
+	require.NoError(t, err)
+	project, err := h.DB().ProjectByID(t.Context(), pid)
+	require.NoError(t, err)
 
 	// Missing header → 412.
 	resp := postWithHeader(t, ts, "/api/v1/projects/"+pidStr+"/issues/1/actions/purge",
@@ -122,6 +126,8 @@ func TestPurge_RequiresConfirmHeaderAndRemovesAllRows(t *testing.T) {
 	require.Equal(t, 200, resp.status, string(resp.body))
 	assert.Contains(t, string(resp.body), `"purge_log"`)
 	assert.Contains(t, string(resp.body), `"purged_issue_id"`)
+	assert.Contains(t, string(resp.body), `"issue_uid":"`+issue.UID+`"`)
+	assert.Contains(t, string(resp.body), `"project_uid":"`+project.UID+`"`)
 
 	// Subsequent show 404s — issue is gone.
 	respShow, _ := getStatusBody(t, ts, "/api/v1/projects/"+pidStr+"/issues/1?include_deleted=true")

@@ -39,14 +39,17 @@ func (o *OptionalInt) OnParamSet(isSet bool, _ any) {
 
 // EventEnvelope is the wire shape for a single event row.
 type EventEnvelope struct {
-	EventID         int64  `json:"event_id"`
-	Type            string `json:"type"`
-	ProjectID       int64  `json:"project_id"`
-	ProjectIdentity string `json:"project_identity"`
-	IssueID         *int64 `json:"issue_id,omitempty"`
-	IssueNumber     *int64 `json:"issue_number,omitempty"`
-	RelatedIssueID  *int64 `json:"related_issue_id,omitempty"`
-	Actor           string `json:"actor"`
+	EventID         int64   `json:"event_id"`
+	Type            string  `json:"type"`
+	ProjectID       int64   `json:"project_id"`
+	ProjectUID      string  `json:"project_uid"`
+	ProjectIdentity string  `json:"project_identity"`
+	IssueID         *int64  `json:"issue_id,omitempty"`
+	IssueUID        *string `json:"issue_uid,omitempty"`
+	IssueNumber     *int64  `json:"issue_number,omitempty"`
+	RelatedIssueID  *int64  `json:"related_issue_id,omitempty"`
+	RelatedIssueUID *string `json:"related_issue_uid,omitempty"`
+	Actor           string  `json:"actor"`
 	// Payload is the event-type-specific JSON object. Always valid JSON
 	// because the schema enforces json_valid(payload) at write time.
 	Payload   json.RawMessage `json:"payload,omitempty"`

@@ -193,6 +193,13 @@ type ShowIssueRequest struct {
 	IncludeDeleted bool  `query:"include_deleted,omitempty"`
 }
 
+// ShowIssueByUIDRequest is GET /api/v1/issues/{uid}. UID is globally unique
+// across projects, so the route does not need a project path segment.
+type ShowIssueByUIDRequest struct {
+	UID            string `path:"uid" required:"true"`
+	IncludeDeleted bool   `query:"include_deleted,omitempty"`
+}
+
 // ShowIssueResponse is the per-issue read payload (Plan 2: + links, + labels).
 type ShowIssueResponse struct {
 	Body struct {
@@ -264,13 +271,15 @@ type CreateLinkRequest struct {
 // LinkOut is the wire projection of a link with both endpoint *numbers* (not
 // internal issue ids) so clients can correlate without an extra lookup.
 type LinkOut struct {
-	ID         int64     `json:"id"`
-	ProjectID  int64     `json:"project_id"`
-	FromNumber int64     `json:"from_number"`
-	ToNumber   int64     `json:"to_number"`
-	Type       string    `json:"type"`
-	Author     string    `json:"author"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID           int64     `json:"id"`
+	ProjectID    int64     `json:"project_id"`
+	FromNumber   int64     `json:"from_number"`
+	FromIssueUID string    `json:"from_issue_uid"`
+	ToNumber     int64     `json:"to_number"`
+	ToIssueUID   string    `json:"to_issue_uid"`
+	Type         string    `json:"type"`
+	Author       string    `json:"author"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // CreateLinkResponse extends MutationResponse with the new link's wire

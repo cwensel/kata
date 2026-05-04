@@ -454,6 +454,13 @@ func (d *DB) IssueByNumber(ctx context.Context, projectID, number int64) (Issue,
 	return scanIssue(row)
 }
 
+// IssueByUID fetches an issue by stable UID. Includes soft-deleted rows; see
+// IssueByID for the rationale.
+func (d *DB) IssueByUID(ctx context.Context, issueUID string) (Issue, error) {
+	row := d.QueryRowContext(ctx, issueSelect+` WHERE i.uid = ?`, issueUID)
+	return scanIssue(row)
+}
+
 // ListIssuesParams filters list output. Status="" → all. Empty struct → all.
 type ListIssuesParams struct {
 	ProjectID int64

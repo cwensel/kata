@@ -33,13 +33,18 @@ func TestCreateLink_HappyPath(t *testing.T) {
 			Number int64 `json:"number"`
 		} `json:"issue"`
 		Link struct {
-			ID         int64  `json:"id"`
-			Type       string `json:"type"`
-			FromNumber int64  `json:"from_number"`
-			ToNumber   int64  `json:"to_number"`
+			ID           int64  `json:"id"`
+			Type         string `json:"type"`
+			FromNumber   int64  `json:"from_number"`
+			FromIssueUID string `json:"from_issue_uid"`
+			ToNumber     int64  `json:"to_number"`
+			ToIssueUID   string `json:"to_issue_uid"`
 		} `json:"link"`
 		Event *struct {
-			Type string `json:"type"`
+			Type            string  `json:"type"`
+			ProjectUID      string  `json:"project_uid"`
+			IssueUID        *string `json:"issue_uid"`
+			RelatedIssueUID *string `json:"related_issue_uid"`
 		} `json:"event"`
 		Changed bool `json:"changed"`
 	}
@@ -47,8 +52,21 @@ func TestCreateLink_HappyPath(t *testing.T) {
 	assert.Equal(t, "blocks", out.Link.Type)
 	assert.Equal(t, a, out.Link.FromNumber)
 	assert.Equal(t, b, out.Link.ToNumber)
+	from, err := env.DB.IssueByNumber(t.Context(), pid, a)
+	require.NoError(t, err)
+	to, err := env.DB.IssueByNumber(t.Context(), pid, b)
+	require.NoError(t, err)
+	project, err := env.DB.ProjectByID(t.Context(), pid)
+	require.NoError(t, err)
+	assert.Equal(t, from.UID, out.Link.FromIssueUID)
+	assert.Equal(t, to.UID, out.Link.ToIssueUID)
 	require.NotNil(t, out.Event)
 	assert.Equal(t, "issue.linked", out.Event.Type)
+	assert.Equal(t, project.UID, out.Event.ProjectUID)
+	require.NotNil(t, out.Event.IssueUID)
+	require.NotNil(t, out.Event.RelatedIssueUID)
+	assert.Equal(t, from.UID, *out.Event.IssueUID)
+	assert.Equal(t, to.UID, *out.Event.RelatedIssueUID)
 	assert.True(t, out.Changed)
 }
 
@@ -413,10 +431,12 @@ type linkResp struct {
 		Number int64 `json:"number"`
 	} `json:"issue"`
 	Link struct {
-		ID         int64  `json:"id"`
-		Type       string `json:"type"`
-		FromNumber int64  `json:"from_number"`
-		ToNumber   int64  `json:"to_number"`
+		ID           int64  `json:"id"`
+		Type         string `json:"type"`
+		FromNumber   int64  `json:"from_number"`
+		FromIssueUID string `json:"from_issue_uid"`
+		ToNumber     int64  `json:"to_number"`
+		ToIssueUID   string `json:"to_issue_uid"`
 	} `json:"link"`
 	Event *struct {
 		Type string `json:"type"`

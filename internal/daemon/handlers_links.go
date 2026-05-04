@@ -248,13 +248,15 @@ func mutationLinkResponse(issue db.Issue, link db.Link, fromNum, toNum int64, ev
 	out := &api.CreateLinkResponse{}
 	out.Body.Issue = issue
 	out.Body.Link = api.LinkOut{
-		ID:         link.ID,
-		ProjectID:  link.ProjectID,
-		FromNumber: fromNum,
-		ToNumber:   toNum,
-		Type:       link.Type,
-		Author:     link.Author,
-		CreatedAt:  link.CreatedAt,
+		ID:           link.ID,
+		ProjectID:    link.ProjectID,
+		FromNumber:   fromNum,
+		FromIssueUID: link.FromIssueUID,
+		ToNumber:     toNum,
+		ToIssueUID:   link.ToIssueUID,
+		Type:         link.Type,
+		Author:       link.Author,
+		CreatedAt:    link.CreatedAt,
 	}
 	out.Body.Event = evt
 	out.Body.Changed = changed

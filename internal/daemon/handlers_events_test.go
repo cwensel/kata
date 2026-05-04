@@ -49,8 +49,10 @@ func TestPollEvents_EmptyResultIsNonNullArray(t *testing.T) {
 func TestPollEvents_ReturnsEventsAndAdvancesCursor(t *testing.T) {
 	env := testenv.New(t)
 	pid := mkProject(t, env, "github.com/test/a", "a")
-	mkIssue(t, env, pid, "first")
+	first := mkIssue(t, env, pid, "first")
 	mkIssue(t, env, pid, "second")
+	project, err := env.DB.ProjectByID(context.Background(), pid)
+	require.NoError(t, err)
 
 	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=0&limit=10")
 	require.NoError(t, err)
@@ -59,8 +61,10 @@ func TestPollEvents_ReturnsEventsAndAdvancesCursor(t *testing.T) {
 	var b struct {
 		ResetRequired bool `json:"reset_required"`
 		Events        []struct {
-			EventID int64  `json:"event_id"`
-			Type    string `json:"type"`
+			EventID    int64   `json:"event_id"`
+			Type       string  `json:"type"`
+			ProjectUID string  `json:"project_uid"`
+			IssueUID   *string `json:"issue_uid"`
 		} `json:"events"`
 		NextAfterID int64 `json:"next_after_id"`
 	}
@@ -69,8 +73,48 @@ func TestPollEvents_ReturnsEventsAndAdvancesCursor(t *testing.T) {
 	assert.Equal(t, int64(1), b.Events[0].EventID)
 	assert.Equal(t, int64(2), b.Events[1].EventID)
 	assert.Equal(t, "issue.created", b.Events[0].Type)
+	assert.Equal(t, project.UID, b.Events[0].ProjectUID)
+	require.NotNil(t, b.Events[0].IssueUID)
+	assert.Equal(t, first.UID, *b.Events[0].IssueUID)
 	assert.Equal(t, int64(2), b.NextAfterID, "advances to max event id")
 	assert.False(t, b.ResetRequired)
+}
+
+func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	from := mkIssue(t, env, pid, "from")
+	to := mkIssue(t, env, pid, "to")
+	project, err := env.DB.ProjectByID(context.Background(), pid)
+	require.NoError(t, err)
+	_, _, err = env.DB.CreateLinkAndEvent(context.Background(), db.CreateLinkParams{
+		ProjectID: pid, FromIssueID: from.ID, ToIssueID: to.ID, Type: "blocks", Author: "tester",
+	}, db.LinkEventParams{
+		EventType: "issue.linked", EventIssueID: from.ID, EventIssueNumber: from.Number,
+		FromNumber: from.Number, ToNumber: to.Number, Actor: "tester",
+	})
+	require.NoError(t, err)
+
+	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=2&limit=10")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var b struct {
+		Events []struct {
+			Type            string  `json:"type"`
+			ProjectUID      string  `json:"project_uid"`
+			IssueUID        *string `json:"issue_uid"`
+			RelatedIssueUID *string `json:"related_issue_uid"`
+		} `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	require.Len(t, b.Events, 1)
+	assert.Equal(t, "issue.linked", b.Events[0].Type)
+	assert.Equal(t, project.UID, b.Events[0].ProjectUID)
+	require.NotNil(t, b.Events[0].IssueUID)
+	require.NotNil(t, b.Events[0].RelatedIssueUID)
+	assert.Equal(t, from.UID, *b.Events[0].IssueUID)
+	assert.Equal(t, to.UID, *b.Events[0].RelatedIssueUID)
 }
 
 func TestPollEvents_NextAfterIDEchoesAfterIDOnEmpty(t *testing.T) {
