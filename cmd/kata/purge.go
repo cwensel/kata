@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/spf13/cobra"
 )
@@ -18,14 +17,10 @@ func newPurgeCmd() *cobra.Command {
 	var confirm string
 	var reason string
 	cmd := &cobra.Command{
-		Use:   "purge <number>",
+		Use:   "purge <issue-ref>",
 		Short: "irreversibly remove an issue + all its rows",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			n, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
 			if !force {
 				return &cliError{
 					Message: "purge requires --force; this is irreversible",
@@ -33,7 +28,11 @@ func newPurgeCmd() *cobra.Command {
 					Kind:    kindValidation, ExitCode: ExitValidation,
 				}
 			}
-			expected := fmt.Sprintf("PURGE #%d", n)
+			_, _, _, issue, err := resolveIssueRefForCommandWithOptions(cmd, args[0], true)
+			if err != nil {
+				return err
+			}
+			expected := fmt.Sprintf("PURGE #%d", issue.Number)
 			confirm, err = resolveConfirm(cmd, confirm, expected,
 				fmt.Sprintf("Type %q to confirm: ", expected), confirmPromptFull)
 			if err != nil {
@@ -43,7 +42,7 @@ func newPurgeCmd() *cobra.Command {
 			if reason != "" {
 				extra = map[string]any{"reason": reason}
 			}
-			return runDestructive(cmd, n, "purge", confirm, extra)
+			return runDestructive(cmd, issue.Number, "purge", confirm, extra)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "required to perform the purge")

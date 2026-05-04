@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,14 +24,10 @@ func newDeleteCmd() *cobra.Command {
 	var force bool
 	var confirm string
 	cmd := &cobra.Command{
-		Use:   "delete <number>",
+		Use:   "delete <issue-ref>",
 		Short: "soft-delete an issue (reversible via kata restore)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			n, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
 			if !force {
 				return &cliError{
 					Message: "deletion requires --force; use `kata restore` to undo if you change your mind",
@@ -40,13 +35,17 @@ func newDeleteCmd() *cobra.Command {
 					Kind:    kindValidation, ExitCode: ExitValidation,
 				}
 			}
-			expected := fmt.Sprintf("DELETE #%d", n)
+			_, _, _, issue, err := resolveIssueRefForCommand(cmd, args[0])
+			if err != nil {
+				return err
+			}
+			expected := fmt.Sprintf("DELETE #%d", issue.Number)
 			confirm, err = resolveConfirm(cmd, confirm, expected,
 				"Type the issue number to confirm: ", confirmPromptNumber)
 			if err != nil {
 				return err
 			}
-			return runDestructive(cmd, n, "delete", confirm, nil)
+			return runDestructive(cmd, issue.Number, "delete", confirm, nil)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "required to perform the soft delete")

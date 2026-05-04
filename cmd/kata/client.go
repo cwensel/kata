@@ -73,6 +73,10 @@ type resolvedIssueRef struct {
 }
 
 func resolveIssueRef(ctx context.Context, baseURL string, projectID int64, ref string) (resolvedIssueRef, error) {
+	return resolveIssueRefWithOptions(ctx, baseURL, projectID, ref, false)
+}
+
+func resolveIssueRefWithOptions(ctx context.Context, baseURL string, projectID int64, ref string, includeDeleted bool) (resolvedIssueRef, error) {
 	if n, ok, err := parseIssueNumberRef(ref); ok || err != nil {
 		return resolvedIssueRef{Number: n, ProjectID: projectID}, err
 	}
@@ -80,8 +84,12 @@ func resolveIssueRef(ctx context.Context, baseURL string, projectID int64, ref s
 	if err != nil {
 		return resolvedIssueRef{}, err
 	}
+	path := fmt.Sprintf("%s/api/v1/issues/%s", baseURL, url.PathEscape(ref))
+	if includeDeleted {
+		path += "?include_deleted=true"
+	}
 	status, bs, err := httpDoJSON(ctx, client, http.MethodGet,
-		fmt.Sprintf("%s/api/v1/issues/%s", baseURL, url.PathEscape(ref)), nil)
+		path, nil)
 	if err != nil {
 		return resolvedIssueRef{}, err
 	}

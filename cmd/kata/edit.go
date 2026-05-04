@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -16,7 +15,7 @@ func newEditCmd() *cobra.Command {
 		owner string
 	)
 	cmd := &cobra.Command{
-		Use:   "edit <number>",
+		Use:   "edit <issue-ref>",
 		Short: "edit issue title/body/owner",
 		Args:  cobra.ExactArgs(1),
 	}
@@ -27,11 +26,6 @@ func newEditCmd() *cobra.Command {
 	// RunE is set after flag registration so we can reference cmd.Flags().Changed.
 	// This lets --body "" explicitly clear the body rather than being ignored.
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		ctx := cmd.Context()
-		n, err := strconv.ParseInt(args[0], 10, 64)
-		if err != nil {
-			return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-		}
 		payload := map[string]any{}
 		if cmd.Flags().Changed("title") {
 			// Mirror create's title-non-empty gate so we don't forward
@@ -59,15 +53,7 @@ func newEditCmd() *cobra.Command {
 		actor, _ := resolveActor(flags.As, nil)
 		payload["actor"] = actor
 
-		start, err := resolveStartPath(flags.Workspace)
-		if err != nil {
-			return err
-		}
-		baseURL, err := ensureDaemon(ctx)
-		if err != nil {
-			return err
-		}
-		pid, err := resolveProjectID(ctx, baseURL, start)
+		ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, args[0])
 		if err != nil {
 			return err
 		}
@@ -76,7 +62,7 @@ func newEditCmd() *cobra.Command {
 			return err
 		}
 		status, bs, err := httpDoJSON(ctx, client, http.MethodPatch,
-			fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, n),
+			fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, issue.Number),
 			payload)
 		if err != nil {
 			return err

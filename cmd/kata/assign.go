@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/spf13/cobra"
 )
 
 func newAssignCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "assign <number> <owner>",
+		Use:   "assign <issue-ref> <owner>",
 		Short: "set the owner of an issue",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -23,7 +22,7 @@ func newAssignCmd() *cobra.Command {
 
 func newUnassignCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unassign <number>",
+		Use:   "unassign <issue-ref>",
 		Short: "clear the owner of an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -33,20 +32,7 @@ func newUnassignCmd() *cobra.Command {
 }
 
 func runAssign(cmd *cobra.Command, raw, owner string, unassign bool) error {
-	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-	}
-	ctx := cmd.Context()
-	start, err := resolveStartPath(flags.Workspace)
-	if err != nil {
-		return err
-	}
-	baseURL, err := ensureDaemon(ctx)
-	if err != nil {
-		return err
-	}
-	pid, err := resolveProjectID(ctx, baseURL, start)
+	ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, raw)
 	if err != nil {
 		return err
 	}
@@ -61,7 +47,7 @@ func runAssign(cmd *cobra.Command, raw, owner string, unassign bool) error {
 		action = "unassign"
 		body = map[string]any{"actor": actor}
 	}
-	postURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/%s", baseURL, pid, n, action)
+	postURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/%s", baseURL, pid, issue.Number, action)
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost, postURL, body)
 	if err != nil {
 		return err

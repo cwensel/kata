@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -24,28 +23,15 @@ func newLabelCmd() *cobra.Command {
 
 func labelAddCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "add <number> <label>",
+		Use:   "add <issue-ref> <label>",
 		Short: "attach a label to an issue",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			n, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
 			label := args[1]
 			if strings.TrimSpace(label) == "" {
 				return &cliError{Message: "label must not be empty", Kind: kindValidation, ExitCode: ExitValidation}
 			}
-			ctx := cmd.Context()
-			start, err := resolveStartPath(flags.Workspace)
-			if err != nil {
-				return err
-			}
-			baseURL, err := ensureDaemon(ctx)
-			if err != nil {
-				return err
-			}
-			pid, err := resolveProjectID(ctx, baseURL, start)
+			ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, args[0])
 			if err != nil {
 				return err
 			}
@@ -55,7 +41,7 @@ func labelAddCmd() *cobra.Command {
 				return err
 			}
 			payload := map[string]string{"actor": actor, "label": label}
-			postURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/labels", baseURL, pid, n)
+			postURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/labels", baseURL, pid, issue.Number)
 			status, bs, err := httpDoJSON(ctx, client, http.MethodPost, postURL, payload)
 			if err != nil {
 				return err
@@ -70,14 +56,10 @@ func labelAddCmd() *cobra.Command {
 
 func labelRmCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "rm <number> <label>",
+		Use:   "rm <issue-ref> <label>",
 		Short: "detach a label from an issue",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			n, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
 			label := args[1]
 			// Empty label here used to URL-encode to "" and hit
 			// /labels/?actor=... which the daemon answered with a
@@ -86,16 +68,7 @@ func labelRmCmd() *cobra.Command {
 			if strings.TrimSpace(label) == "" {
 				return &cliError{Message: "label must not be empty", Kind: kindValidation, ExitCode: ExitValidation}
 			}
-			ctx := cmd.Context()
-			start, err := resolveStartPath(flags.Workspace)
-			if err != nil {
-				return err
-			}
-			baseURL, err := ensureDaemon(ctx)
-			if err != nil {
-				return err
-			}
-			pid, err := resolveProjectID(ctx, baseURL, start)
+			ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, args[0])
 			if err != nil {
 				return err
 			}
@@ -105,7 +78,7 @@ func labelRmCmd() *cobra.Command {
 				return err
 			}
 			deleteURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/labels/%s?actor=%s",
-				baseURL, pid, n, url.PathEscape(label), url.QueryEscape(actor))
+				baseURL, pid, issue.Number, url.PathEscape(label), url.QueryEscape(actor))
 			status, bs, err := httpDoJSON(ctx, client, http.MethodDelete, deleteURL, nil)
 			if err != nil {
 				return err
@@ -113,7 +86,7 @@ func labelRmCmd() *cobra.Command {
 			if status >= 400 {
 				return apiErrFromBody(status, bs)
 			}
-			return printLabelRemoved(cmd, bs, n, label)
+			return printLabelRemoved(cmd, bs, issue.Number, label)
 		},
 	}
 }

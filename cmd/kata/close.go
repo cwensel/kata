@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/spf13/cobra"
 )
@@ -11,7 +10,7 @@ import (
 func newCloseCmd() *cobra.Command {
 	var reason string
 	cmd := &cobra.Command{
-		Use:   "close <number>",
+		Use:   "close <issue-ref>",
 		Short: "close an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -22,24 +21,11 @@ func newCloseCmd() *cobra.Command {
 	return cmd
 }
 
-// runAction is shared by close and reopen. It parses the issue number,
-// resolves the project, merges extra fields into the request body, and
-// calls the daemon action endpoint.
+// runAction is shared by close and reopen. It resolves the issue reference,
+// resolves the project, merges extra fields into the request body, and calls
+// the daemon action endpoint.
 func runAction(cmd *cobra.Command, raw, action string, extra map[string]any) error {
-	ctx := cmd.Context()
-	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-	}
-	start, err := resolveStartPath(flags.Workspace)
-	if err != nil {
-		return err
-	}
-	baseURL, err := ensureDaemon(ctx)
-	if err != nil {
-		return err
-	}
-	pid, err := resolveProjectID(ctx, baseURL, start)
+	ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, raw)
 	if err != nil {
 		return err
 	}
@@ -53,7 +39,7 @@ func runAction(cmd *cobra.Command, raw, action string, extra map[string]any) err
 		return err
 	}
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
-		fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/%s", baseURL, pid, n, action),
+		fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/%s", baseURL, pid, issue.Number, action),
 		body)
 	if err != nil {
 		return err

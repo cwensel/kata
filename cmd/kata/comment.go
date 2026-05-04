@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,7 +13,7 @@ import (
 func newCommentCmd() *cobra.Command {
 	var src BodySources
 	cmd := &cobra.Command{
-		Use:   "comment <number>",
+		Use:   "comment <issue-ref>",
 		Short: "append a comment to an issue",
 		Args:  cobra.ExactArgs(1),
 	}
@@ -27,11 +26,6 @@ func newCommentCmd() *cobra.Command {
 		src.BodySet = cmd.Flags().Changed("body")
 		src.FileSet = cmd.Flags().Changed("body-file")
 
-		ctx := cmd.Context()
-		n, err := strconv.ParseInt(args[0], 10, 64)
-		if err != nil {
-			return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-		}
 		body, err := resolveBody(src, cmd.InOrStdin())
 		if err != nil {
 			code := ExitValidation
@@ -43,15 +37,7 @@ func newCommentCmd() *cobra.Command {
 		if strings.TrimSpace(body) == "" {
 			return &cliError{Message: "comment body is required (--body, --body-file, --body-stdin)", Kind: kindValidation, ExitCode: ExitValidation}
 		}
-		start, err := resolveStartPath(flags.Workspace)
-		if err != nil {
-			return err
-		}
-		baseURL, err := ensureDaemon(ctx)
-		if err != nil {
-			return err
-		}
-		pid, err := resolveProjectID(ctx, baseURL, start)
+		ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, args[0])
 		if err != nil {
 			return err
 		}
@@ -61,7 +47,7 @@ func newCommentCmd() *cobra.Command {
 			return err
 		}
 		status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
-			fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/comments", baseURL, pid, n),
+			fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/comments", baseURL, pid, issue.Number),
 			map[string]any{"actor": actor, "body": body})
 		if err != nil {
 			return err
