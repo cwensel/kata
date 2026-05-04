@@ -43,10 +43,39 @@ func TestCreateLink_RoundTrips(t *testing.T) {
 	assert.Equal(t, "parent", link.Type)
 	assert.Equal(t, a.ID, link.FromIssueID)
 	assert.Equal(t, b.ID, link.ToIssueID)
+	assert.Equal(t, a.UID, link.FromIssueUID)
+	assert.Equal(t, b.UID, link.ToIssueUID)
 
 	got, err := d.LinkByID(ctx, link.ID)
 	require.NoError(t, err)
 	assert.Equal(t, link.ID, got.ID)
+	assert.Equal(t, a.UID, got.FromIssueUID)
+	assert.Equal(t, b.UID, got.ToIssueUID)
+}
+
+func TestLinksRejectMismatchedUIDCache(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	a := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	b := makeIssue(t, ctx, d, p.ID, "b", "tester")
+
+	_, err = d.ExecContext(ctx,
+		`INSERT INTO links(project_id, from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author)
+		 VALUES(?, ?, ?, ?, ?, 'blocks', 'tester')`,
+		p.ID, a.ID, b.ID, b.UID, b.UID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "from_issue_uid does not match from_issue_id")
+
+	link, err := d.CreateLink(ctx, db.CreateLinkParams{
+		ProjectID: p.ID, FromIssueID: a.ID, ToIssueID: b.ID, Type: "blocks", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.ExecContext(ctx,
+		`UPDATE links SET to_issue_uid = ? WHERE id = ?`, a.UID, link.ID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "to_issue_uid does not match to_issue_id")
 }
 
 func TestCreateLink_DuplicateIsErrLinkExists(t *testing.T) {

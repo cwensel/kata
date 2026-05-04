@@ -788,7 +788,7 @@ git commit -m "uid: add ULID helpers"
 - Modify: `internal/db/schema_completeness_test.go`
 - Test: `internal/db/db_test.go`
 
-- [ ] **Step 1: Write failing schema tests**
+- [x] **Step 1: Write failing schema tests**
 
 Assert fresh DB has:
 
@@ -800,7 +800,7 @@ Assert fresh DB has:
 - link UID/FK consistency triggers
 - `meta.schema_version == "2"`
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [x] **Step 2: Run focused tests and confirm failure**
 
 ```bash
 go test ./internal/db -run 'TestSchema|TestOpen_RecordsCurrentSchemaVersion' -count=1
@@ -808,11 +808,11 @@ go test ./internal/db -run 'TestSchema|TestOpen_RecordsCurrentSchemaVersion' -co
 
 Expected: fail on missing columns/triggers/version.
 
-- [ ] **Step 3: Edit schema**
+- [x] **Step 3: Edit schema**
 
 Add columns/indexes/triggers exactly per identity spec. Do not add a `meta.schema_version` seed insert.
 
-- [ ] **Step 4: Bump version constant**
+- [x] **Step 4: Bump version constant**
 
 In `internal/db/db.go`:
 
@@ -820,7 +820,7 @@ In `internal/db/db.go`:
 const currentSchemaVersion = 2
 ```
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 ```bash
 go test ./internal/db -run 'TestSchema|TestOpen_RecordsCurrentSchemaVersion' -count=1
@@ -828,7 +828,7 @@ go test ./internal/db -run 'TestSchema|TestOpen_RecordsCurrentSchemaVersion' -co
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/db/migrations/0001_init.sql internal/db/db.go internal/db/schema_completeness_test.go internal/db/db_test.go
@@ -845,7 +845,7 @@ git commit -m "db: declare issue identity schema"
 - Modify: `internal/db/queries_delete.go`
 - Test: `internal/db/queries_*_test.go`
 
-- [ ] **Step 1: Write failing DB behavior tests**
+- [x] **Step 1: Write failing DB behavior tests**
 
 Cover:
 
@@ -856,7 +856,7 @@ Cover:
 - purge log captures issue/project UIDs before deletion
 - direct mismatched link insert/update fails via trigger
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [x] **Step 2: Run focused tests and confirm failure**
 
 ```bash
 go test ./internal/db -run 'UID|CreateProject|CreateIssue|CreateLink|Purge' -count=1
@@ -864,7 +864,7 @@ go test ./internal/db -run 'UID|CreateProject|CreateIssue|CreateLink|Purge' -cou
 
 Expected: fail on missing fields/write paths.
 
-- [ ] **Step 3: Update types and scan helpers**
+- [x] **Step 3: Update types and scan helpers**
 
 Add fields:
 
@@ -877,15 +877,15 @@ RelatedIssueUID *string `json:"related_issue_uid,omitempty"`
 
 Use concrete string fields for NOT NULL columns and pointers for nullable columns.
 
-- [ ] **Step 4: Update insert paths**
+- [x] **Step 4: Update insert paths**
 
 Generate `uid.New()` for new projects and issues. Resolve issue UIDs when inserting links and events.
 
-- [ ] **Step 5: Update purge**
+- [x] **Step 5: Update purge**
 
 Read `issues.uid` and `projects.uid` before cascade deletion and insert them into `purge_log`.
 
-- [ ] **Step 6: Run focused tests**
+- [x] **Step 6: Run focused tests**
 
 ```bash
 go test ./internal/db -run 'UID|CreateProject|CreateIssue|CreateLink|Purge' -count=1
@@ -893,7 +893,7 @@ go test ./internal/db -run 'UID|CreateProject|CreateIssue|CreateLink|Purge' -cou
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/db
@@ -907,7 +907,7 @@ git commit -m "db: write and read stable UIDs"
 - Test: `internal/jsonl/cutover_test.go`
 - Test: `internal/jsonl/roundtrip_test.go`
 
-- [ ] **Step 1: Write failing v1 fixture tests**
+- [x] **Step 1: Write failing v1 fixture tests**
 
 Create a v1 fixture DB using an embedded v1 schema copy in tests or a helper that creates the old tables. Assert after `AutoCutover`:
 
@@ -917,7 +917,7 @@ Create a v1 fixture DB using an embedded v1 schema copy in tests or a helper tha
 - purge log has `project_uid`, and `issue_uid` only when issue still exists
 - running cutover twice from same source produces identical UIDs
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [x] **Step 2: Run focused tests and confirm failure**
 
 ```bash
 go test ./internal/jsonl -run 'TestCutover_V1ToV2|TestCutover_V1ToV2_Deterministic' -count=1
@@ -925,7 +925,7 @@ go test ./internal/jsonl -run 'TestCutover_V1ToV2|TestCutover_V1ToV2_Determinist
 
 Expected: fail because fill rules are missing.
 
-- [ ] **Step 3: Implement fill rules**
+- [x] **Step 3: Implement fill rules**
 
 Use:
 
@@ -942,11 +942,11 @@ issueUID := uid.FromStableSeed(
 
 Build in-memory maps by source integer ID during import.
 
-- [ ] **Step 4: Reject corrupt event FKs**
+- [x] **Step 4: Reject corrupt event FKs**
 
 If `events.issue_id` or `related_issue_id` is non-null and missing from the issue UID map, return `corrupt_event_fk` with event ID and column name.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 go test ./internal/jsonl -run 'TestCutover_V1ToV2|TestCutover_V1ToV2_Deterministic|TestRoundtrip' -count=1
@@ -954,7 +954,7 @@ go test ./internal/jsonl -run 'TestCutover_V1ToV2|TestCutover_V1ToV2_Determinist
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/jsonl

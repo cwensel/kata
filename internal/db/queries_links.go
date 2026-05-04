@@ -37,9 +37,9 @@ type CreateLinkParams struct {
 // the right wire status without parsing SQLite messages.
 func (d *DB) CreateLink(ctx context.Context, p CreateLinkParams) (Link, error) {
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO links(project_id, from_issue_id, to_issue_id, type, author)
-		 VALUES(?, ?, ?, ?, ?)`,
-		p.ProjectID, p.FromIssueID, p.ToIssueID, p.Type, p.Author)
+		`INSERT INTO links(project_id, from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author)
+		 VALUES(?, ?, ?, (SELECT uid FROM issues WHERE id = ?), (SELECT uid FROM issues WHERE id = ?), ?, ?)`,
+		p.ProjectID, p.FromIssueID, p.ToIssueID, p.FromIssueID, p.ToIssueID, p.Type, p.Author)
 	if err != nil {
 		classified := classifyLinkInsertError(err)
 		// SQLite may report the partial-parent index violation as a bare
@@ -304,11 +304,11 @@ func (d *DB) DeleteLinkByID(ctx context.Context, linkID int64) error {
 	return nil
 }
 
-const linkSelect = `SELECT id, project_id, from_issue_id, to_issue_id, type, author, created_at FROM links`
+const linkSelect = `SELECT id, project_id, from_issue_id, from_issue_uid, to_issue_id, to_issue_uid, type, author, created_at FROM links`
 
 func scanLink(r rowScanner) (Link, error) {
 	var l Link
-	err := r.Scan(&l.ID, &l.ProjectID, &l.FromIssueID, &l.ToIssueID, &l.Type, &l.Author, &l.CreatedAt)
+	err := r.Scan(&l.ID, &l.ProjectID, &l.FromIssueID, &l.FromIssueUID, &l.ToIssueID, &l.ToIssueUID, &l.Type, &l.Author, &l.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Link{}, ErrNotFound
 	}
@@ -355,9 +355,9 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev Link
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO links(project_id, from_issue_id, to_issue_id, type, author)
-		 VALUES(?, ?, ?, ?, ?)`,
-		p.ProjectID, p.FromIssueID, p.ToIssueID, p.Type, p.Author)
+		`INSERT INTO links(project_id, from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author)
+		 VALUES(?, ?, ?, (SELECT uid FROM issues WHERE id = ?), (SELECT uid FROM issues WHERE id = ?), ?, ?)`,
+		p.ProjectID, p.FromIssueID, p.ToIssueID, p.FromIssueID, p.ToIssueID, p.Type, p.Author)
 	if err != nil {
 		classified := classifyLinkInsertError(err)
 		// Same exact-duplicate-parent disambiguation as the non-TX CreateLink:

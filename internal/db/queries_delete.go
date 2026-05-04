@@ -291,12 +291,12 @@ func purgeCascade(
 	// INTEGER or NULL; database/sql handles the marshaling.
 	res, err := c.ExecContext(ctx,
 		`INSERT INTO purge_log(
-		   project_id, purged_issue_id, project_identity, issue_number,
+		   project_id, purged_issue_id, issue_uid, project_uid, project_identity, issue_number,
 		   issue_title, issue_author, comment_count, link_count, label_count,
 		   event_count, events_deleted_min_id, events_deleted_max_id,
 		   purge_reset_after_event_id, actor, reason)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		issue.ProjectID, issue.ID, projectIdentity, issue.Number,
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectIdentity, issue.Number,
 		issue.Title, issue.Author, commentCount, linkCount, labelCount,
 		eventCount, minEventID, maxEventID, reservedCursor, actor, reason)
 	if err != nil {
@@ -352,15 +352,15 @@ func reserveEventSequence(ctx context.Context, c connExec, hadEvents bool) (sql.
 // if the just-inserted row is missing (which would indicate a DB-level bug).
 func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) {
 	const q = `
-		SELECT id, project_id, purged_issue_id, project_identity, issue_number,
+		SELECT id, project_id, purged_issue_id, issue_uid, project_uid, project_identity, issue_number,
 		       issue_title, issue_author, comment_count, link_count, label_count,
 		       event_count, events_deleted_min_id, events_deleted_max_id,
 		       purge_reset_after_event_id, actor, reason, purged_at
 		FROM purge_log WHERE id = ?`
 	var pl PurgeLog
 	err := r.QueryRowContext(ctx, q, id).Scan(
-		&pl.ID, &pl.ProjectID, &pl.PurgedIssueID, &pl.ProjectIdentity,
-		&pl.IssueNumber, &pl.IssueTitle, &pl.IssueAuthor, &pl.CommentCount,
+		&pl.ID, &pl.ProjectID, &pl.PurgedIssueID, &pl.IssueUID,
+		&pl.ProjectUID, &pl.ProjectIdentity, &pl.IssueNumber, &pl.IssueTitle, &pl.IssueAuthor, &pl.CommentCount,
 		&pl.LinkCount, &pl.LabelCount, &pl.EventCount,
 		&pl.EventsDeletedMinID, &pl.EventsDeletedMaxID,
 		&pl.PurgeResetAfterEventID, &pl.Actor, &pl.Reason, &pl.PurgedAt)
@@ -379,7 +379,7 @@ func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) 
 // destructive ladder verbs that need to operate on deleted issues.
 func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64) (Issue, string, error) {
 	const q = `
-		SELECT i.id, i.project_id, i.number, i.title, i.body, i.status,
+		SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at, p.identity
 		FROM issues i
@@ -390,7 +390,7 @@ func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64
 		identity string
 	)
 	err := r.QueryRowContext(ctx, q, issueID).
-		Scan(&i.ID, &i.ProjectID, &i.Number, &i.Title, &i.Body, &i.Status,
+		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status,
 			&i.ClosedReason, &i.Owner, &i.Author, &i.CreatedAt, &i.UpdatedAt,
 			&i.ClosedAt, &i.DeletedAt, &identity)
 	if errors.Is(err, sql.ErrNoRows) {

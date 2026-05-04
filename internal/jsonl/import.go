@@ -8,8 +8,10 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wesm/kata/internal/db"
+	katauid "github.com/wesm/kata/internal/uid"
 )
 
 // Import reads JSONL records from r and inserts them into target.
@@ -18,7 +20,8 @@ func Import(ctx context.Context, r io.Reader, target *db.DB) error {
 	if err != nil {
 		return err
 	}
-	if err := validateExportVersion(envs); err != nil {
+	exportVersion, err := validateExportVersion(envs)
+	if err != nil {
 		return err
 	}
 	tx, err := target.BeginTx(ctx, nil)
@@ -31,7 +34,7 @@ func Import(ctx context.Context, r io.Reader, target *db.DB) error {
 	}
 
 	for _, env := range envs {
-		if err := importEnvelope(ctx, tx, env); err != nil {
+		if err := importEnvelope(ctx, tx, env, exportVersion); err != nil {
 			return err
 		}
 	}
@@ -47,25 +50,25 @@ func Import(ctx context.Context, r io.Reader, target *db.DB) error {
 	return nil
 }
 
-func validateExportVersion(envs []Envelope) error {
+func validateExportVersion(envs []Envelope) (int, error) {
 	var rec metaRecord
 	if err := decodeData(envs[0], &rec); err != nil {
-		return err
+		return 0, err
 	}
 	version, err := strconv.Atoi(rec.Value)
 	if err != nil {
-		return fmt.Errorf("invalid export_version %q: %w", rec.Value, err)
+		return 0, fmt.Errorf("invalid export_version %q: %w", rec.Value, err)
 	}
 	if version > db.CurrentSchemaVersion() {
-		return fmt.Errorf("unsupported export_version %d for current schema version %d", version, db.CurrentSchemaVersion())
+		return 0, fmt.Errorf("unsupported export_version %d for current schema version %d", version, db.CurrentSchemaVersion())
 	}
 	if version < 1 {
-		return fmt.Errorf("invalid export_version %d", version)
+		return 0, fmt.Errorf("invalid export_version %d", version)
 	}
-	return nil
+	return version, nil
 }
 
-func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope) error {
+func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion int) error {
 	switch env.Kind {
 	case KindMeta:
 		var rec metaRecord
@@ -85,10 +88,13 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope) error {
 		if err := decodeData(env, &rec); err != nil {
 			return err
 		}
+		if err := fillProjectUID(&rec, exportVersion); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO projects(id, identity, name, created_at, next_issue_number)
-			 VALUES(?, ?, ?, ?, ?)`,
-			rec.ID, rec.Identity, rec.Name, rec.CreatedAt, rec.NextIssueNumber)
+			`INSERT INTO projects(id, uid, identity, name, created_at, next_issue_number)
+			 VALUES(?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.UID, rec.Identity, rec.Name, rec.CreatedAt, rec.NextIssueNumber)
 		return wrapImportErr(env.Kind, err)
 	case KindProjectAlias:
 		var rec projectAliasRecord
@@ -105,11 +111,14 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope) error {
 		if err := decodeData(env, &rec); err != nil {
 			return err
 		}
+		if err := fillIssueUID(&rec, exportVersion); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO issues(id, project_id, number, title, body, status, closed_reason, owner, author,
+			`INSERT INTO issues(id, uid, project_id, number, title, body, status, closed_reason, owner, author,
 			                    created_at, updated_at, closed_at, deleted_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			rec.ID, rec.ProjectID, rec.Number, rec.Title, rec.Body, rec.Status, rec.ClosedReason,
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.UID, rec.ProjectID, rec.Number, rec.Title, rec.Body, rec.Status, rec.ClosedReason,
 			rec.Owner, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindComment:
@@ -136,21 +145,40 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope) error {
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO links(id, project_id, from_issue_id, to_issue_id, type, author, created_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-			rec.ID, rec.ProjectID, rec.FromIssueID, rec.ToIssueID, rec.Type, rec.Author, rec.CreatedAt)
+			`INSERT INTO links(id, project_id, from_issue_id, from_issue_uid, to_issue_id, to_issue_uid, type, author, created_at)
+			 VALUES(
+			   ?, ?, ?,
+			   COALESCE(NULLIF(?, ''), (SELECT uid FROM issues WHERE id = ?)),
+			   ?,
+			   COALESCE(NULLIF(?, ''), (SELECT uid FROM issues WHERE id = ?)),
+			   ?, ?, ?
+			 )`,
+			rec.ID, rec.ProjectID, rec.FromIssueID, rec.FromIssueUID, rec.FromIssueID,
+			rec.ToIssueID, rec.ToIssueUID, rec.ToIssueID, rec.Type, rec.Author, rec.CreatedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindEvent:
 		var rec eventRecord
 		if err := decodeData(env, &rec); err != nil {
 			return err
 		}
+		if err := fillEventUIDs(ctx, tx, &rec); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO events(id, project_id, project_identity, issue_id, issue_number, related_issue_id,
+			`INSERT INTO events(id, project_id, project_identity, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid,
 			                    type, actor, payload, created_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			rec.ID, rec.ProjectID, rec.ProjectIdentity, rec.IssueID, rec.IssueNumber,
-			rec.RelatedIssueID, rec.Type, rec.Actor, string(rec.Payload), rec.CreatedAt)
+			 VALUES(
+			   ?, ?, ?, ?,
+			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
+			   ?, ?,
+			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
+			   ?, ?, ?, ?
+			 )`,
+			rec.ID, rec.ProjectID, rec.ProjectIdentity, rec.IssueID,
+			stringPtrValue(rec.IssueUID), rec.IssueID,
+			rec.IssueNumber, rec.RelatedIssueID,
+			stringPtrValue(rec.RelatedIssueUID), rec.RelatedIssueID,
+			rec.Type, rec.Actor, string(rec.Payload), rec.CreatedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindPurgeLog:
 		var rec purgeLogRecord
@@ -158,12 +186,20 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope) error {
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO purge_log(id, project_id, purged_issue_id, project_identity, issue_number, issue_title,
+			`INSERT INTO purge_log(id, project_id, purged_issue_id, issue_uid, project_uid, project_identity, issue_number, issue_title,
 			                       issue_author, comment_count, link_count, label_count, event_count,
 			                       events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
 			                       actor, reason, purged_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			rec.ID, rec.ProjectID, rec.PurgedIssueID, rec.ProjectIdentity, rec.IssueNumber,
+			 VALUES(
+			   ?, ?, ?,
+			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
+			   COALESCE(?, (SELECT uid FROM projects WHERE id = ?)),
+			   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			 )`,
+			rec.ID, rec.ProjectID, rec.PurgedIssueID,
+			stringPtrValue(rec.IssueUID), rec.PurgedIssueID,
+			stringPtrValue(rec.ProjectUID), rec.ProjectID,
+			rec.ProjectIdentity, rec.IssueNumber,
 			rec.IssueTitle, rec.IssueAuthor, rec.CommentCount, rec.LinkCount, rec.LabelCount,
 			rec.EventCount, rec.EventsDeletedMinID, rec.EventsDeletedMaxID, rec.PurgeResetAfterEventID,
 			rec.Actor, rec.Reason, rec.PurgedAt)
@@ -193,8 +229,86 @@ func wrapImportErr(kind Kind, err error) error {
 	return nil
 }
 
+func fillProjectUID(rec *projectRecord, exportVersion int) error {
+	if exportVersion >= 2 || rec.UID != "" {
+		return nil
+	}
+	t, err := parseExportTime(rec.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("fill project uid: %w", err)
+	}
+	uid, err := katauid.FromStableSeed([]byte(fmt.Sprintf("project:%d:%s", rec.ID, rec.Identity)), t)
+	if err != nil {
+		return fmt.Errorf("fill project uid: %w", err)
+	}
+	rec.UID = uid
+	return nil
+}
+
+func fillIssueUID(rec *issueRecord, exportVersion int) error {
+	if exportVersion >= 2 || rec.UID != "" {
+		return nil
+	}
+	t, err := parseExportTime(rec.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("fill issue uid: %w", err)
+	}
+	uid, err := katauid.FromStableSeed([]byte(fmt.Sprintf("issue:%d:%d", rec.ProjectID, rec.Number)), t)
+	if err != nil {
+		return fmt.Errorf("fill issue uid: %w", err)
+	}
+	rec.UID = uid
+	return nil
+}
+
+func fillEventUIDs(ctx context.Context, tx *sql.Tx, rec *eventRecord) error {
+	if rec.IssueID != nil && rec.IssueUID == nil {
+		issueUID, err := lookupIssueUID(ctx, tx, *rec.IssueID)
+		if err != nil {
+			return fmt.Errorf("corrupt_event_fk: event %d issue_id %d: %w", rec.ID, *rec.IssueID, err)
+		}
+		rec.IssueUID = &issueUID
+	}
+	if rec.RelatedIssueID != nil && rec.RelatedIssueUID == nil {
+		issueUID, err := lookupIssueUID(ctx, tx, *rec.RelatedIssueID)
+		if err != nil {
+			return fmt.Errorf("corrupt_event_fk: event %d related_issue_id %d: %w", rec.ID, *rec.RelatedIssueID, err)
+		}
+		rec.RelatedIssueUID = &issueUID
+	}
+	return nil
+}
+
+func lookupIssueUID(ctx context.Context, tx *sql.Tx, issueID int64) (string, error) {
+	var issueUID string
+	if err := tx.QueryRowContext(ctx, `SELECT uid FROM issues WHERE id = ?`, issueID).Scan(&issueUID); err != nil {
+		if err == sql.ErrNoRows {
+			return "", db.ErrNotFound
+		}
+		return "", err
+	}
+	return issueUID, nil
+}
+
+func parseExportTime(s string) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("parse timestamp %q", s)
+}
+
+func stringPtrValue(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
+
 type projectRecord struct {
 	ID              int64  `json:"id"`
+	UID             string `json:"uid"`
 	Identity        string `json:"identity"`
 	Name            string `json:"name"`
 	CreatedAt       string `json:"created_at"`
@@ -213,6 +327,7 @@ type projectAliasRecord struct {
 
 type issueRecord struct {
 	ID           int64   `json:"id"`
+	UID          string  `json:"uid"`
 	ProjectID    int64   `json:"project_id"`
 	Number       int64   `json:"number"`
 	Title        string  `json:"title"`
@@ -243,13 +358,15 @@ type issueLabelRecord struct {
 }
 
 type linkRecord struct {
-	ID          int64  `json:"id"`
-	ProjectID   int64  `json:"project_id"`
-	FromIssueID int64  `json:"from_issue_id"`
-	ToIssueID   int64  `json:"to_issue_id"`
-	Type        string `json:"type"`
-	Author      string `json:"author"`
-	CreatedAt   string `json:"created_at"`
+	ID           int64  `json:"id"`
+	ProjectID    int64  `json:"project_id"`
+	FromIssueID  int64  `json:"from_issue_id"`
+	FromIssueUID string `json:"from_issue_uid"`
+	ToIssueID    int64  `json:"to_issue_id"`
+	ToIssueUID   string `json:"to_issue_uid"`
+	Type         string `json:"type"`
+	Author       string `json:"author"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type eventRecord struct {
@@ -257,8 +374,10 @@ type eventRecord struct {
 	ProjectID       int64           `json:"project_id"`
 	ProjectIdentity string          `json:"project_identity"`
 	IssueID         *int64          `json:"issue_id"`
+	IssueUID        *string         `json:"issue_uid"`
 	IssueNumber     *int64          `json:"issue_number"`
 	RelatedIssueID  *int64          `json:"related_issue_id"`
+	RelatedIssueUID *string         `json:"related_issue_uid"`
 	Type            string          `json:"type"`
 	Actor           string          `json:"actor"`
 	Payload         json.RawMessage `json:"payload"`
@@ -269,6 +388,8 @@ type purgeLogRecord struct {
 	ID                     int64   `json:"id"`
 	ProjectID              int64   `json:"project_id"`
 	PurgedIssueID          int64   `json:"purged_issue_id"`
+	IssueUID               *string `json:"issue_uid"`
+	ProjectUID             *string `json:"project_uid"`
 	ProjectIdentity        string  `json:"project_identity"`
 	IssueNumber            int64   `json:"issue_number"`
 	IssueTitle             string  `json:"issue_title"`

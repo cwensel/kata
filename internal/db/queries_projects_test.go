@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/uid"
 )
 
 func openTestDB(t *testing.T) *db.DB {
@@ -26,12 +27,20 @@ func TestCreateProject_RoundTrips(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "github.com/wesm/kata", p.Identity)
 	assert.Equal(t, "kata", p.Name)
+	assertValidUID(t, p.UID)
 	assert.Equal(t, int64(1), p.NextIssueNumber)
 	assert.False(t, p.CreatedAt.IsZero())
 
 	got, err := d.ProjectByIdentity(ctx, "github.com/wesm/kata")
 	require.NoError(t, err)
 	assert.Equal(t, p.ID, got.ID)
+	assert.Equal(t, p.UID, got.UID)
+}
+
+func assertValidUID(t *testing.T, got string) {
+	t.Helper()
+	require.Len(t, got, 26)
+	assert.True(t, uid.Valid(got), "invalid UID %q", got)
 }
 
 func TestProjectByIdentity_NotFound(t *testing.T) {

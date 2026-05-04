@@ -22,10 +22,15 @@ func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), issue.Number)
+	assertValidUID(t, issue.UID)
+	assert.Equal(t, p.UID, issue.ProjectUID)
 	assert.Equal(t, "open", issue.Status)
 	assert.Equal(t, "agent-1", issue.Author)
 	assert.Equal(t, "issue.created", evt.Type)
+	assert.Equal(t, p.UID, evt.ProjectUID)
 	assert.NotNil(t, evt.IssueID)
+	require.NotNil(t, evt.IssueUID)
+	assert.Equal(t, issue.UID, *evt.IssueUID)
 	require.NotNil(t, evt.IssueNumber)
 	assert.Equal(t, int64(1), *evt.IssueNumber)
 
@@ -84,6 +89,9 @@ func TestCreateComment_EmitsEvent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "hi", cmt.Body)
 	assert.Equal(t, "issue.commented", evt.Type)
+	assert.Equal(t, p.UID, evt.ProjectUID)
+	require.NotNil(t, evt.IssueUID)
+	assert.Equal(t, issue.UID, *evt.IssueUID)
 }
 
 func TestCloseIssue_SetsStatusAndEmitsEvent(t *testing.T) {

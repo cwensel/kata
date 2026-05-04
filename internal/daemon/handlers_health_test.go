@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/wesm/kata/internal/daemon"
+	"github.com/wesm/kata/internal/db"
 )
 
 func TestHealth_ReportsSchemaAndUptime(t *testing.T) {
@@ -36,7 +37,7 @@ func TestHealth_ReportsSchemaAndUptime(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(bs, &body))
 	assert.True(t, body.OK)
-	assert.Equal(t, 1, body.SchemaVersion)
+	assert.Equal(t, db.CurrentSchemaVersion(), body.SchemaVersion)
 	assert.NotEmpty(t, body.Uptime)
 	assert.NotEmpty(t, body.DBPath)
 }

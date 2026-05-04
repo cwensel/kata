@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/uid"
 )
 
 func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
@@ -27,10 +28,11 @@ func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
 
 	var version string
 	require.NoError(t, d.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
-	assert.Equal(t, "1", version)
+	assert.Equal(t, strconv.Itoa(db.CurrentSchemaVersion()), version)
 }
 
 func TestOpen_RecordsCurrentSchemaVersion(t *testing.T) {
+	assert.Equal(t, 2, db.CurrentSchemaVersion())
 	path := filepath.Join(t.TempDir(), "kata.db")
 	d, err := db.Open(context.Background(), path)
 	require.NoError(t, err)
@@ -53,7 +55,7 @@ func TestOpen_IsIdempotent(t *testing.T) {
 
 	var version string
 	require.NoError(t, d2.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
-	assert.Equal(t, "1", version)
+	assert.Equal(t, strconv.Itoa(db.CurrentSchemaVersion()), version)
 }
 
 func TestOpen_TimestampColumnsScanIntoTime(t *testing.T) {
@@ -62,7 +64,9 @@ func TestOpen_TimestampColumnsScanIntoTime(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 
-	_, err = d.Exec(`INSERT INTO projects(identity, name) VALUES('x','x')`)
+	projectUID, err := uid.New()
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO projects(uid, identity, name) VALUES(?,'x','x')`, projectUID)
 	require.NoError(t, err)
 
 	rows, err := d.Query(`SELECT created_at FROM projects`)

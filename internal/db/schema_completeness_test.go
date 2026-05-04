@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,4 +29,69 @@ func TestAllSchemaTablesExist(t *testing.T) {
 		require.NoErrorf(t, err, "table %q missing from schema", name)
 		assert.Equal(t, 1, n, name)
 	}
+}
+
+func TestSchemaUIDColumnsIndexesAndTriggers(t *testing.T) {
+	d := openTestDB(t)
+	assertColumn(t, d, "projects", "uid", "TEXT", true)
+	assertColumn(t, d, "issues", "uid", "TEXT", true)
+	assertColumn(t, d, "links", "from_issue_uid", "TEXT", true)
+	assertColumn(t, d, "links", "to_issue_uid", "TEXT", true)
+	assertColumn(t, d, "events", "issue_uid", "TEXT", false)
+	assertColumn(t, d, "events", "related_issue_uid", "TEXT", false)
+	assertColumn(t, d, "purge_log", "issue_uid", "TEXT", false)
+	assertColumn(t, d, "purge_log", "project_uid", "TEXT", false)
+
+	for _, name := range []string{
+		"idx_links_from_uid",
+		"idx_links_to_uid",
+		"idx_events_issue_uid",
+		"idx_events_related_issue_uid",
+		"idx_purge_log_issue_uid",
+		"idx_purge_log_project_uid",
+		"trg_links_uid_consistency_insert",
+		"trg_links_uid_consistency_update",
+		"trg_projects_uid_immutable",
+		"trg_issues_uid_immutable",
+	} {
+		assertSchemaObject(t, d, name)
+	}
+}
+
+func assertColumn(t *testing.T, d interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, table, column, typ string, notNull bool) {
+	t.Helper()
+	rows, err := d.QueryContext(context.Background(), `PRAGMA table_info(`+table+`)`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			gotType    string
+			gotNotNull int
+			defaultVal any
+			pk         int
+		)
+		require.NoError(t, rows.Scan(&cid, &name, &gotType, &gotNotNull, &defaultVal, &pk))
+		if name == column {
+			assert.Equal(t, typ, gotType, table+"."+column)
+			assert.Equal(t, notNull, gotNotNull == 1, table+"."+column)
+			return
+		}
+	}
+	require.NoError(t, rows.Err())
+	t.Fatalf("column %s.%s missing", table, column)
+}
+
+func assertSchemaObject(t *testing.T, d interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, name string) {
+	t.Helper()
+	var got string
+	err := d.QueryRowContext(context.Background(),
+		`SELECT name FROM sqlite_master WHERE name = ?`, name).Scan(&got)
+	require.NoErrorf(t, err, "schema object %q missing", name)
+	assert.Equal(t, name, got)
 }

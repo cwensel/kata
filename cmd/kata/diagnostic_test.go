@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestHealth_PrintsSchemaVersion(t *testing.T) {
 	cmd.SetArgs([]string{"health"})
 	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
 	require.NoError(t, cmd.Execute())
-	assert.Contains(t, buf.String(), "schema_version=1")
+	assert.Contains(t, buf.String(), "schema_version="+strconv.Itoa(db.CurrentSchemaVersion()))
 }
 
 func TestProjectsList_PrintsKnown(t *testing.T) {

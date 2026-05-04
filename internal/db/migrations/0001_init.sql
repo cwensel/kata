@@ -1,9 +1,11 @@
 CREATE TABLE projects (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid               TEXT NOT NULL UNIQUE,
   identity          TEXT UNIQUE NOT NULL,
   name              TEXT NOT NULL,
   created_at        DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   next_issue_number INTEGER NOT NULL DEFAULT 1,
+  CHECK (length(uid) = 26),
   CHECK (length(trim(identity)) > 0),
   CHECK (length(trim(name)) > 0)
 );
@@ -23,6 +25,7 @@ CREATE INDEX idx_project_aliases_project ON project_aliases(project_id);
 
 CREATE TABLE issues (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid           TEXT NOT NULL UNIQUE,
   project_id    INTEGER NOT NULL REFERENCES projects(id),
   number        INTEGER NOT NULL,
   title         TEXT NOT NULL,
@@ -36,6 +39,7 @@ CREATE TABLE issues (
   closed_at     DATETIME,
   deleted_at    DATETIME,
   UNIQUE(project_id, number),
+  CHECK (length(uid) = 26),
   CHECK (length(trim(title))  > 0),
   CHECK (length(trim(author)) > 0),
   CHECK (status = 'closed' OR (closed_at IS NULL AND closed_reason IS NULL))
@@ -63,11 +67,15 @@ CREATE TABLE links (
   project_id    INTEGER NOT NULL REFERENCES projects(id),
   from_issue_id INTEGER NOT NULL REFERENCES issues(id),
   to_issue_id   INTEGER NOT NULL REFERENCES issues(id),
+  from_issue_uid TEXT NOT NULL,
+  to_issue_uid   TEXT NOT NULL,
   type          TEXT NOT NULL CHECK(type IN ('parent','blocks','related')),
   author        TEXT NOT NULL,
   created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE(from_issue_id, to_issue_id, type),
   CHECK (from_issue_id <> to_issue_id),
+  CHECK (length(from_issue_uid) = 26),
+  CHECK (length(to_issue_uid) = 26),
   CHECK (length(trim(author)) > 0),
   CHECK (type <> 'related' OR from_issue_id < to_issue_id)
 );
@@ -76,6 +84,8 @@ CREATE UNIQUE INDEX uniq_one_parent_per_child
 CREATE INDEX idx_links_from    ON links(from_issue_id, type);
 CREATE INDEX idx_links_to      ON links(to_issue_id, type);
 CREATE INDEX idx_links_project ON links(project_id);
+CREATE INDEX idx_links_from_uid ON links(from_issue_uid);
+CREATE INDEX idx_links_to_uid   ON links(to_issue_uid);
 
 -- Enforce same-project: both endpoints must belong to links.project_id.
 CREATE TRIGGER trg_links_same_project_insert
@@ -91,6 +101,36 @@ FOR EACH ROW BEGIN
   SELECT RAISE(ABORT, 'cross-project links are not allowed')
   WHERE (SELECT project_id FROM issues WHERE id = NEW.from_issue_id) <> NEW.project_id
      OR (SELECT project_id FROM issues WHERE id = NEW.to_issue_id)   <> NEW.project_id;
+END;
+
+CREATE TRIGGER trg_links_uid_consistency_insert
+BEFORE INSERT ON links
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'from_issue_uid does not match from_issue_id')
+  WHERE NEW.from_issue_uid <> (SELECT uid FROM issues WHERE id = NEW.from_issue_id);
+  SELECT RAISE(ABORT, 'to_issue_uid does not match to_issue_id')
+  WHERE NEW.to_issue_uid <> (SELECT uid FROM issues WHERE id = NEW.to_issue_id);
+END;
+CREATE TRIGGER trg_links_uid_consistency_update
+BEFORE UPDATE ON links
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'from_issue_uid does not match from_issue_id')
+  WHERE NEW.from_issue_uid <> (SELECT uid FROM issues WHERE id = NEW.from_issue_id);
+  SELECT RAISE(ABORT, 'to_issue_uid does not match to_issue_id')
+  WHERE NEW.to_issue_uid <> (SELECT uid FROM issues WHERE id = NEW.to_issue_id);
+END;
+
+CREATE TRIGGER trg_projects_uid_immutable
+BEFORE UPDATE OF uid ON projects
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'projects.uid is immutable')
+  WHERE NEW.uid <> OLD.uid;
+END;
+CREATE TRIGGER trg_issues_uid_immutable
+BEFORE UPDATE OF uid ON issues
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'issues.uid is immutable')
+  WHERE NEW.uid <> OLD.uid;
 END;
 
 CREATE TABLE issue_labels (
@@ -110,8 +150,10 @@ CREATE TABLE events (
   project_id       INTEGER NOT NULL REFERENCES projects(id),
   project_identity TEXT NOT NULL,
   issue_id         INTEGER REFERENCES issues(id),
+  issue_uid        TEXT,
   issue_number     INTEGER,
   related_issue_id INTEGER REFERENCES issues(id),
+  related_issue_uid TEXT,
   type             TEXT NOT NULL,
   actor            TEXT NOT NULL,
   payload          TEXT NOT NULL DEFAULT '{}',
@@ -122,6 +164,8 @@ CREATE TABLE events (
 CREATE INDEX idx_events_project ON events(project_id, id);
 CREATE INDEX idx_events_issue   ON events(issue_id, id) WHERE issue_id IS NOT NULL;
 CREATE INDEX idx_events_related ON events(related_issue_id, id) WHERE related_issue_id IS NOT NULL;
+CREATE INDEX idx_events_issue_uid ON events(issue_uid) WHERE issue_uid IS NOT NULL;
+CREATE INDEX idx_events_related_issue_uid ON events(related_issue_uid) WHERE related_issue_uid IS NOT NULL;
 CREATE INDEX idx_events_idempotency
   ON events(project_id, json_extract(payload, '$.idempotency_key'), created_at)
   WHERE type = 'issue.created' AND json_extract(payload, '$.idempotency_key') IS NOT NULL;
@@ -130,6 +174,8 @@ CREATE TABLE purge_log (
   id                          INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id                  INTEGER NOT NULL,   -- snapshot; no FK so audit survives any future project cleanup
   purged_issue_id             INTEGER NOT NULL,   -- the deleted issues.id; no FK (the row is gone)
+  issue_uid                   TEXT,
+  project_uid                 TEXT,
   project_identity            TEXT NOT NULL,      -- snapshot of projects.identity at purge time
   issue_number                INTEGER NOT NULL,
   issue_title                 TEXT NOT NULL,
@@ -152,6 +198,8 @@ CREATE INDEX idx_purge_log_project_reset
   ON purge_log(project_id, purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
 CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
 CREATE INDEX idx_purge_log_lookup ON purge_log(project_identity, issue_number);
+CREATE INDEX idx_purge_log_issue_uid ON purge_log(issue_uid) WHERE issue_uid IS NOT NULL;
+CREATE INDEX idx_purge_log_project_uid ON purge_log(project_uid) WHERE project_uid IS NOT NULL;
 
 CREATE TABLE meta (
   key   TEXT PRIMARY KEY,

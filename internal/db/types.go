@@ -5,6 +5,7 @@ import "time"
 // Project mirrors a row in projects.
 type Project struct {
 	ID              int64     `json:"id"`
+	UID             string    `json:"uid"`
 	Identity        string    `json:"identity"`
 	Name            string    `json:"name"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -25,7 +26,9 @@ type ProjectAlias struct {
 // Issue mirrors a row in issues.
 type Issue struct {
 	ID           int64      `json:"id"`
+	UID          string     `json:"uid"`
 	ProjectID    int64      `json:"project_id"`
+	ProjectUID   string     `json:"project_uid,omitempty"`
 	Number       int64      `json:"number"`
 	Title        string     `json:"title"`
 	Body         string     `json:"body"`
@@ -52,10 +55,13 @@ type Comment struct {
 type Event struct {
 	ID              int64     `json:"id"`
 	ProjectID       int64     `json:"project_id"`
+	ProjectUID      string    `json:"project_uid"`
 	ProjectIdentity string    `json:"project_identity"`
 	IssueID         *int64    `json:"issue_id,omitempty"`
+	IssueUID        *string   `json:"issue_uid,omitempty"`
 	IssueNumber     *int64    `json:"issue_number,omitempty"`
 	RelatedIssueID  *int64    `json:"related_issue_id,omitempty"`
+	RelatedIssueUID *string   `json:"related_issue_uid,omitempty"`
 	Type            string    `json:"type"`
 	Actor           string    `json:"actor"`
 	Payload         string    `json:"payload"`
@@ -64,13 +70,15 @@ type Event struct {
 
 // Link mirrors a row in links.
 type Link struct {
-	ID          int64     `json:"id"`
-	ProjectID   int64     `json:"project_id"`
-	FromIssueID int64     `json:"from_issue_id"`
-	ToIssueID   int64     `json:"to_issue_id"`
-	Type        string    `json:"type"`
-	Author      string    `json:"author"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           int64     `json:"id"`
+	ProjectID    int64     `json:"project_id"`
+	FromIssueID  int64     `json:"from_issue_id"`
+	FromIssueUID string    `json:"from_issue_uid"`
+	ToIssueID    int64     `json:"to_issue_id"`
+	ToIssueUID   string    `json:"to_issue_uid"`
+	Type         string    `json:"type"`
+	Author       string    `json:"author"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // IssueLabel mirrors a row in issue_labels.
@@ -120,6 +128,8 @@ type PurgeLog struct {
 	ID                     int64     `json:"id"`
 	ProjectID              int64     `json:"project_id"`
 	PurgedIssueID          int64     `json:"purged_issue_id"`
+	IssueUID               *string   `json:"issue_uid,omitempty"`
+	ProjectUID             *string   `json:"project_uid,omitempty"`
 	ProjectIdentity        string    `json:"project_identity"`
 	IssueNumber            int64     `json:"issue_number"`
 	IssueTitle             string    `json:"issue_title"`

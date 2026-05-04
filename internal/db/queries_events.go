@@ -38,19 +38,22 @@ func (d *DB) EventsAfter(ctx context.Context, p EventsAfterParams) ([]Event, err
 		conds []string
 		args  []any
 	)
-	conds = append(conds, "id > ?")
+	conds = append(conds, "e.id > ?")
 	args = append(args, p.AfterID)
 	if p.ProjectID != 0 {
-		conds = append(conds, "project_id = ?")
+		conds = append(conds, "e.project_id = ?")
 		args = append(args, p.ProjectID)
 	}
 	if p.ThroughID != 0 {
-		conds = append(conds, "id <= ?")
+		conds = append(conds, "e.id <= ?")
 		args = append(args, p.ThroughID)
 	}
-	q := `SELECT id, project_id, project_identity, issue_id, issue_number, related_issue_id,
-	             type, actor, payload, created_at
-	      FROM events WHERE ` + strings.Join(conds, " AND ") + ` ORDER BY id ASC LIMIT ?`
+	q := `SELECT e.id, e.project_id, p.uid, e.project_identity, e.issue_id, e.issue_uid,
+	             e.issue_number, e.related_issue_id, e.related_issue_uid, e.type, e.actor,
+	             e.payload, e.created_at
+	      FROM events e
+	      JOIN projects p ON p.id = e.project_id
+	      WHERE ` + strings.Join(conds, " AND ") + ` ORDER BY e.id ASC LIMIT ?`
 	args = append(args, p.Limit)
 	rows, err := d.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -60,8 +63,9 @@ func (d *DB) EventsAfter(ctx context.Context, p EventsAfterParams) ([]Event, err
 	var out []Event
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ProjectIdentity, &e.IssueID,
-			&e.IssueNumber, &e.RelatedIssueID, &e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ProjectUID, &e.ProjectIdentity, &e.IssueID,
+			&e.IssueUID, &e.IssueNumber, &e.RelatedIssueID, &e.RelatedIssueUID,
+			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		out = append(out, e)

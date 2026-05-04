@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/jsonl"
+	"github.com/wesm/kata/internal/uid"
 )
 
 func TestImportRoundTripsExportedRows(t *testing.T) {
@@ -65,6 +66,44 @@ func TestImportSQLiteSequenceUsesUpdateOrInsert(t *testing.T) {
 	require.NoError(t, target.QueryRowContext(ctx,
 		`SELECT seq FROM sqlite_sequence WHERE name='issues'`).Scan(&seq))
 	assert.Equal(t, int64(150), seq)
+}
+
+func TestImportV1FillsUIDsDeterministically(t *testing.T) {
+	ctx := context.Background()
+	input := strings.Join([]string{
+		`{"kind":"meta","data":{"key":"export_version","value":"1"}}`,
+		`{"kind":"project","data":{"id":1,"identity":"github.com/wesm/kata","name":"kata","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":2}}`,
+		`{"kind":"issue","data":{"id":1,"project_id":1,"number":1,"title":"v1 issue","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:01.000Z","updated_at":"2026-05-03T00:00:01.000Z","closed_at":null,"deleted_at":null}}`,
+		`{"kind":"event","data":{"id":1,"project_id":1,"project_identity":"github.com/wesm/kata","issue_id":1,"issue_number":1,"related_issue_id":null,"type":"issue.created","actor":"tester","payload":{},"created_at":"2026-05-03T00:00:01.000Z"}}`,
+	}, "\n") + "\n"
+
+	first := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, strings.NewReader(input), first))
+	second := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, strings.NewReader(input), second))
+
+	firstUIDs := readFilledUIDs(t, first)
+	secondUIDs := readFilledUIDs(t, second)
+	assert.Equal(t, firstUIDs, secondUIDs)
+	for _, got := range firstUIDs {
+		assert.True(t, uid.Valid(got), "invalid uid %q", got)
+	}
+}
+
+func TestImportV1RejectsCorruptEventFK(t *testing.T) {
+	ctx := context.Background()
+	target := openImportTargetDB(t)
+	input := strings.Join([]string{
+		`{"kind":"meta","data":{"key":"export_version","value":"1"}}`,
+		`{"kind":"project","data":{"id":1,"identity":"github.com/wesm/kata","name":"kata","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":1}}`,
+		`{"kind":"event","data":{"id":7,"project_id":1,"project_identity":"github.com/wesm/kata","issue_id":999,"issue_number":1,"related_issue_id":null,"type":"issue.created","actor":"tester","payload":{},"created_at":"2026-05-03T00:00:01.000Z"}}`,
+	}, "\n") + "\n"
+
+	err := jsonl.Import(ctx, strings.NewReader(input), target)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "corrupt_event_fk")
+	assert.Contains(t, err.Error(), "event 7 issue_id 999")
 }
 
 func TestImportRejectsInvalidExportVersion(t *testing.T) {
@@ -135,4 +174,13 @@ func assertTableEmpty(t *testing.T, d *db.DB, table string) {
 	var got int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM `+table).Scan(&got))
 	assert.Equal(t, 0, got, table)
+}
+
+func readFilledUIDs(t *testing.T, d *db.DB) []string {
+	t.Helper()
+	var projectUID, issueUID, eventIssueUID string
+	require.NoError(t, d.QueryRow(`SELECT uid FROM projects WHERE id = 1`).Scan(&projectUID))
+	require.NoError(t, d.QueryRow(`SELECT uid FROM issues WHERE id = 1`).Scan(&issueUID))
+	require.NoError(t, d.QueryRow(`SELECT issue_uid FROM events WHERE id = 1`).Scan(&eventIssueUID))
+	return []string{projectUID, issueUID, eventIssueUID}
 }

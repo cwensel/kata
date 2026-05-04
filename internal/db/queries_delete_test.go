@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/uid"
 )
 
 func TestSoftDeleteIssue_SetsDeletedAtAndEmitsEvent(t *testing.T) {
@@ -225,6 +226,8 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, target.ID, pl.PurgedIssueID)
+	assert.Equal(t, target.UID, *pl.IssueUID)
+	assert.Equal(t, p.UID, *pl.ProjectUID)
 	assert.Equal(t, "github.com/wesm/kata", pl.ProjectIdentity)
 	assert.Equal(t, target.Number, pl.IssueNumber)
 	assert.Equal(t, "delete me", pl.IssueTitle)
@@ -282,9 +285,11 @@ func TestPurgeIssue_NoEventsLeavesResetCursorNull(t *testing.T) {
 	ctx := context.Background()
 	p, err := d.CreateProject(ctx, "p", "p")
 	require.NoError(t, err)
+	issueUID, err := uid.New()
+	require.NoError(t, err)
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO issues(project_id, number, title, author) VALUES(?, 1, 'no-events', 'tester')`,
-		p.ID)
+		`INSERT INTO issues(uid, project_id, number, title, author) VALUES(?, ?, 1, 'no-events', 'tester')`,
+		issueUID, p.ID)
 	require.NoError(t, err)
 	id, err := res.LastInsertId()
 	require.NoError(t, err)
