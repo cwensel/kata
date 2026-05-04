@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -26,15 +27,20 @@ func newDaemonCmd() *cobra.Command {
 }
 
 func daemonStartCmd() *cobra.Command {
-	return &cobra.Command{
+	var listen string
+	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "start the daemon in foreground",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
-			return runDaemon(ctx)
+			return runDaemonWithListen(ctx, listen)
 		},
 	}
+	cmd.Flags().StringVar(&listen, "listen", "",
+		"bind TCP at host:port (admin-only; non-public addresses only). "+
+			"Default: Unix socket under $KATA_HOME/runtime.")
+	return cmd
 }
 
 func daemonStatusCmd() *cobra.Command {
@@ -162,8 +168,15 @@ func daemonReloadCmd() *cobra.Command {
 }
 
 // runDaemon is the foreground daemon entry point. Used by `kata daemon start`
-// and by the auto-start child process spawned by ensureDaemon.
+// (no --listen, default Unix socket) and by the auto-start child process
+// spawned by ensureDaemon.
 func runDaemon(ctx context.Context) error {
+	return runDaemonWithListen(ctx, "")
+}
+
+// runDaemonWithListen is the variant used by `kata daemon start --listen`.
+// An empty listen string preserves the existing Unix-socket path exactly.
+func runDaemonWithListen(ctx context.Context, listen string) error {
 	ns, err := daemon.NewNamespace()
 	if err != nil {
 		return err
@@ -197,8 +210,10 @@ func runDaemon(ctx context.Context) error {
 	defer signal.Stop(sigs)
 	go runReloadLoop(ctx, sigs, hookCfgPath, disp, daemonLog)
 
-	socketPath := filepath.Join(ns.SocketDir, "daemon.sock")
-	endpoint := daemon.UnixEndpoint(socketPath)
+	endpoint, err := chooseEndpoint(ns, listen)
+	if err != nil {
+		return err
+	}
 
 	srv := daemon.NewServer(daemon.ServerConfig{
 		DB:        store,
@@ -221,7 +236,34 @@ func runDaemon(ctx context.Context) error {
 	runtimeFile := filepath.Join(ns.DataDir, fmt.Sprintf("daemon.%d.json", os.Getpid()))
 	defer func() { _ = os.Remove(runtimeFile) }()
 
+	if listen != "" {
+		fmt.Fprintf(os.Stderr, "kata daemon: listening on %s\n", endpoint.Address())
+	}
+
 	return srv.Run(ctx)
+}
+
+// chooseEndpoint picks the daemon's listener: Unix socket when listen is
+// empty (default, auto-start path) or TCPEndpointAny otherwise. The
+// validation lives in TCPEndpointAny.Listen so this helper does not
+// duplicate the rules.
+func chooseEndpoint(ns *daemon.Namespace, listen string) (daemon.DaemonEndpoint, error) {
+	if listen == "" {
+		socketPath := filepath.Join(ns.SocketDir, "daemon.sock")
+		return daemon.UnixEndpoint(socketPath), nil
+	}
+	if _, _, err := net.SplitHostPort(listen); err != nil {
+		return nil, fmt.Errorf("--listen %q: %w", listen, err)
+	}
+	ep := daemon.TCPEndpointAny(listen)
+	// Pre-flight the validator so the error surfaces before we attempt to
+	// Listen — easier to read in a CLI error.
+	if l, err := ep.Listen(); err != nil {
+		return nil, fmt.Errorf("--listen %s: %w", listen, err)
+	} else {
+		_ = l.Close()
+	}
+	return ep, nil
 }
 
 // setupHooks loads hooks.toml, materializes $KATA_HOME, and constructs

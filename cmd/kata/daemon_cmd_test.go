@@ -95,6 +95,38 @@ func TestDaemonStatus_JSONReportsEmptyDaemonList(t *testing.T) {
 	assert.JSONEq(t, "[]", string(got.Daemons))
 }
 
+func TestDaemonStart_ListenFlagRejectsPublicAddress(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"daemon", "start", "--listen", "8.8.8.8:7777"})
+
+	err := cmd.ExecuteContext(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-public")
+}
+
+func TestDaemonStart_ListenFlagRejectsMalformed(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"daemon", "start", "--listen", "not-a-host-port"})
+
+	err := cmd.ExecuteContext(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--listen")
+}
+
 func TestEnsureDaemon_ReturnsExistingURL(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
