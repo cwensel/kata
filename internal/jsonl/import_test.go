@@ -67,6 +67,36 @@ func TestImportSQLiteSequenceUsesUpdateOrInsert(t *testing.T) {
 	assert.Equal(t, int64(150), seq)
 }
 
+func TestImportRejectsInvalidExportVersion(t *testing.T) {
+	ctx := context.Background()
+	target := openImportTargetDB(t)
+	input := strings.Join([]string{
+		`{"kind":"meta","data":{"key":"export_version","value":"not-a-version"}}`,
+		`{"kind":"project","data":{"id":1,"identity":"github.com/wesm/kata","name":"kata","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":1}}`,
+	}, "\n") + "\n"
+
+	err := jsonl.Import(ctx, strings.NewReader(input), target)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "export_version")
+	assertTableEmpty(t, target, "projects")
+}
+
+func TestImportRejectsTooNewExportVersion(t *testing.T) {
+	ctx := context.Background()
+	target := openImportTargetDB(t)
+	input := strings.Join([]string{
+		`{"kind":"meta","data":{"key":"export_version","value":"999"}}`,
+		`{"kind":"project","data":{"id":1,"identity":"github.com/wesm/kata","name":"kata","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":1}}`,
+	}, "\n") + "\n"
+
+	err := jsonl.Import(ctx, strings.NewReader(input), target)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported export_version")
+	assertTableEmpty(t, target, "projects")
+}
+
 func TestImportRejectsForeignKeyViolationBeforeCommit(t *testing.T) {
 	ctx := context.Background()
 	target := openImportTargetDB(t)
@@ -98,4 +128,11 @@ func assertTableCount(t *testing.T, src, dst *db.DB, table string) {
 	require.NoError(t, src.QueryRow(`SELECT COUNT(*) FROM `+table).Scan(&want))
 	require.NoError(t, dst.QueryRow(`SELECT COUNT(*) FROM `+table).Scan(&got))
 	assert.Equal(t, want, got, table)
+}
+
+func assertTableEmpty(t *testing.T, d *db.DB, table string) {
+	t.Helper()
+	var got int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM `+table).Scan(&got))
+	assert.Equal(t, 0, got, table)
 }

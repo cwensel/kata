@@ -225,6 +225,50 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	}
 }
 
+func TestMergeProjects_PreservesSourceIdentityWhenAliasAlreadyTargetsTarget(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	source, err := d.CreateProject(ctx, "github.com/wesm/old", "old")
+	require.NoError(t, err)
+	target, err := d.CreateProject(ctx, "github.com/wesm/new", "new")
+	require.NoError(t, err)
+	_, err = d.AttachAlias(ctx, target.ID, "github.com/wesm/old", "git", "/tmp/old")
+	require.NoError(t, err)
+
+	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: source.ID,
+		TargetProjectID: target.ID,
+	})
+	require.NoError(t, err)
+
+	got, err := d.AliasByIdentity(ctx, "github.com/wesm/old")
+	require.NoError(t, err)
+	assert.Equal(t, target.ID, got.ProjectID)
+}
+
+func TestMergeProjects_RejectsSourceIdentityAliasOwnedByDifferentProject(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	source, err := d.CreateProject(ctx, "github.com/wesm/old", "old")
+	require.NoError(t, err)
+	target, err := d.CreateProject(ctx, "github.com/wesm/new", "new")
+	require.NoError(t, err)
+	other, err := d.CreateProject(ctx, "github.com/wesm/other", "other")
+	require.NoError(t, err)
+	_, err = d.AttachAlias(ctx, other.ID, "github.com/wesm/old", "git", "/tmp/old")
+	require.NoError(t, err)
+
+	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: source.ID,
+		TargetProjectID: target.ID,
+	})
+	require.Error(t, err)
+
+	got, lookupErr := d.ProjectByID(ctx, source.ID)
+	require.NoError(t, lookupErr)
+	assert.Equal(t, "github.com/wesm/old", got.Identity)
+}
+
 func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

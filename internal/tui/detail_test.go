@@ -246,6 +246,33 @@ func TestDetail_Scroll_PageDownClampsPastEOFAndPageUpResponds(t *testing.T) {
 	}
 }
 
+func TestDetail_Scroll_BodyMaxStartEstimateDoesNotExceedRenderedMax(t *testing.T) {
+	dm := detailFixture()
+	dm.comments = nil
+	dm.events = nil
+	dm.links = nil
+	dm.issue.Body = strings.Repeat("line\n", 39) + "tail"
+	width, height := 120, 30
+	dm.lastTermWidth, dm.lastTermHeight = width, height
+
+	sheetWidth := documentSheetWidth(width)
+	chrome := viewChrome{}
+	helpRows := detailHelpRows(dm, chrome)
+	footerLines := helpLines(helpRows, width)
+	header := append([]string{renderTitleBar(width, chrome.scope, chrome.version), ""}, dm.documentHeader(sheetWidth, chrome)...)
+	fixed := len(header) + 1 /* body label */ + 1 /* blank gap before activity */ +
+		1 /* info */ + footerLines
+	bodyRows, _, _ := detailDocumentBudgets(height-fixed, 0, false)
+	renderedMaxStart := len(renderMarkdownLines(dm.issue.Body, sheetWidth)) - bodyRows
+	if renderedMaxStart < 0 {
+		renderedMaxStart = 0
+	}
+
+	if got := dm.bodyMaxStartEstimate(); got > renderedMaxStart {
+		t.Fatalf("bodyMaxStartEstimate=%d exceeds rendered maxStart=%d", got, renderedMaxStart)
+	}
+}
+
 // TestDetail_Back_EmitsPopMsg: esc returns a tea.Cmd that emits
 // popDetailMsg when the nav stack is empty.
 func TestDetail_Back_EmitsPopMsg(t *testing.T) {

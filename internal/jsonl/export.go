@@ -17,7 +17,7 @@ type ExportOptions struct {
 }
 
 // Export writes a deterministic JSONL export of d to w.
-func Export(ctx context.Context, d *db.DB, w io.Writer, _ ExportOptions) error {
+func Export(ctx context.Context, d *db.DB, w io.Writer, opts ExportOptions) error {
 	enc := NewEncoder(w)
 
 	version, err := schemaVersion(ctx, d)
@@ -30,28 +30,28 @@ func Export(ctx context.Context, d *db.DB, w io.Writer, _ ExportOptions) error {
 	if err := exportMeta(ctx, d, enc); err != nil {
 		return err
 	}
-	if err := exportProjects(ctx, d, enc); err != nil {
+	if err := exportProjects(ctx, d, enc, opts); err != nil {
 		return err
 	}
-	if err := exportProjectAliases(ctx, d, enc); err != nil {
+	if err := exportProjectAliases(ctx, d, enc, opts); err != nil {
 		return err
 	}
-	if err := exportIssues(ctx, d, enc); err != nil {
+	if err := exportIssues(ctx, d, enc, opts); err != nil {
 		return err
 	}
-	if err := exportComments(ctx, d, enc); err != nil {
+	if err := exportComments(ctx, d, enc, opts); err != nil {
 		return err
 	}
-	if err := exportIssueLabels(ctx, d, enc); err != nil {
+	if err := exportIssueLabels(ctx, d, enc, opts); err != nil {
 		return err
 	}
-	if err := exportLinks(ctx, d, enc); err != nil {
+	if err := exportLinks(ctx, d, enc, opts); err != nil {
 		return err
 	}
-	if err := exportEvents(ctx, d, enc); err != nil {
+	if err := exportEvents(ctx, d, enc, opts); err != nil {
 		return err
 	}
-	if err := exportPurgeLog(ctx, d, enc); err != nil {
+	if err := exportPurgeLog(ctx, d, enc, opts); err != nil {
 		return err
 	}
 	if err := exportSQLiteSequence(ctx, d, enc); err != nil {
@@ -91,7 +91,7 @@ func exportMeta(ctx context.Context, d *db.DB, enc *Encoder) error {
 	return rows.Err()
 }
 
-func exportProjects(ctx context.Context, d *db.DB, enc *Encoder) error {
+func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID              int64  `json:"id"`
 		Identity        string `json:"identity"`
@@ -99,8 +99,14 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder) error {
 		CreatedAt       string `json:"created_at"`
 		NextIssueNumber int64  `json:"next_issue_number"`
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT id, identity, name, CAST(created_at AS TEXT), next_issue_number FROM projects ORDER BY id ASC`)
+	query := `SELECT id, identity, name, CAST(created_at AS TEXT), next_issue_number FROM projects`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export projects: %w", err)
 	}
@@ -111,7 +117,7 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder) error {
 	})
 }
 
-func exportProjectAliases(ctx context.Context, d *db.DB, enc *Encoder) error {
+func exportProjectAliases(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID            int64  `json:"id"`
 		ProjectID     int64  `json:"project_id"`
@@ -121,10 +127,16 @@ func exportProjectAliases(ctx context.Context, d *db.DB, enc *Encoder) error {
 		CreatedAt     string `json:"created_at"`
 		LastSeenAt    string `json:"last_seen_at"`
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT id, project_id, alias_identity, alias_kind, root_path,
-		        CAST(created_at AS TEXT), CAST(last_seen_at AS TEXT)
-		 FROM project_aliases ORDER BY id ASC`)
+	query := `SELECT id, project_id, alias_identity, alias_kind, root_path,
+	                 CAST(created_at AS TEXT), CAST(last_seen_at AS TEXT)
+	          FROM project_aliases`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE project_id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export project_aliases: %w", err)
 	}
@@ -136,7 +148,7 @@ func exportProjectAliases(ctx context.Context, d *db.DB, enc *Encoder) error {
 	})
 }
 
-func exportIssues(ctx context.Context, d *db.DB, enc *Encoder) error {
+func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID           int64   `json:"id"`
 		ProjectID    int64   `json:"project_id"`
@@ -152,11 +164,13 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder) error {
 		ClosedAt     *string `json:"closed_at"`
 		DeletedAt    *string `json:"deleted_at"`
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT id, project_id, number, title, body, status, closed_reason, owner, author,
-		        CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
-		        CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT)
-		 FROM issues ORDER BY id ASC`)
+	query := `SELECT id, project_id, number, title, body, status, closed_reason, owner, author,
+	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
+	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT)
+	          FROM issues`
+	where, args := issueExportWhere("issues", opts)
+	query += where + ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export issues: %w", err)
 	}
@@ -169,7 +183,7 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder) error {
 	})
 }
 
-func exportComments(ctx context.Context, d *db.DB, enc *Encoder) error {
+func exportComments(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID        int64  `json:"id"`
 		IssueID   int64  `json:"issue_id"`
@@ -177,8 +191,12 @@ func exportComments(ctx context.Context, d *db.DB, enc *Encoder) error {
 		Body      string `json:"body"`
 		CreatedAt string `json:"created_at"`
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT id, issue_id, author, body, CAST(created_at AS TEXT) FROM comments ORDER BY id ASC`)
+	query := `SELECT comments.id, comments.issue_id, comments.author, comments.body, CAST(comments.created_at AS TEXT)
+	          FROM comments
+	          JOIN issues ON issues.id = comments.issue_id`
+	where, args := issueExportWhere("issues", opts)
+	query += where + ` ORDER BY comments.id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export comments: %w", err)
 	}
@@ -189,16 +207,19 @@ func exportComments(ctx context.Context, d *db.DB, enc *Encoder) error {
 	})
 }
 
-func exportIssueLabels(ctx context.Context, d *db.DB, enc *Encoder) error {
+func exportIssueLabels(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		IssueID   int64  `json:"issue_id"`
 		Label     string `json:"label"`
 		Author    string `json:"author"`
 		CreatedAt string `json:"created_at"`
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT issue_id, label, author, CAST(created_at AS TEXT)
-		 FROM issue_labels ORDER BY issue_id ASC, label ASC`)
+	query := `SELECT issue_labels.issue_id, issue_labels.label, issue_labels.author, CAST(issue_labels.created_at AS TEXT)
+	          FROM issue_labels
+	          JOIN issues ON issues.id = issue_labels.issue_id`
+	where, args := issueExportWhere("issues", opts)
+	query += where + ` ORDER BY issue_labels.issue_id ASC, issue_labels.label ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export issue_labels: %w", err)
 	}
@@ -209,7 +230,7 @@ func exportIssueLabels(ctx context.Context, d *db.DB, enc *Encoder) error {
 	})
 }
 
-func exportLinks(ctx context.Context, d *db.DB, enc *Encoder) error {
+func exportLinks(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID          int64  `json:"id"`
 		ProjectID   int64  `json:"project_id"`
@@ -219,9 +240,14 @@ func exportLinks(ctx context.Context, d *db.DB, enc *Encoder) error {
 		Author      string `json:"author"`
 		CreatedAt   string `json:"created_at"`
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT id, project_id, from_issue_id, to_issue_id, type, author, CAST(created_at AS TEXT)
-		 FROM links ORDER BY id ASC`)
+	query := `SELECT links.id, links.project_id, links.from_issue_id, links.to_issue_id,
+	                 links.type, links.author, CAST(links.created_at AS TEXT)
+	          FROM links
+	          JOIN issues AS from_issues ON from_issues.id = links.from_issue_id
+	          JOIN issues AS to_issues ON to_issues.id = links.to_issue_id`
+	where, args := linkExportWhere(opts)
+	query += where + ` ORDER BY links.id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export links: %w", err)
 	}
@@ -233,7 +259,7 @@ func exportLinks(ctx context.Context, d *db.DB, enc *Encoder) error {
 	})
 }
 
-func exportEvents(ctx context.Context, d *db.DB, enc *Encoder) error {
+func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID              int64           `json:"id"`
 		ProjectID       int64           `json:"project_id"`
@@ -246,10 +272,12 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder) error {
 		Payload         json.RawMessage `json:"payload"`
 		CreatedAt       string          `json:"created_at"`
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT id, project_id, project_identity, issue_id, issue_number, related_issue_id,
-		        type, actor, payload, CAST(created_at AS TEXT)
-		 FROM events ORDER BY id ASC`)
+	query := `SELECT id, project_id, project_identity, issue_id, issue_number, related_issue_id,
+	                 type, actor, payload, CAST(created_at AS TEXT)
+	          FROM events`
+	where, args := eventExportWhere(opts)
+	query += where + ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export events: %w", err)
 	}
@@ -269,7 +297,7 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder) error {
 	})
 }
 
-func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder) error {
+func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID                     int64   `json:"id"`
 		ProjectID              int64   `json:"project_id"`
@@ -289,12 +317,18 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder) error {
 		Reason                 *string `json:"reason"`
 		PurgedAt               string  `json:"purged_at"`
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT id, project_id, purged_issue_id, project_identity, issue_number, issue_title,
-		        issue_author, comment_count, link_count, label_count, event_count,
-		        events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
-		        actor, reason, CAST(purged_at AS TEXT)
-		 FROM purge_log ORDER BY id ASC`)
+	query := `SELECT id, project_id, purged_issue_id, project_identity, issue_number, issue_title,
+	                 issue_author, comment_count, link_count, label_count, event_count,
+	                 events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
+	                 actor, reason, CAST(purged_at AS TEXT)
+	          FROM purge_log`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE project_id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export purge_log: %w", err)
 	}
@@ -307,6 +341,63 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder) error {
 			&rec.PurgedAt)
 		return rec, err
 	})
+}
+
+func issueExportWhere(table string, opts ExportOptions) (string, []any) {
+	clauses := []string{}
+	args := []any{}
+	if opts.ProjectID > 0 {
+		clauses = append(clauses, table+`.project_id = ?`)
+		args = append(args, opts.ProjectID)
+	}
+	if !opts.IncludeDeleted {
+		clauses = append(clauses, table+`.deleted_at IS NULL`)
+	}
+	return whereClause(clauses), args
+}
+
+func linkExportWhere(opts ExportOptions) (string, []any) {
+	clauses := []string{}
+	args := []any{}
+	if opts.ProjectID > 0 {
+		clauses = append(clauses, `links.project_id = ?`)
+		args = append(args, opts.ProjectID)
+	}
+	if !opts.IncludeDeleted {
+		clauses = append(clauses, `from_issues.deleted_at IS NULL`, `to_issues.deleted_at IS NULL`)
+	}
+	return whereClause(clauses), args
+}
+
+func eventExportWhere(opts ExportOptions) (string, []any) {
+	clauses := []string{}
+	args := []any{}
+	if opts.ProjectID > 0 {
+		clauses = append(clauses, `project_id = ?`)
+		args = append(args, opts.ProjectID)
+	}
+	if !opts.IncludeDeleted {
+		clauses = append(clauses,
+			`(issue_id IS NULL OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.issue_id AND issues.deleted_at IS NULL))`,
+			`(related_issue_id IS NULL OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.related_issue_id AND issues.deleted_at IS NULL))`,
+		)
+	}
+	return whereClause(clauses), args
+}
+
+func whereClause(clauses []string) string {
+	if len(clauses) == 0 {
+		return ""
+	}
+	return " WHERE " + joinClauses(clauses)
+}
+
+func joinClauses(clauses []string) string {
+	out := clauses[0]
+	for _, clause := range clauses[1:] {
+		out += " AND " + clause
+	}
+	return out
 }
 
 func exportSQLiteSequence(ctx context.Context, d *db.DB, enc *Encoder) error {

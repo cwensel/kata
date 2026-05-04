@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,7 +78,39 @@ func TestShouldRefuseAutoStartDaemonFromGoTestBinary(t *testing.T) {
 	assert.False(t, shouldRefuseAutoStartDaemon("/usr/local/bin/kata"))
 }
 
+func TestStopRunningDaemonsDoesNotSignalUnverifiedRuntimePID(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	cmd := exec.Command("sleep", "30")
+	require.NoError(t, cmd.Start())
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			<-waitCh
+		}
+	})
+
+	require.NoError(t, writeRuntimeRecordForPID(t, tmp, cmd.Process.Pid, "127.0.0.1:1"))
+	ns, err := daemon.NewNamespace()
+	require.NoError(t, err)
+	require.NoError(t, stopRunningDaemons(context.Background(), ns.DataDir))
+
+	select {
+	case err := <-waitCh:
+		t.Fatalf("unverified runtime PID was signaled; process exited with %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func writeRuntimeRecord(t *testing.T, home, addr string) error {
+	t.Helper()
+	return writeRuntimeRecordForPID(t, home, os.Getpid(), addr)
+}
+
+func writeRuntimeRecordForPID(t *testing.T, home string, pid int, addr string) error {
 	t.Helper()
 	ns, err := daemon.NewNamespace()
 	if err != nil {
@@ -87,7 +120,7 @@ func writeRuntimeRecord(t *testing.T, home, addr string) error {
 		return err
 	}
 	_, err = daemon.WriteRuntimeFile(ns.DataDir, daemon.RuntimeRecord{
-		PID:       os.Getpid(),
+		PID:       pid,
 		Address:   addr,
 		DBPath:    filepath.Join(home, "kata.db"),
 		StartedAt: time.Now().UTC(),

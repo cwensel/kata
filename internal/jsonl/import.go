@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/wesm/kata/internal/db"
@@ -15,6 +16,9 @@ import (
 func Import(ctx context.Context, r io.Reader, target *db.DB) error {
 	envs, err := NewDecoder(r).ReadAll(ctx)
 	if err != nil {
+		return err
+	}
+	if err := validateExportVersion(envs); err != nil {
 		return err
 	}
 	tx, err := target.BeginTx(ctx, nil)
@@ -39,6 +43,24 @@ func Import(ctx context.Context, r io.Reader, target *db.DB) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit import: %w", err)
+	}
+	return nil
+}
+
+func validateExportVersion(envs []Envelope) error {
+	var rec metaRecord
+	if err := decodeData(envs[0], &rec); err != nil {
+		return err
+	}
+	version, err := strconv.Atoi(rec.Value)
+	if err != nil {
+		return fmt.Errorf("invalid export_version %q: %w", rec.Value, err)
+	}
+	if version > db.CurrentSchemaVersion() {
+		return fmt.Errorf("unsupported export_version %d for current schema version %d", version, db.CurrentSchemaVersion())
+	}
+	if version < 1 {
+		return fmt.Errorf("invalid export_version %d", version)
 	}
 	return nil
 }

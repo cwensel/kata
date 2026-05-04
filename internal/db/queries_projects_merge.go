@@ -80,10 +80,19 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 	}
 
 	kind, rootPath := aliasDefaultsForMergedIdentity(source.Identity)
-	if _, err := tx.ExecContext(ctx,
-		`INSERT OR IGNORE INTO project_aliases(project_id, alias_identity, alias_kind, root_path)
-		 VALUES(?, ?, ?, ?)`, source.ID, source.Identity, kind, rootPath); err != nil {
-		return ProjectMergeResult{}, fmt.Errorf("preserve source identity alias: %w", err)
+	var existingAliasProjectID int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT project_id FROM project_aliases WHERE alias_identity = ?`, source.Identity).Scan(&existingAliasProjectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO project_aliases(project_id, alias_identity, alias_kind, root_path)
+			 VALUES(?, ?, ?, ?)`, source.ID, source.Identity, kind, rootPath); err != nil {
+			return ProjectMergeResult{}, fmt.Errorf("preserve source identity alias: %w", err)
+		}
+	} else if err != nil {
+		return ProjectMergeResult{}, fmt.Errorf("check source identity alias: %w", err)
+	} else if existingAliasProjectID != source.ID && existingAliasProjectID != target.ID {
+		return ProjectMergeResult{}, fmt.Errorf("preserve source identity alias: alias %q belongs to project %d", source.Identity, existingAliasProjectID)
 	}
 
 	issuesMoved, err := countProjectRows(ctx, tx, "issues", source.ID)

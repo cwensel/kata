@@ -95,8 +95,15 @@ func (s *queueBuildState) computeIncluded() {
 		}
 		s.matched[key] = true
 		s.included[key] = true
+	}
+	for _, key := range s.order {
+		if !s.matched[key] {
+			continue
+		}
 		if s.revealMatches {
 			s.includeAncestors(key)
+		} else {
+			s.includeAncestorsWhenTheyConnectToMatchedAncestor(key)
 		}
 	}
 }
@@ -113,6 +120,30 @@ func (s *queueBuildState) includeAncestors(key issueKey) {
 			return
 		}
 		s.included[parentKey] = true
+		seen[parentKey] = true
+		key = parentKey
+	}
+}
+
+func (s *queueBuildState) includeAncestorsWhenTheyConnectToMatchedAncestor(key issueKey) {
+	path := []issueKey{}
+	seen := map[issueKey]bool{key: true}
+	for {
+		iss := s.byKey[key]
+		if iss.ParentNumber == nil {
+			return
+		}
+		parentKey := issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}
+		if seen[parentKey] || !s.hasIssue(parentKey) {
+			return
+		}
+		path = append(path, parentKey)
+		if s.matched[parentKey] {
+			for _, ancestor := range path {
+				s.included[ancestor] = true
+			}
+			return
+		}
 		seen[parentKey] = true
 		key = parentKey
 	}
@@ -161,6 +192,14 @@ func (s *queueBuildState) shouldAutoExpand(key issueKey) bool {
 	}
 	if s.revealMatches {
 		return true
+	}
+	if s.matched[key] {
+		for _, childKey := range s.visibleChildKeys(key, true) {
+			if !s.matched[childKey] {
+				return true
+			}
+		}
+		return false
 	}
 	return !s.matched[key]
 }

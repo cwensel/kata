@@ -102,6 +102,13 @@ func stopRunningDaemons(ctx context.Context, dataDir string) error {
 		if !daemon.ProcessAlive(r.PID) {
 			continue
 		}
+		_, info, ok := probeAddress(ctx, r.Address)
+		if !ok || info.Service != daemonServiceName || daemonVersionCompatible(info) {
+			continue
+		}
+		if info.PID == 0 || info.PID != r.PID {
+			continue
+		}
 		p, err := os.FindProcess(r.PID)
 		if err != nil {
 			continue

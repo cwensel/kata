@@ -39,11 +39,11 @@ The downstream goal is that links, events, hooks, purges, and any future federat
 ## 3. Scope
 
 **In scope**
-- Schema declaration: `projects.uid`, `issues.uid`, `links.from_issue_uid`, `links.to_issue_uid` are `NOT NULL UNIQUE` columns in the canonical `0001_init.sql`. `events.issue_uid`, `events.related_issue_uid`, `purge_log.issue_uid`, `purge_log.project_uid` are nullable (mirroring their integer FKs).
+- Schema declaration: `projects.uid` and `issues.uid` are `TEXT NOT NULL UNIQUE` columns in the canonical `0001_init.sql`. `links.from_issue_uid` and `links.to_issue_uid` are `TEXT NOT NULL` endpoint columns with lookup indexes; multiple links may share the same endpoint. `events.issue_uid`, `events.related_issue_uid`, `purge_log.issue_uid`, `purge_log.project_uid` are nullable (mirroring their integer FKs).
 - Schema-version bump from `1` to `2` (master spec §3.1 `meta` table).
 - ULID generation library (`internal/uid`) and a deterministic test-clock seam.
 - Wire-shape updates: `Issue`, `Project`, `Link`, `EventEnvelope`, and `PurgeLogEntry` JSON shapes gain `uid` (or `*_uid`) fields. Existing fields (`number`, `id`, `from_issue_id`, etc.) stay.
-- DB-side trigger that asserts `links.from_issue_uid`/`to_issue_uid` resolve to the same `issues` rows the integer FKs point at — so UID/FK drift is impossible without disabling foreign keys.
+- DB-side triggers that keep row UIDs immutable and assert `links.from_issue_uid`/`to_issue_uid` resolve to the same `issues` rows the integer FKs point at — so UID/FK drift is impossible without disabling foreign keys.
 - Daemon insert paths (`internal/db/queries.go` etc.) extended to emit a fresh ULID and write both UID and integer FK columns on every insert.
 - CLI lookups: every command that accepts `<number>` also accepts a UID (or its leftmost-N-char prefix, with ambiguity → error). User-facing display stays `#42`; the UID surfaces in `--json` output and on the detail view's metadata footer.
 - New endpoint `GET /api/v1/issues/{uid}` for cross-project UID lookup.
@@ -108,7 +108,7 @@ func (d *DB) ProjectUIDPrefixMatch(ctx context.Context, prefix string, limit int
 
 Both validate `prefix` against `uid.ValidPrefix` before issuing the query, and both use parameterized `LIKE ? || '%'` against the `idx_issues_uid` / `idx_projects_uid` UNIQUE indexes. Adding a third UID-bearing lookup later means adding another typed method, not extending a generic helper.
 
-The daemon writes both `uid` and `id` (and, for links, both `*_uid` and `*_id` columns) on every insert. Reads continue to use integer FKs for joins; UIDs are returned in the wire envelope. DB triggers (§5 below) enforce that the UID and integer FK on every `links` row resolve to the same issue, so the daemon's "kept in sync on insert" promise is also a hard storage invariant — drift is impossible without disabling foreign keys.
+The daemon writes both `uid` and `id` (and, for links, both `*_uid` and `*_id` columns) on every insert. Reads continue to use integer FKs for joins; UIDs are returned in the wire envelope. DB triggers (§5 below) make `projects.uid` / `issues.uid` immutable and enforce that the UID and integer FK on every `links` row resolve to the same issue, so the daemon's "kept in sync on insert" promise is also a hard storage invariant — drift is impossible without disabling foreign keys.
 
 CLI/TUI accept either a `#N` ordinal or a UID (full or prefix) wherever an issue argument is taken. Internally, both are resolved to an integer issue id for the daemon's local query path. The wire envelope always carries the UID so a future remote client can resolve UIDs without round-tripping through ordinals.
 
@@ -219,6 +219,19 @@ FOR EACH ROW BEGIN
   SELECT RAISE(ABORT, 'to_issue_uid does not match to_issue_id')
   WHERE NEW.to_issue_uid <> (SELECT uid FROM issues WHERE id = NEW.to_issue_id);
 END;
+
+CREATE TRIGGER trg_projects_uid_immutable
+BEFORE UPDATE OF uid ON projects
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'projects.uid is immutable')
+  WHERE NEW.uid <> OLD.uid;
+END;
+CREATE TRIGGER trg_issues_uid_immutable
+BEFORE UPDATE OF uid ON issues
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'issues.uid is immutable')
+  WHERE NEW.uid <> OLD.uid;
+END;
 ```
 
 The existing `trg_links_same_project_insert` / `_update` triggers stay unchanged — they enforce same-project links via the integer FKs (per §1.3), and that semantics is unaltered.
@@ -233,9 +246,9 @@ Owned by the JSONL roundtrip spec (§6.1 of that doc). Summary:
 
 1. The new binary (with `currentSchemaVersion=2`) sees a v1 SQLite DB at startup.
 2. It runs the JSONL exporter against the v1 DB, which omits UID fields from records that didn't have them.
-3. It moves the v1 DB aside as `<path>.bak.v1.<ts>`.
-4. It inits a fresh DB at the v2 schema (above).
-5. It runs the JSONL importer, which generates UIDs deterministically per the v1→v2 fill rule (`uid.FromStableSeed(stable_row_seed, created_at)` per record, then resolves cross-references in dependency order). `FromStableSeed` — not `FromTime` — is what gives the cutover its determinism guarantee: the same source row produces the same UID across reruns because both inputs are stable.
+3. It initializes `<path>.import.tmp.db` at the v2 schema (above).
+4. It runs the JSONL importer into the temp DB, which generates UIDs deterministically per the v1→v2 fill rule (`uid.FromStableSeed(stable_row_seed, created_at)` per record, then resolves cross-references in dependency order). `FromStableSeed` — not `FromTime` — is what gives the cutover its determinism guarantee: the same source row produces the same UID across reruns because both inputs are stable.
+5. Only after import plus validation succeeds, it renames the v1 DB to `<path>.bak.v1.<ts>` and atomically moves the validated temp DB into place (per JSONL spec §6.3).
 6. The fresh DB is byte-equivalent to what an in-place migration would have produced — the difference is only in **how**.
 
 This spec provides the fill rule (§5.2 below); the JSONL spec provides everything else.

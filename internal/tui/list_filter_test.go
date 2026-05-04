@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeListAPI is the test double for listAPI. Each method records its
@@ -211,6 +213,26 @@ func TestList_StatusOpenPromotesChildWhenParentClosed(t *testing.T) {
 	if rows[0].depth != 0 || rows[0].context {
 		t.Fatalf("open child row = %+v, want top-level non-context row", rows[0])
 	}
+}
+
+func TestList_StatusOpenShowsNestedMatchingGrandchildContext(t *testing.T) {
+	parent := int64(1)
+	child := int64(2)
+	rows := buildQueueRows([]Issue{
+		{ProjectID: 7, Number: parent, Status: "open", Title: "parent"},
+		{ProjectID: 7, Number: child, Status: "closed", Title: "child", ParentNumber: &parent},
+		{ProjectID: 7, Number: 3, Status: "open", Title: "grandchild", ParentNumber: &child},
+	}, ListFilter{Status: "open"}, nil)
+
+	require.Len(t, rows, 3)
+	assert.Equal(t, int64(1), rows[0].issue.Number)
+	assert.True(t, rows[0].expanded)
+	assert.False(t, rows[0].context)
+	assert.Equal(t, int64(2), rows[1].issue.Number)
+	assert.True(t, rows[1].expanded)
+	assert.True(t, rows[1].context)
+	assert.Equal(t, int64(3), rows[2].issue.Number)
+	assert.False(t, rows[2].context)
 }
 
 // TestList_Search_AccumulatesAndCommits drives /, then "abc", then

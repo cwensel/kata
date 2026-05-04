@@ -78,12 +78,131 @@ func TestExportEmitsEventPayloadAsJSONObject(t *testing.T) {
 	assert.True(t, found, "expected at least one event record")
 }
 
+func TestExportProjectIDFiltersProjectScopedRows(t *testing.T) {
+	ctx := context.Background()
+	d := openExportTestDB(t)
+	p1, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	require.NoError(t, err)
+	p2, err := d.CreateProject(ctx, "github.com/wesm/other", "other")
+	require.NoError(t, err)
+	_, err = d.AttachAlias(ctx, p1.ID, "github.com/wesm/kata", "git", "/tmp/kata")
+	require.NoError(t, err)
+	_, err = d.AttachAlias(ctx, p2.ID, "github.com/wesm/other", "git", "/tmp/other")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p1.ID,
+		Title:     "keep me",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p2.ID,
+		Title:     "drop me",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+
+	var out bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, d, &out, jsonl.ExportOptions{
+		ProjectID:      p1.ID,
+		IncludeDeleted: true,
+	}))
+	records := decodeJSONLLines(t, out.Bytes())
+
+	assertRecordsDoNotContain(t, records, "drop me")
+	assertProjectIDs(t, records, map[int64]bool{p1.ID: true})
+}
+
+func TestExportNoIncludeDeletedOmitsSoftDeletedIssueDependents(t *testing.T) {
+	ctx := context.Background()
+	d := openExportTestDB(t)
+	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	require.NoError(t, err)
+	kept, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		Title:     "kept issue",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	deleted, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		Title:     "deleted issue",
+		Author:    "tester",
+		Labels:    []string{"gone"},
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: deleted.ID,
+		Author:  "tester",
+		Body:    "deleted comment",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
+		ProjectID:   p.ID,
+		FromIssueID: deleted.ID,
+		ToIssueID:   kept.ID,
+		Type:        "blocks",
+		Author:      "tester",
+	}, db.LinkEventParams{
+		EventType: "issue.linked", EventIssueID: deleted.ID, EventIssueNumber: deleted.Number,
+		FromNumber: deleted.Number, ToNumber: kept.Number, Actor: "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.ExecContext(ctx, `UPDATE issues SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, deleted.ID)
+	require.NoError(t, err)
+
+	var out bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, d, &out, jsonl.ExportOptions{IncludeDeleted: false}))
+	records := decodeJSONLLines(t, out.Bytes())
+
+	assertRecordsDoNotContain(t, records, "deleted issue")
+	assertRecordsDoNotContain(t, records, "deleted comment")
+	assertRecordsDoNotContain(t, records, "gone")
+	for _, rec := range records {
+		data, _ := rec["data"].(map[string]any)
+		if rec["kind"] == "link" {
+			assert.NotEqual(t, float64(deleted.ID), data["from_issue_id"])
+			assert.NotEqual(t, float64(deleted.ID), data["to_issue_id"])
+		}
+		if rec["kind"] == "event" {
+			assert.NotEqual(t, float64(deleted.ID), data["issue_id"])
+			assert.NotEqual(t, float64(deleted.ID), data["related_issue_id"])
+		}
+	}
+}
+
 func openExportTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	d, err := db.Open(context.Background(), filepath.Join(t.TempDir(), "kata.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
+}
+
+func assertRecordsDoNotContain(t *testing.T, records []map[string]any, needle string) {
+	t.Helper()
+	for _, rec := range records {
+		bs, err := json.Marshal(rec)
+		require.NoError(t, err)
+		assert.NotContains(t, string(bs), needle)
+	}
+}
+
+func assertProjectIDs(t *testing.T, records []map[string]any, allowed map[int64]bool) {
+	t.Helper()
+	for _, rec := range records {
+		data, _ := rec["data"].(map[string]any)
+		v, ok := data["project_id"]
+		if !ok {
+			if rec["kind"] == "project" {
+				v = data["id"]
+			} else {
+				continue
+			}
+		}
+		id := int64(v.(float64))
+		assert.True(t, allowed[id], "record kind=%s has project id %d outside filter", rec["kind"], id)
+	}
 }
 
 func decodeJSONLLines(t *testing.T, bs []byte) []map[string]any {

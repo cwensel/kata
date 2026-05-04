@@ -117,9 +117,6 @@ type detailModel struct {
 	// rendered max start so overscrolling past EOF doesn't let
 	// dm.scroll grow unbounded — without the clamp, a follow-up PgUp
 	// appears stuck until the inflated offset unwinds (roborev #17184).
-	// Approximate viewport math (chrome estimate) is acceptable here
-	// because the renderer applies its own per-frame clamp; this just
-	// keeps dm.scroll's drift bounded.
 	lastTermWidth  int
 	lastTermHeight int
 	// dm.modal was removed in M3b — the M3a/b input infrastructure on
@@ -301,16 +298,6 @@ func (dm detailModel) handleNavKey(
 // over-eager scrolling on a short body is harmless.
 const detailBodyScrollStep = 8
 
-// detailChromeRowsEstimate is a conservative cap on how many rows the
-// non-body chrome consumes (title + byline + metadata + section
-// labels + activity strip + info line + footer). Used only by
-// scrollBodyDown's overscroll clamp; the renderer computes the
-// exact body budget separately. Erring on the LARGE side here makes
-// the clamp's maxStart estimate STRICTER than the renderer's actual
-// maxStart, so dm.scroll stays inside the visible range and a
-// follow-up PgUp always responds visually.
-const detailChromeRowsEstimate = 18
-
 func (dm detailModel) scrollBodyUp() detailModel {
 	dm.scroll -= detailBodyScrollStep
 	if dm.scroll < 0 {
@@ -320,19 +307,11 @@ func (dm detailModel) scrollBodyUp() detailModel {
 }
 
 // scrollBodyDown advances the body scroll by detailBodyScrollStep
-// lines, clamped at the body's approximate maximum start position.
+// lines, clamped at the body's rendered maximum start position.
 // Without the clamp, repeated PgDn past EOF lets dm.scroll grow
 // unbounded; the renderer hides this with its own per-frame clamp,
 // but a follow-up PgUp would then appear stuck until the inflated
 // offset finally unwound (roborev #17184).
-//
-// The clamp is approximate — the exact body viewport depends on
-// children/activity flags + chrome heights, none of which are
-// available at keypress time without re-running the layout solver.
-// detailChromeRowsEstimate is a generous over-estimate of chrome,
-// so the computed maxStart sits at-or-below the renderer's actual
-// maxStart. dm.scroll therefore stays inside the renderer's visible
-// range and PgUp always produces a visible movement.
 func (dm detailModel) scrollBodyDown() detailModel {
 	dm.scroll += detailBodyScrollStep
 	maxStart := dm.bodyMaxStartEstimate()
@@ -344,24 +323,38 @@ func (dm detailModel) scrollBodyDown() detailModel {
 
 // bodyMaxStartEstimate returns the largest valid dm.scroll value, or
 // -1 when the cap can't be computed (no issue, no cached terminal
-// width). Uses cached terminal dimensions (set on WindowSizeMsg) and
-// detailChromeRowsEstimate so the clamp is conservative — it never
-// over-estimates the visible body and never lets dm.scroll out-run
-// what the renderer will actually display.
+// width). It mirrors the renderer's body-budget calculation so it
+// never lets dm.scroll out-run what the renderer will display.
 func (dm detailModel) bodyMaxStartEstimate() int {
-	if dm.issue == nil || dm.lastTermWidth <= 0 {
+	if dm.issue == nil || dm.lastTermWidth <= 0 || dm.lastTermHeight <= 0 {
 		return -1
 	}
-	wrapped := renderMarkdownLines(dm.issue.Body, documentSheetWidth(dm.lastTermWidth))
-	bodyA := dm.lastTermHeight - detailChromeRowsEstimate
-	if bodyA < detailMinBodyRows {
-		bodyA = detailMinBodyRows
-	}
-	maxStart := len(wrapped) - bodyA
+	sheetWidth := documentSheetWidth(dm.lastTermWidth)
+	wrapped := renderMarkdownLines(dm.issue.Body, sheetWidth)
+	maxStart := len(wrapped) - dm.renderedBodyRows(dm.lastTermWidth, dm.lastTermHeight, sheetWidth)
 	if maxStart < 0 {
 		return 0
 	}
 	return maxStart
+}
+
+func (dm detailModel) renderedBodyRows(termWidth, termHeight, sheetWidth int) int {
+	chrome := viewChrome{}
+	helpRows := detailHelpRows(dm, chrome)
+	footerLines := helpLines(helpRows, termWidth)
+	header := append([]string{renderTitleBar(termWidth, chrome.scope, chrome.version), ""}, dm.documentHeader(sheetWidth, chrome)...)
+	hasChildren := len(dm.children) > 0
+	hasActivity := dm.hasActivity()
+	fixed := len(header) + 1 /* body label */ + 1 /* blank gap before activity */ +
+		1 /* info */ + footerLines
+	if hasChildren {
+		fixed += 2
+	}
+	if hasActivity {
+		fixed += 2
+	}
+	bodyRows, _, _ := detailDocumentBudgets(termHeight-fixed, len(dm.children), hasActivity)
+	return bodyRows
 }
 
 // handleUp moves the tab cursor up when the active tab has rows;
