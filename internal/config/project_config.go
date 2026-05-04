@@ -17,16 +17,28 @@ var ErrProjectConfigMissing = errors.New(".kata.toml not found")
 // ProjectConfigFilename is the canonical filename committed at workspace roots.
 const ProjectConfigFilename = ".kata.toml"
 
-// ProjectConfig is the parsed contents of a workspace .kata.toml.
+// ProjectConfig is the parsed contents of a workspace .kata.toml or
+// .kata.local.toml. The same struct serves both files; readers differ
+// only in which validations they enforce.
 type ProjectConfig struct {
 	Version int             `toml:"version"`
 	Project ProjectBindings `toml:"project"`
+	Server  ServerConfig    `toml:"server,omitempty"`
 }
 
 // ProjectBindings carries the [project] block.
 type ProjectBindings struct {
 	Identity string `toml:"identity"`
 	Name     string `toml:"name,omitempty"`
+}
+
+// ServerConfig carries the [server] block. Optional in both committed
+// and local config files. URL is the daemon base URL (e.g.
+// http://100.64.0.5:7777). When set on .kata.local.toml it directs
+// the client to a remote daemon; ignored if it appears in committed
+// .kata.toml in v1, but parsed without error.
+type ServerConfig struct {
+	URL string `toml:"url,omitempty"`
 }
 
 // ReadProjectConfig parses <workspaceRoot>/.kata.toml and validates v1 fields.

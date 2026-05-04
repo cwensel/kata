@@ -83,3 +83,32 @@ func TestWriteProjectConfig_PreservesExplicitName(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Kata Tracker", cfg.Project.Name)
 }
+
+func TestReadProjectConfig_AcceptsOptionalServerBlock(t *testing.T) {
+	dir := t.TempDir()
+	writeKataTOML(t, dir, `version = 1
+
+[project]
+identity = "github.com/wesm/kata"
+name     = "kata"
+
+[server]
+url = "http://127.0.0.1:7777"
+`)
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:7777", cfg.Server.URL)
+}
+
+func TestReadProjectConfig_NoServerBlockYieldsZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	writeKataTOML(t, dir, `version = 1
+
+[project]
+identity = "github.com/wesm/kata"
+name     = "kata"
+`)
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Server.URL)
+}
