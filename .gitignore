@@ -18,6 +18,9 @@ coverage.out
 # Local planning/work artifacts
 /.superpowers/
 
+# Claude Code per-machine settings (shared .claude/ content can still be tracked)
+/.claude/settings.local.json
+
 # IDE/editor
 .vscode/
 .idea/
