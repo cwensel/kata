@@ -88,6 +88,9 @@ func TestImportV1FillsUIDsDeterministically(t *testing.T) {
 	for _, got := range firstUIDs {
 		assert.True(t, uid.Valid(got), "invalid uid %q", got)
 	}
+	var schemaVersion string
+	require.NoError(t, first.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&schemaVersion))
+	assert.Equal(t, "2", schemaVersion)
 }
 
 func TestImportV1RejectsCorruptEventFK(t *testing.T) {

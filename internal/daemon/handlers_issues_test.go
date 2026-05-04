@@ -284,8 +284,16 @@ func TestCreate_IdempotencyReuse_SameFingerprint(t *testing.T) {
 	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"}, body)
 	requireOK(t, first)
 	var firstOut struct {
-		Issue struct{ Number int64 } `json:"issue"`
-		Event struct{ ID int64 }     `json:"event"`
+		Issue struct {
+			Number     int64  `json:"number"`
+			UID        string `json:"uid"`
+			ProjectUID string `json:"project_uid"`
+		} `json:"issue"`
+		Event struct {
+			ID         int64   `json:"id"`
+			ProjectUID string  `json:"project_uid"`
+			IssueUID   *string `json:"issue_uid"`
+		} `json:"event"`
 	}
 	require.NoError(t, json.Unmarshal(first.body, &firstOut))
 	require.NotZero(t, firstOut.Event.ID)
@@ -293,17 +301,26 @@ func TestCreate_IdempotencyReuse_SameFingerprint(t *testing.T) {
 	second := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"}, body)
 	requireOK(t, second)
 	var secondOut struct {
-		Issue         struct{ Number int64 } `json:"issue"`
-		Event         *struct{ ID int64 }    `json:"event"`
-		OriginalEvent *struct{ ID int64 }    `json:"original_event"`
-		Changed       bool                   `json:"changed"`
-		Reused        bool                   `json:"reused"`
+		Issue struct {
+			Number int64 `json:"number"`
+		} `json:"issue"`
+		Event         *struct{ ID int64 } `json:"event"`
+		OriginalEvent *struct {
+			ID         int64   `json:"id"`
+			ProjectUID string  `json:"project_uid"`
+			IssueUID   *string `json:"issue_uid"`
+		} `json:"original_event"`
+		Changed bool `json:"changed"`
+		Reused  bool `json:"reused"`
 	}
 	require.NoError(t, json.Unmarshal(second.body, &secondOut))
 	assert.Equal(t, firstOut.Issue.Number, secondOut.Issue.Number)
 	assert.Nil(t, secondOut.Event, "reuse must omit fresh event")
 	require.NotNil(t, secondOut.OriginalEvent, "reuse must populate original_event")
 	assert.Equal(t, firstOut.Event.ID, secondOut.OriginalEvent.ID)
+	assert.Equal(t, firstOut.Issue.ProjectUID, secondOut.OriginalEvent.ProjectUID)
+	require.NotNil(t, secondOut.OriginalEvent.IssueUID)
+	assert.Equal(t, firstOut.Issue.UID, *secondOut.OriginalEvent.IssueUID)
 	assert.False(t, secondOut.Changed)
 	assert.True(t, secondOut.Reused)
 }

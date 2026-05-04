@@ -2,6 +2,8 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/uid"
+	_ "modernc.org/sqlite"
 )
 
 func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
@@ -56,6 +59,21 @@ func TestOpen_IsIdempotent(t *testing.T) {
 	var version string
 	require.NoError(t, d2.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
 	assert.Equal(t, strconv.Itoa(db.CurrentSchemaVersion()), version)
+}
+
+func TestOpen_RejectsOlderSchemaNeedingJSONLCutover(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kata.db")
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = raw.Exec(`CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+		INSERT INTO meta(key, value) VALUES('schema_version', '1')`)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	_, err = db.Open(context.Background(), path)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, db.ErrSchemaCutoverRequired), err)
 }
 
 func TestOpen_TimestampColumnsScanIntoTime(t *testing.T) {

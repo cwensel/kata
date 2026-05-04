@@ -22,6 +22,10 @@ const currentSchemaVersion = 2
 // CurrentSchemaVersion returns the schema version expected by this binary.
 func CurrentSchemaVersion() int { return currentSchemaVersion }
 
+// ErrSchemaCutoverRequired is returned by Open when an existing database is
+// older than the binary's schema and must be upgraded through JSONL cutover.
+var ErrSchemaCutoverRequired = errors.New("schema cutover required")
+
 // DB wraps *sql.DB. Use Open to construct one with PRAGMAs applied.
 type DB struct {
 	*sql.DB
@@ -91,6 +95,10 @@ func (d *DB) migrate(ctx context.Context) error {
 	current, err := d.currentVersion(ctx)
 	if err != nil {
 		return err
+	}
+	if current > 0 && current < currentSchemaVersion {
+		return fmt.Errorf("%w: database schema_version %d is older than binary schema %d; run JSONL cutover before opening",
+			ErrSchemaCutoverRequired, current, currentSchemaVersion)
 	}
 	files, err := migrationsFS.ReadDir("migrations")
 	if err != nil {

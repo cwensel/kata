@@ -38,6 +38,9 @@ func Import(ctx context.Context, r io.Reader, target *db.DB) error {
 			return err
 		}
 	}
+	if err := recordImportSchemaVersion(ctx, tx); err != nil {
+		return err
+	}
 	if err := reconcileSequences(ctx, tx); err != nil {
 		return err
 	}
@@ -76,6 +79,9 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			return err
 		}
 		if rec.Key == "export_version" {
+			return nil
+		}
+		if rec.Key == "schema_version" && exportVersion < db.CurrentSchemaVersion() {
 			return nil
 		}
 		_, err := tx.ExecContext(ctx,
@@ -213,6 +219,17 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 	default:
 		return fmt.Errorf("import %s: unsupported kind", env.Kind)
 	}
+}
+
+func recordImportSchemaVersion(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO meta(key, value) VALUES('schema_version', ?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		strconv.Itoa(db.CurrentSchemaVersion()))
+	if err != nil {
+		return fmt.Errorf("record import schema version: %w", err)
+	}
+	return nil
 }
 
 func decodeData(env Envelope, dst any) error {

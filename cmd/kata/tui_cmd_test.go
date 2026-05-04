@@ -27,11 +27,31 @@ func TestTUI_CommandRegistered(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
+	if !strings.Contains(out, "--uid-format") {
+		t.Fatalf("--uid-format missing from help: %s", out)
+	}
 	for _, banned := range []string{"--all-projects", "--include-deleted"} {
 		if strings.Contains(out, banned) {
 			t.Fatalf("%s leaked back into help (daemon support not yet wired): %s",
 				banned, out)
 		}
+	}
+}
+
+func TestTUI_RejectsInvalidUIDFormatBeforeTTYCheck(t *testing.T) {
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"tui", "--uid-format", "wide"})
+	cmd.SetContext(context.Background())
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected invalid uid format error")
+	}
+	if !strings.Contains(err.Error(), "uid format must be one of none, short, full") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

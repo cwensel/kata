@@ -78,6 +78,37 @@ func TestExportEmitsEventPayloadAsJSONObject(t *testing.T) {
 	assert.True(t, found, "expected at least one event record")
 }
 
+func TestExportLegacyV1OmitsUIDFields(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	writeLegacyV1DB(t, path)
+	d, err := db.OpenReadOnly(ctx, path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	var out bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, d, &out, jsonl.ExportOptions{IncludeDeleted: true}))
+	records := decodeJSONLLines(t, out.Bytes())
+
+	assert.Equal(t, map[string]any{"key": "export_version", "value": "1"}, records[0]["data"])
+	for _, rec := range records {
+		data, _ := rec["data"].(map[string]any)
+		switch rec["kind"] {
+		case "project", "issue":
+			assert.NotContains(t, data, "uid")
+		case "link":
+			assert.NotContains(t, data, "from_issue_uid")
+			assert.NotContains(t, data, "to_issue_uid")
+		case "event":
+			assert.NotContains(t, data, "issue_uid")
+			assert.NotContains(t, data, "related_issue_uid")
+		case "purge_log":
+			assert.NotContains(t, data, "issue_uid")
+			assert.NotContains(t, data, "project_uid")
+		}
+	}
+}
+
 func TestExportProjectIDFiltersProjectScopedRows(t *testing.T) {
 	ctx := context.Background()
 	d := openExportTestDB(t)

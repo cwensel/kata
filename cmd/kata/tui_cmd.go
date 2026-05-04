@@ -15,6 +15,7 @@ import (
 // fallback path) until the daemon ships GET /issues for cross-project
 // reads.
 func newTUICmd() *cobra.Command {
+	var uidFormat string
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "open the interactive issue browser",
@@ -26,11 +27,29 @@ Press ? for help, q to quit.`,
 			if ctx == nil {
 				ctx = context.Background()
 			}
+			if !validTUIUIDFormat(uidFormat) {
+				return &cliError{
+					Message:  "uid format must be one of none, short, full",
+					Kind:     kindValidation,
+					ExitCode: ExitValidation,
+				}
+			}
 			return tui.Run(ctx, tui.Options{
-				Stdout: cmd.OutOrStdout(),
-				Stderr: cmd.ErrOrStderr(),
+				Stdout:           cmd.OutOrStdout(),
+				Stderr:           cmd.ErrOrStderr(),
+				DisplayUIDFormat: uidFormat,
 			})
 		},
 	}
+	cmd.Flags().StringVar(&uidFormat, "uid-format", "none", "show issue UIDs in detail (none|short|full)")
 	return cmd
+}
+
+func validTUIUIDFormat(v string) bool {
+	switch v {
+	case "none", "short", "full":
+		return true
+	default:
+		return false
+	}
 }

@@ -96,6 +96,14 @@ func TestShow_UIDPrefixErrors(t *testing.T) {
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
 	createIssue(t, env, pid, "a")
 	createIssue(t, env, pid, "b")
+	uidA := "01JZ0000000000000000000001"
+	uidB := "01JZ0000000000000000000002"
+	_, err := env.DB.ExecContext(context.Background(), `DROP TRIGGER trg_issues_uid_immutable`)
+	require.NoError(t, err)
+	_, err = env.DB.ExecContext(context.Background(), `UPDATE issues SET uid = ? WHERE project_id = ? AND number = 1`, uidA, pid)
+	require.NoError(t, err)
+	_, err = env.DB.ExecContext(context.Background(), `UPDATE issues SET uid = ? WHERE project_id = ? AND number = 2`, uidB, pid)
+	require.NoError(t, err)
 	first, err := env.DB.IssueByNumber(context.Background(), pid, 1)
 	require.NoError(t, err)
 

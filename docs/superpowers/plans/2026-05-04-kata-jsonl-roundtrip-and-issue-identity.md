@@ -1240,7 +1240,7 @@ git commit -m "docs: document JSONL cutover and issue UIDs"
 
 **Skill:** `roborev-fix`
 
-- [ ] **Step 1: Run one final roborev cleanup**
+- [x] **Step 1: Run one final roborev cleanup**
 
 ```bash
 roborev fix --open --list
@@ -1248,7 +1248,7 @@ roborev fix --open --list
 
 If findings exist, follow `roborev-fix`: fetch, fix, test, comment, close.
 
-- [ ] **Step 2: Run full suite after any fixes**
+- [x] **Step 2: Run full suite after any fixes**
 
 ```bash
 go test ./...
@@ -1256,7 +1256,7 @@ go test ./...
 
 Expected: PASS.
 
-- [ ] **Step 3: Commit final fixes if any**
+- [x] **Step 3: Commit final fixes if any**
 
 ```bash
 git add <fixed-files>
