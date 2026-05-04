@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -278,6 +279,44 @@ func TestMergeProjects_RejectsSourceIdentityAliasOwnedByDifferentProject(t *test
 	assert.Equal(t, "github.com/wesm/old", got.Identity)
 }
 
+// TestMergeProjects_RejectsArchivedSource pins the #24 invariant: an
+// archived source can't be merged because that would resurrect its identity
+// into the target. Restore-then-merge would be required if/when restore
+// ships.
+func TestMergeProjects_RejectsArchivedSource(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	source, err := d.CreateProject(ctx, "github.com/wesm/archived-src", "src")
+	require.NoError(t, err)
+	target, err := d.CreateProject(ctx, "github.com/wesm/live-tgt", "tgt")
+	require.NoError(t, err)
+	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: source.ID, Actor: "tester"})
+	require.NoError(t, err)
+
+	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: source.ID, TargetProjectID: target.ID,
+	})
+	assert.ErrorIs(t, err, db.ErrProjectMergeArchivedSource)
+}
+
+// TestMergeProjects_RejectsArchivedTarget pins the symmetric guard: folding
+// live work into an archived project undoes the archive's intent.
+func TestMergeProjects_RejectsArchivedTarget(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	source, err := d.CreateProject(ctx, "github.com/wesm/live-src", "src")
+	require.NoError(t, err)
+	target, err := d.CreateProject(ctx, "github.com/wesm/archived-tgt", "tgt")
+	require.NoError(t, err)
+	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: target.ID, Actor: "tester"})
+	require.NoError(t, err)
+
+	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: source.ID, TargetProjectID: target.ID,
+	})
+	assert.ErrorIs(t, err, db.ErrProjectMergeArchivedTarget)
+}
+
 func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
@@ -409,4 +448,232 @@ func TestResetIssueCounter_GateLivesInUpdate(t *testing.T) {
 	after, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
 	assert.Equal(t, before.NextIssueNumber, after.NextIssueNumber)
+}
+
+func TestBatchProjectStats_EmptyProjectReturnsZeroes(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/empty", "empty")
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+
+	require.Contains(t, stats, p.ID)
+	s := stats[p.ID]
+	assert.Equal(t, 0, s.Open)
+	assert.Equal(t, 0, s.Closed)
+	assert.Nil(t, s.LastEventAt, "no events → LastEventAt is nil")
+}
+
+// TestBatchProjectStats_NoCountInflation pins the spec §6.1 contract:
+// the issues-and-events join MUST be pre-aggregated, otherwise N issues
+// times M events would inflate counts. Three issues + four events on the
+// same project must still report Open=3.
+func TestBatchProjectStats_NoCountInflation(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/proj", "proj")
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID,
+			Title:     "i",
+			Body:      "",
+			Author:    "tester",
+		})
+		require.NoError(t, err)
+	}
+	iss, err := d.IssueByNumber(ctx, p.ID, 1)
+	require.NoError(t, err)
+	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: iss.ID,
+		Author:  "tester",
+		Body:    "note",
+	})
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	require.Contains(t, stats, p.ID)
+	assert.Equal(t, 3, stats[p.ID].Open, "must not inflate by event count")
+	assert.Equal(t, 0, stats[p.ID].Closed)
+	assert.NotNil(t, stats[p.ID].LastEventAt)
+}
+
+// TestBatchProjectStats_ExcludesSoftDeletedIssues pins that issues with
+// deleted_at != NULL do not count toward Open/Closed. SoftDeleteIssue is
+// the right primitive — PurgeIssue would hard-delete the row and the
+// `WHERE deleted_at IS NULL` filter would never get a chance to exercise
+// itself. Spec §6.1.
+func TestBatchProjectStats_ExcludesSoftDeletedIssues(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/proj", "proj")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "live", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+	soft, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "soft", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, _, err = d.SoftDeleteIssue(ctx, soft.ID, "tester")
+	require.NoError(t, err)
+	// Sanity: the soft-deleted row still exists with deleted_at set, so
+	// the filter is what's actually doing the work.
+	got, err := d.IssueByID(ctx, soft.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.DeletedAt, "soft-delete must leave row with deleted_at set")
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats[p.ID].Open, "soft-deleted issue must not count")
+}
+
+// TestBatchProjectStats_ExcludesArchivedProjects pins that archived
+// projects don't appear in the result map at all. Spec §6.1.
+func TestBatchProjectStats_ExcludesArchivedProjects(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	live, err := d.CreateProject(ctx, "github.com/wesm/live", "live")
+	require.NoError(t, err)
+	arch, err := d.CreateProject(ctx, "github.com/wesm/arch", "arch")
+	require.NoError(t, err)
+	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: arch.ID, Actor: "tester"})
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, stats, live.ID)
+	assert.NotContains(t, stats, arch.ID)
+}
+
+// TestBatchProjectStats_PartitionsByProject pins that two projects with
+// distinct issue counts produce distinct rows; counts are not summed
+// across projects. Spec §6.1.
+func TestBatchProjectStats_PartitionsByProject(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	a, err := d.CreateProject(ctx, "github.com/wesm/a", "a")
+	require.NoError(t, err)
+	b, err := d.CreateProject(ctx, "github.com/wesm/b", "b")
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: a.ID, Title: "x", Author: "tester",
+		})
+		require.NoError(t, err)
+	}
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: b.ID, Title: "y", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats[a.ID].Open)
+	assert.Equal(t, 1, stats[b.ID].Open)
+}
+
+// TestBatchProjectStats_ParsesZonedLegacyTimestamp pins that
+// parseSQLiteTimestamp accepts the zoned legacy layout
+// ("YYYY-MM-DD HH:MM:SS.NNN-07:00") that jsonl.parseExportTime emits on
+// the import path. Without this layout, an imported database with a
+// zoned offset on events.created_at would 500 the stats endpoint.
+//
+// The zoned event uses a far-future year (2099) so MAX(created_at)'s
+// string comparison deterministically picks this row over the
+// CreateIssue-generated issue.created event, whose RFC3339Nano
+// timestamp differs at position 10 ('T' vs ' '). Without the
+// year-bump, the issue.created row wins the MAX regardless of date
+// and parseSQLiteTimestamp's zoned layout is never exercised.
+func TestBatchProjectStats_ParsesZonedLegacyTimestamp(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/zoned", "zoned")
+	require.NoError(t, err)
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "live", Author: "tester",
+	})
+	require.NoError(t, err)
+	// Stamp an event whose created_at uses the zoned legacy layout. The
+	// MAX(created_at) over events for this project will surface this row,
+	// driving parseSQLiteTimestamp through the new layout slot.
+	eventUID, err := uid.New()
+	require.NoError(t, err)
+	const zonedTS = "2099-05-04 12:34:56.789-07:00"
+	_, err = d.ExecContext(ctx, `
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester', '{}', ?)`,
+		eventUID, p.ID, p.Identity, issue.ID, issue.Number, zonedTS)
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	require.Contains(t, stats, p.ID)
+	require.NotNil(t, stats[p.ID].LastEventAt, "zoned timestamp must parse, not nil")
+	// "2099-05-04 12:34:56.789-07:00" → UTC 2099-05-04 19:34:56.789Z.
+	// Without parseSQLiteTimestamp's zoned layout, BatchProjectStats would
+	// either drop this row or 500. The exact-time assertion prevents a
+	// loose nil-check from masking the parser regressing.
+	expected := time.Date(2099, 5, 4, 19, 34, 56, 789000000, time.UTC)
+	require.True(t, stats[p.ID].LastEventAt.Equal(expected),
+		"zoned event time wrong: got %v, want %v", stats[p.ID].LastEventAt, expected)
+}
+
+// TestBatchProjectStats_PicksAbsoluteLatestAcrossMixedFormats pins that
+// MAX over events.created_at compares by parsed time, not by lex string,
+// so the absolute-latest event wins even when the events table contains
+// a mix of T-separated RFC3339 and space/offset legacy layouts (which
+// parseSQLiteTimestamp accepts on the read path).
+//
+// Concretely: we stamp two events on the same project, both at the same
+// real-world UTC instant. One uses the legacy zoned layout
+// ("YYYY-MM-DD HH:MM:SS.SSS-07:00"); the other is a millisecond earlier
+// in the current RFC3339Nano layout. Because '<space>' (0x20) sorts
+// before 'T' (0x54), a naive lex MAX(created_at) would pick the
+// later-T-formatted earlier event. After the julianday() normalization,
+// the absolute-latest space-zoned event wins.
+func TestBatchProjectStats_PicksAbsoluteLatestAcrossMixedFormats(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/mixed-ts", "mixed-ts")
+	require.NoError(t, err)
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "live", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	// Earlier-in-absolute-time but lex-LATER (T separator > space).
+	earlierUID, err := uid.New()
+	require.NoError(t, err)
+	const earlierTRFC = "2050-01-01T00:00:00.000Z"
+	_, err = d.ExecContext(ctx, `
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester', '{}', ?)`,
+		earlierUID, p.ID, p.Identity, issue.ID, issue.Number, earlierTRFC)
+	require.NoError(t, err)
+
+	// Later-in-absolute-time but lex-EARLIER (space separator < T).
+	// 2050-01-01 00:00:01-00:00 == 2050-01-01T00:00:01Z which is one
+	// second after earlierTRFC. Lex MAX would pick earlierTRFC.
+	laterUID, err := uid.New()
+	require.NoError(t, err)
+	const laterZoned = "2050-01-01 00:00:01.000-00:00"
+	_, err = d.ExecContext(ctx, `
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.commented', 'tester', '{}', ?)`,
+		laterUID, p.ID, p.Identity, issue.ID, issue.Number, laterZoned)
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	require.Contains(t, stats, p.ID)
+	require.NotNil(t, stats[p.ID].LastEventAt)
+	expected := time.Date(2050, 1, 1, 0, 0, 1, 0, time.UTC)
+	assert.True(t, stats[p.ID].LastEventAt.Equal(expected),
+		"BatchProjectStats picked the lex-largest row, not the absolute-latest: got %v, want %v",
+		stats[p.ID].LastEventAt, expected)
 }

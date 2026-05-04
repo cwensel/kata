@@ -177,6 +177,27 @@ type labelsFetchedMsg struct {
 	err    error
 }
 
+// projectsLoadedMsg is delivered after a /api/v1/projects fetch returns.
+// The all-projects list view uses the projects map to prefix each row's
+// title with the owning project's display name. The stats and idents
+// maps are populated only by fetchProjectsWithStats; the boot
+// fetchProjects cmd leaves them nil so callers can distinguish "names
+// only" vs "with stats".
+//
+// gen carries the Model.projectsGen value captured at dispatch time. The
+// projectsLoadedMsg handler clears m.projectsStale only when gen still
+// matches m.projectsGen — guards against an SSE invalidation arriving
+// while an older fetch is in flight. fetchProjects (the boot, no-stats
+// variant) leaves gen=0 since it does not participate in the stale-flip
+// race. Spec §6.3.
+type projectsLoadedMsg struct {
+	projects map[int64]string
+	idents   map[int64]string
+	stats    map[int64]ProjectStatsSummary
+	err      error
+	gen      uint64
+}
+
 // resetRequiredMsg signals sync.reset_required: the daemon's purge
 // gap means the consumer's cursor is too old. The TEA loop drops the
 // cache and refetches from scratch.

@@ -38,6 +38,36 @@ type InstanceResponse struct {
 	}
 }
 
+// ProjectStatsOut is the per-project aggregate returned by GET
+// /api/v1/projects?include=stats. LastEventAt is nil for a project with
+// zero events. Spec §7.2.
+type ProjectStatsOut struct {
+	Open        int        `json:"open"`
+	Closed      int        `json:"closed"`
+	LastEventAt *time.Time `json:"last_event_at"`
+}
+
+// ProjectOut is the API-shape of a project. JSON keys mirror db.Project
+// (internal/db/types.go) exactly so the default response is byte-identical
+// to the previous shape. Spec §1.7.
+//
+// The field set is exhaustively derived from db.Project as of this commit:
+// id, uid, identity, name, created_at, next_issue_number, deleted_at
+// (omitempty). No updated_at — db.Project has none.
+type ProjectOut struct {
+	ID              int64      `json:"id"`
+	UID             string     `json:"uid"`
+	Identity        string     `json:"identity"`
+	Name            string     `json:"name"`
+	CreatedAt       time.Time  `json:"created_at"`
+	NextIssueNumber int64      `json:"next_issue_number"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+
+	// Stats is populated only when the request carries ?include=stats.
+	// Wired in Task 3.
+	Stats *ProjectStatsOut `json:"stats,omitempty"`
+}
+
 // ResolveProjectRequest is POST /api/v1/projects/resolve.
 type ResolveProjectRequest struct {
 	Body struct {
@@ -47,7 +77,7 @@ type ResolveProjectRequest struct {
 
 // ProjectResolveBody is the JSON body field of a successful resolve response.
 type ProjectResolveBody struct {
-	Project       db.Project      `json:"project"`
+	Project       ProjectOut      `json:"project"`
 	Alias         db.ProjectAlias `json:"alias"`
 	WorkspaceRoot string          `json:"workspace_root,omitempty"`
 }
@@ -79,14 +109,14 @@ type InitProjectResponse struct {
 // ListProjectsResponse is GET /api/v1/projects.
 type ListProjectsResponse struct {
 	Body struct {
-		Projects []db.Project `json:"projects"`
+		Projects []ProjectOut `json:"projects"`
 	}
 }
 
 // ShowProjectResponse is GET /api/v1/projects/{id}.
 type ShowProjectResponse struct {
 	Body struct {
-		Project db.Project        `json:"project"`
+		Project ProjectOut        `json:"project"`
 		Aliases []db.ProjectAlias `json:"aliases"`
 	}
 }
@@ -108,9 +138,22 @@ type MergeProjectRequest struct {
 	}
 }
 
+// MergeProjectResultOut summarizes a completed project merge using
+// the API-owned ProjectOut projection. Mirrors db.ProjectMergeResult
+// but routes Source and Target through the projection so the wire
+// shape doesn't depend on internal db.Project fields.
+type MergeProjectResultOut struct {
+	Source         ProjectOut `json:"source"`
+	Target         ProjectOut `json:"target"`
+	IssuesMoved    int64      `json:"issues_moved"`
+	AliasesMoved   int64      `json:"aliases_moved"`
+	EventsMoved    int64      `json:"events_moved"`
+	PurgeLogsMoved int64      `json:"purge_logs_moved"`
+}
+
 // MergeProjectResponse summarizes a completed project merge.
 type MergeProjectResponse struct {
-	Body db.ProjectMergeResult
+	Body MergeProjectResultOut
 }
 
 // ResetCounterRequest is POST /api/v1/projects/{project_id}/reset-counter.
@@ -127,7 +170,7 @@ type ResetCounterRequest struct {
 // still has at least one row in the issues table.
 type ResetCounterResponse struct {
 	Body struct {
-		Project db.Project `json:"project"`
+		Project ProjectOut `json:"project"`
 	}
 }
 
@@ -172,6 +215,15 @@ type MutationResponse struct {
 // ListIssuesRequest is GET /api/v1/projects/{id}/issues.
 type ListIssuesRequest struct {
 	ProjectID int64  `path:"project_id" required:"true"`
+	Status    string `query:"status,omitempty" enum:"open,closed,"`
+	Limit     int    `query:"limit,omitempty"`
+}
+
+// ListAllIssuesRequest is GET /api/v1/issues — the cross-project list. The
+// optional project_id query param narrows to a single project for callers
+// that want one trip through this surface; omit it for the all-projects feed.
+type ListAllIssuesRequest struct {
+	ProjectID int64  `query:"project_id,omitempty"`
 	Status    string `query:"status,omitempty" enum:"open,closed,"`
 	Limit     int    `query:"limit,omitempty"`
 }
@@ -329,6 +381,41 @@ type DeleteLinkRequest struct {
 	Number    int64  `path:"number" required:"true"`
 	LinkID    int64  `path:"link_id" required:"true"`
 	Actor     string `query:"actor" required:"true"`
+}
+
+// RemoveProjectRequest is DELETE /api/v1/projects/{id} — archives the project
+// (#24). Force=true overrides the open-issue refusal.
+type RemoveProjectRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Actor     string `query:"actor" required:"true"`
+	Force     bool   `query:"force,omitempty"`
+}
+
+// RemoveProjectResponse carries the archived project + the project.removed
+// event the caller can replay or display.
+type RemoveProjectResponse struct {
+	Body struct {
+		Project ProjectOut `json:"project"`
+		Event   *db.Event  `json:"event"`
+	}
+}
+
+// DetachProjectAliasRequest is DELETE /api/v1/projects/{id}/aliases/{alias_id}.
+// Force=true overrides the last-alias refusal.
+type DetachProjectAliasRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	AliasID   int64  `path:"alias_id" required:"true"`
+	Actor     string `query:"actor" required:"true"`
+	Force     bool   `query:"force,omitempty"`
+}
+
+// DetachProjectAliasResponse carries the dropped alias + the
+// project.alias_removed event.
+type DetachProjectAliasResponse struct {
+	Body struct {
+		Alias db.ProjectAlias `json:"alias"`
+		Event *db.Event       `json:"event"`
+	}
 }
 
 // AddLabelRequest is POST /api/v1/projects/{id}/issues/{number}/labels.

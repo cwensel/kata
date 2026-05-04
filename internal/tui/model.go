@@ -21,6 +21,7 @@ const (
 	viewDetail
 	viewHelp
 	viewEmpty
+	viewProjects
 )
 
 // Model is the top-level Bubble Tea model. Sub-views are embedded by
@@ -53,9 +54,23 @@ type Model struct {
 	sseCh          chan tea.Msg
 	sseStatus      sseConnState
 	pendingRefetch bool
-	cache          *issueCache
-	toast          *toast
-	toastNow       func() time.Time
+	// projectsStale flags that the projects table needs a refetch. Set by
+	// the SSE event router when an event's project_id matches a row in
+	// m.projectsByID and viewProjects is the active view. Cleared when the
+	// debounced fetchProjectsWithStats lands. Spec §6.3.
+	projectsStale bool
+	// projectsGen increments on every stale-flip from an SSE event. The
+	// fetchProjectsWithStats cmd captures the generation at dispatch time
+	// so the projectsLoadedMsg handler can detect whether a newer event
+	// arrived while the response was in flight, and only clear stale when
+	// the response covers the latest generation. Spec §6.3.
+	projectsGen uint64
+	// projectsRefetchPending coalesces stale-flips inside the 500ms window
+	// so a burst of SSE events produces exactly one refetch.
+	projectsRefetchPending bool
+	cache                  *issueCache
+	toast                  *toast
+	toastNow               func() time.Time
 	// nextGen is the monotonic detail-open generation counter. Every
 	// open or jump allocates a fresh value via ++ so a fetch in flight
 	// from a previously-jumped issue cannot match a newly-opened issue
@@ -98,6 +113,23 @@ type Model struct {
 	// it back, and handleLabelsFetched compares msg.gen >= entry.gen
 	// to decide whether to apply the result.
 	nextLabelsGen int64
+	// projectsByID maps project_id → display name for the all-projects
+	// list view. Populated at boot and after project.* SSE events so
+	// list rows in all-projects scope can prefix the title with the
+	// owning project's name. Stays nil-safe — a missing entry renders
+	// as a numeric "[#N]" prefix instead of crashing.
+	projectsByID map[int64]string
+	// projectStats is the per-project aggregate cache populated by
+	// fetchProjectsWithStats. nil-safe: viewProjects renders rows for
+	// projects in projectsByID even if their stats haven't loaded yet.
+	projectStats map[int64]ProjectStatsSummary
+	// projectIdentByID caches each project's identity (Git URL) for the
+	// projects-view detail footer. Populated alongside projectsByID by
+	// fetchProjectsWithStats.
+	projectIdentByID map[int64]string
+	// projectsCursor is the highlighted row in viewProjects. Reset when
+	// transitioning into the view; preserved across re-renders.
+	projectsCursor int
 	// layout is the EFFECTIVE rendered layout — what the View functions
 	// actually draw. Re-evaluated on every WindowSizeMsg via
 	// resolveLayout, which consults preferredLayout + layoutLocked +
@@ -146,19 +178,22 @@ func initialModel(opts Options) Model {
 	lm.actor = resolveTUIActor()
 	uidFormat := parseUIDDisplayFormat(opts.DisplayUIDFormat)
 	return Model{
-		opts:          opts,
-		view:          viewList,
-		keymap:        newKeymap(),
-		list:          lm,
-		detail:        newDetailModel(),
-		sseCh:         make(chan tea.Msg, 16),
-		sseStatus:     sseConnected,
-		cache:         newIssueCache(),
-		toastNow:      time.Now,
-		projectLabels: newLabelCache(),
-		layout:        layoutStacked,
-		focus:         focusList,
-		uidFormat:     uidFormat,
+		opts:             opts,
+		view:             viewList,
+		keymap:           newKeymap(),
+		list:             lm,
+		detail:           newDetailModel(),
+		sseCh:            make(chan tea.Msg, 16),
+		sseStatus:        sseConnected,
+		cache:            newIssueCache(),
+		toastNow:         time.Now,
+		projectLabels:    newLabelCache(),
+		projectsByID:     map[int64]string{},
+		projectStats:     map[int64]ProjectStatsSummary{},
+		projectIdentByID: map[int64]string{},
+		layout:           layoutStacked,
+		focus:            focusList,
+		uidFormat:        uidFormat,
 	}
 }
 
@@ -193,7 +228,14 @@ func (m Model) Init() tea.Cmd {
 	if m.view == viewEmpty || m.api == nil {
 		return tea.Batch(tea.EnableBracketedPaste, m.waitForSSE())
 	}
-	return tea.Batch(tea.EnableBracketedPaste, m.fetchInitial(), m.waitForSSE())
+	if m.view == viewProjects {
+		// Boot landed on viewProjects (cwd unresolved + ≥1 project). The
+		// stats cache is already seeded by buildRunModel; skip fetchInitial
+		// (which would hit /api/v1/projects/0/issues with empty scope) and
+		// just drive SSE plus the projects-stats refetch on next event.
+		return tea.Batch(tea.EnableBracketedPaste, m.fetchProjects(), m.waitForSSE())
+	}
+	return tea.Batch(tea.EnableBracketedPaste, m.fetchInitial(), m.fetchProjects(), m.waitForSSE())
 }
 
 // waitForSSE is the bridge from the SSE goroutine into the TEA loop. It
@@ -214,6 +256,27 @@ func (m Model) waitForSSE() tea.Cmd {
 			return nil
 		}
 		return msg
+	}
+}
+
+// fetchProjects loads /api/v1/projects into projectsByID so the
+// all-projects list view can label each row with its owning project.
+// Errors degrade gracefully — rows render with a numeric "[#N]" prefix
+// when the map is missing the entry.
+func (m Model) fetchProjects() tea.Cmd {
+	api := m.api
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		summaries, err := api.ListProjects(ctx)
+		if err != nil {
+			return projectsLoadedMsg{err: err}
+		}
+		out := make(map[int64]string, len(summaries))
+		for _, p := range summaries {
+			out[p.ID] = p.Name
+		}
+		return projectsLoadedMsg{projects: out}
 	}
 }
 
@@ -297,6 +360,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// shape after.
 	if lf, ok := msg.(labelsFetchedMsg); ok {
 		m = m.handleLabelsFetched(lf)
+		return m, nil
+	}
+	if pl, ok := msg.(projectsLoadedMsg); ok {
+		// Drop stale responses entirely (success OR error). A pre-
+		// invalidation fetch (older gen) must not overwrite maps already
+		// updated by a newer in-flight or completed fetch, AND its error
+		// must not surface as a toast over fresh data — otherwise the
+		// table reverts to stale data or the user sees a misleading
+		// "failed to load" while the visible table is current. Only
+		// newer fetches (gen > current, impossible) or current-gen
+		// fetches apply. Spec §6.3.
+		if pl.gen != m.projectsGen {
+			return m, nil
+		}
+		if pl.err != nil {
+			m.toast = &toast{
+				text:      "failed to load projects: " + pl.err.Error(),
+				level:     toastError,
+				expiresAt: m.toastNow().Add(toastNoBindingTTL),
+			}
+			return m, toastExpireCmd(toastNoBindingTTL)
+		}
+		if pl.projects != nil {
+			m.projectsByID = pl.projects
+		}
+		if pl.idents != nil {
+			m.projectIdentByID = pl.idents
+		}
+		if pl.stats != nil {
+			m.projectStats = pl.stats
+			// Stats successfully landed for the current generation;
+			// consume the stale flag so a debounce timer already in
+			// flight doesn't trigger a redundant refetch. A failed fetch
+			// (pl.err != nil above) returns earlier and preserves the
+			// flag.
+			m.projectsStale = false
+		}
+		// A shrinking refetch (e.g. archive on another client) may leave
+		// m.projectsCursor past the end of the row list. Clamp here so
+		// Enter on the visually-highlighted row doesn't no-op against an
+		// out-of-range cursor in applyProjectsViewSelection.
+		rowCount := len(projectsRows(m.projectsByID, m.projectIdentByID, m.projectStats))
+		if m.projectsCursor >= rowCount {
+			m.projectsCursor = rowCount - 1
+		}
+		if m.projectsCursor < 0 {
+			m.projectsCursor = 0
+		}
+		return m, nil
+	}
+	if _, ok := msg.(projectsDebounceFireMsg); ok {
+		m.projectsRefetchPending = false
+		if m.view == viewProjects && m.projectsStale {
+			return m, m.fetchProjectsWithStats()
+		}
 		return m, nil
 	}
 	return m.dispatchToView(msg)
@@ -488,6 +606,10 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		if next, cmd, ok := m.routeGlobalKey(msg); ok {
 			return next, cmd, true
 		}
+		if m.view == viewProjects {
+			next, cmd := m.routeProjectsViewKey(msg)
+			return next, cmd, true
+		}
 		// Detail-view `e` and `c` open M4 centered forms instead of
 		// shelling out to $EDITOR. Routed at the Model level because
 		// the form lives on m.input, which detail.Update can't reach.
@@ -630,12 +752,16 @@ func (m Model) dispatchLabelFetchIfNeeded(pid int64) (Model, tea.Cmd) {
 // open detail issue. Allocates a fresh formGen so a stale editor
 // return from a previous form is rejected. Returns the model
 // untouched if there's no open detail issue.
+//
+// projectID comes from m.detail.scopePID (the issue's actual project),
+// not m.scope.projectID — the latter is 0 in all-projects scope and
+// would route the save to /api/v1/projects/0/...
 func (m Model) openBodyEditForm() Model {
 	if m.detail.issue == nil {
 		return m
 	}
 	target := formTarget{
-		projectID:   m.scope.projectID,
+		projectID:   m.detail.scopePID,
 		issueNumber: m.detail.issue.Number,
 		detailGen:   m.detail.gen,
 	}
@@ -647,13 +773,14 @@ func (m Model) openBodyEditForm() Model {
 }
 
 // openCommentForm opens the centered comment editor for the
-// currently-open detail issue.
+// currently-open detail issue. See openBodyEditForm for why projectID
+// is sourced from m.detail.scopePID, not m.scope.projectID.
 func (m Model) openCommentForm() Model {
 	if m.detail.issue == nil {
 		return m
 	}
 	target := formTarget{
-		projectID:   m.scope.projectID,
+		projectID:   m.detail.scopePID,
 		issueNumber: m.detail.issue.Number,
 		detailGen:   m.detail.gen,
 	}
@@ -1142,6 +1269,14 @@ func (m Model) commitFormInput(kind inputKind) (Model, tea.Cmd) {
 // formGen is captured before dispatch and rides on the response so
 // routeFormMutation can drop a stale response that lands after the
 // user closed this form and opened another (jobs 242/244).
+//
+// projectID resolution: when detail is active (stacked viewDetail OR
+// split-layout viewList with the detail pane focused) we use
+// m.detail.scopePID — the open issue's actual project — so a
+// child-create from a detail opened in all-projects scope still posts
+// to the right project. Otherwise we use m.scope.projectID (the list
+// view's "n" handler is gated against all-projects scope, so this is
+// non-zero in that path).
 func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
 	if len(m.input.fields) < 5 {
 		return m, nil
@@ -1158,7 +1293,15 @@ func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
 	}
 	m.input.saving = true
 	m.input.err = ""
-	return m, dispatchFormCreateIssue(m.api, m.scope.projectID, body, m.input.formGen)
+	// detailIsActive() covers both stacked (m.view == viewDetail) and
+	// split (m.view == viewList with the detail pane focused) layouts;
+	// without it, "N" from a split-layout detail in all-projects scope
+	// would dispatch a create against m.scope.projectID == 0.
+	pid := m.scope.projectID
+	if m.detailIsActive() && m.detail.scopePID != 0 {
+		pid = m.detail.scopePID
+	}
+	return m, dispatchFormCreateIssue(m.api, pid, body, m.input.formGen)
 }
 
 func newIssueBodyFromForm(fields []inputField, actor string) (CreateIssueBody, error) {
@@ -1333,8 +1476,8 @@ func (m Model) routeGlobalKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	if m.keymap.Help.matches(msg) {
 		return m.toggleHelp(), nil, true
 	}
-	if m.keymap.ToggleScope.matches(msg) {
-		next, cmd := m.handleScopeToggle()
+	if m.keymap.Projects.matches(msg) {
+		next, cmd := m.transitionToProjects()
 		return next, cmd, true
 	}
 	if m.keymap.ToggleLayout.matches(msg) {
@@ -1502,6 +1645,14 @@ func (m Model) handleEventReceived(msg eventReceivedMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, debouncedRefetch(refetchDebounce))
 		}
 	}
+	if m.view == viewProjects && eventAffectsProjectsTable(msg) {
+		m.projectsStale = true
+		m.projectsGen++
+		if !m.projectsRefetchPending {
+			m.projectsRefetchPending = true
+			cmds = append(cmds, projectsDebounceCmd())
+		}
+	}
 	if cmd := m.maybeRefetchOpenDetail(msg); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
@@ -1647,6 +1798,8 @@ func (m Model) handleRefetchTick() (tea.Model, tea.Cmd) {
 func (m Model) handleResetRequired(_ resetRequiredMsg) (tea.Model, tea.Cmd) {
 	m.cache.drop()
 	m.pendingRefetch = false
+	m.projectsStale = false
+	m.projectsRefetchPending = false
 	m.toast = &toast{
 		text:      "resynced",
 		level:     toastInfo,
@@ -1662,6 +1815,12 @@ func (m Model) handleResetRequired(_ resetRequiredMsg) (tea.Model, tea.Cmd) {
 		// the next render.
 		if cmd := m.refetchOpenDetail(); cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+		// If the user is in viewProjects, the table numbers are also
+		// stale — without this, the "resynced" toast lies because the
+		// per-project counts wouldn't reflect the post-reset state.
+		if m.view == viewProjects {
+			cmds = append(cmds, m.fetchProjectsWithStats())
 		}
 	}
 	return m, tea.Batch(cmds...)
@@ -2111,7 +2270,18 @@ func (m Model) View() string {
 	// modal would silently disappear and the user would be stuck —
 	// pressing q again would only re-trigger the (invisible) modal.
 	if m.width > 0 && m.width < 80 {
-		body := renderTooNarrow(m.width, m.height)
+		// viewProjects renders its own narrow-friendly body; every other
+		// view falls back to the "too narrow" hint. Either way an active
+		// modal/form must layer on top — without that, a quit-confirm
+		// opened at full width would silently disappear under the
+		// projects view after a resize below threshold (mirror of the
+		// roborev #250 incident on the regular narrow path).
+		var body string
+		if m.view == viewProjects {
+			body = renderProjects(m)
+		} else {
+			body = renderTooNarrow(m.width, m.height)
+		}
 		if m.modal == modalQuitConfirm {
 			return overlayModal(body, renderQuitConfirmModal(), m.width, m.height)
 		}
@@ -2231,6 +2401,8 @@ func (m Model) viewBody() string {
 		return renderHelp(m.keymap, m.width, m.list.filter)
 	case viewEmpty:
 		return renderEmpty(m.width, m.height)
+	case viewProjects:
+		return renderProjects(m)
 	}
 	if m.layout == layoutSplit {
 		return renderSplit(m)
@@ -2251,11 +2423,12 @@ func (m Model) viewBody() string {
 // this keeps the sub-views free of Model coupling.
 func (m Model) chrome() viewChrome {
 	return viewChrome{
-		scope:     m.scope,
-		sseStatus: m.sseStatus,
-		pending:   m.pendingRefetch,
-		toast:     m.toast,
-		version:   kataVersion,
-		input:     m.input,
+		scope:        m.scope,
+		sseStatus:    m.sseStatus,
+		pending:      m.pendingRefetch,
+		toast:        m.toast,
+		version:      kataVersion,
+		input:        m.input,
+		projectsByID: m.projectsByID,
 	}
 }

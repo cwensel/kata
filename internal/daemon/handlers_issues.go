@@ -31,11 +31,8 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-			}
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 
 		links := make([]db.InitialLink, 0, len(in.Body.Links))
@@ -84,6 +81,8 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		case errors.Is(err, db.ErrParentAlreadySet):
 			return nil, api.NewError(409, "parent_already_set",
 				"duplicate parent in initial links", "pass at most one parent link", nil)
+		case errors.Is(err, db.ErrNotFound):
+			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
 		case err != nil:
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
@@ -101,11 +100,8 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/projects/{project_id}/issues",
 	}, func(ctx context.Context, in *api.ListIssuesRequest) (*api.ListIssuesResponse, error) {
-		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-			}
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 		issues, err := cfg.DB.ListIssues(ctx, db.ListIssuesParams{
 			ProjectID: in.ProjectID,
@@ -125,16 +121,44 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 	})
 
 	huma.Register(humaAPI, huma.Operation{
+		OperationID: "listAllIssues",
+		Method:      "GET",
+		Path:        "/api/v1/issues",
+	}, func(ctx context.Context, in *api.ListAllIssuesRequest) (*api.ListIssuesResponse, error) {
+		if in.ProjectID < 0 {
+			return nil, api.NewError(400, "validation",
+				"project_id must be a positive integer", "", nil)
+		}
+		if in.ProjectID > 0 {
+			if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+				return nil, err
+			}
+		}
+		issues, err := cfg.DB.ListAllIssues(ctx, db.ListAllIssuesParams{
+			ProjectID: in.ProjectID,
+			Status:    in.Status,
+			Limit:     in.Limit,
+		})
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		issueOuts, err := hydrateIssueOutsCrossProject(ctx, cfg.DB, issues)
+		out := &api.ListIssuesResponse{}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out.Body.Issues = issueOuts
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
 		OperationID: "showIssue",
 		Method:      "GET",
 		Path:        "/api/v1/projects/{project_id}/issues/{number}",
 	}, func(ctx context.Context, in *api.ShowIssueRequest) (*api.ShowIssueResponse, error) {
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		return buildShowIssueResponse(ctx, cfg, issue, in.IncludeDeleted)
 	})
@@ -148,6 +172,12 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, err
 		}
+		// Hide issues whose parent project is archived, mirroring every
+		// other project-scoped handler. The UID lookup itself returns the
+		// row regardless of project archive state.
+		if _, perr := activeProjectByID(ctx, cfg.DB, issue.ProjectID); perr != nil {
+			return nil, perr
+		}
 		return buildShowIssueResponse(ctx, cfg, issue, in.IncludeDeleted)
 	})
 
@@ -159,12 +189,9 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		updated, evt, changed, err := cfg.DB.EditIssue(ctx, db.EditIssueParams{
 			IssueID: issue.ID,
@@ -289,6 +316,37 @@ func loadParentRef(ctx context.Context, store *db.DB, issue db.Issue) (*api.Issu
 	}
 	ref := issueRefFromDB(parent)
 	return &ref, nil
+}
+
+// hydrateIssueOutsCrossProject hydrates labels/parent/child-counts for issues
+// that may span multiple projects. Per-project hydration helpers
+// (LabelsByIssues, ParentNumbersByIssues, ChildCountsByParents) all scope by
+// project_id, so we group by ProjectID and run them per group, then assemble
+// the IssueOut slice in the input order. Realistic project counts are tiny
+// (≤10) so the per-group cost is bounded.
+func hydrateIssueOutsCrossProject(ctx context.Context, store *db.DB, issues []db.Issue) ([]api.IssueOut, error) {
+	if len(issues) == 0 {
+		return []api.IssueOut{}, nil
+	}
+	byProject := map[int64][]db.Issue{}
+	for _, iss := range issues {
+		byProject[iss.ProjectID] = append(byProject[iss.ProjectID], iss)
+	}
+	rowsByID := make(map[int64]api.IssueOut, len(issues))
+	for projectID, group := range byProject {
+		hydrated, err := hydrateIssueOuts(ctx, store, projectID, group)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range hydrated {
+			rowsByID[row.ID] = row
+		}
+	}
+	out := make([]api.IssueOut, len(issues))
+	for i, iss := range issues {
+		out[i] = rowsByID[iss.ID]
+	}
+	return out, nil
 }
 
 func hydrateIssueOuts(ctx context.Context, store *db.DB, projectID int64, issues []db.Issue) ([]api.IssueOut, error) {

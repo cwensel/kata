@@ -19,7 +19,7 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // CurrentSchemaVersion returns the schema version expected by this binary.
 func CurrentSchemaVersion() int { return currentSchemaVersion }
@@ -93,6 +93,11 @@ func (d *DB) RefreshInstanceUID(ctx context.Context) error {
 // row is absent it is inserted with a fresh ULID; if present it is read into
 // d.instanceUID. Idempotent across reboots and across every Open caller (tests,
 // import target init, cutover temp DB).
+//
+// Existing DBs take the read-only fast path: a single SELECT, no write. Only
+// when the row is absent (fresh DB) do we generate a UID and run INSERT ...
+// ON CONFLICT DO NOTHING followed by a SELECT to recover whichever value won
+// a concurrent first-open race — the losing writer's INSERT is a no-op.
 func (d *DB) ensureInstanceUID(ctx context.Context) error {
 	var existing string
 	err := d.QueryRowContext(ctx,
@@ -109,10 +114,16 @@ func (d *DB) ensureInstanceUID(ctx context.Context) error {
 		return fmt.Errorf("generate instance_uid: %w", err)
 	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO meta(key, value) VALUES('instance_uid', ?)`, fresh); err != nil {
+		`INSERT INTO meta(key, value) VALUES('instance_uid', ?)
+		 ON CONFLICT(key) DO NOTHING`, fresh); err != nil {
 		return fmt.Errorf("seed instance_uid: %w", err)
 	}
-	d.instanceUID = fresh
+	var stored string
+	if err := d.QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&stored); err != nil {
+		return fmt.Errorf("read instance_uid after seed: %w", err)
+	}
+	d.instanceUID = stored
 	return nil
 }
 

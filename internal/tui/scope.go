@@ -3,34 +3,8 @@ package tui
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
-
-// handleScopeToggle implements the R binding. Today the cross-project
-// surface is gated off (the daemon has no GET /issues route), so R is
-// a toast-only no-op explaining the gate. Re-enable the actual toggle
-// once handlers_issues.go ships the cross-project endpoint and the
-// list model has a wire path that won't 404.
-//
-// The pre-gate behavior is intentionally not preserved as a fallback:
-// silently switching into a 404-backed mode would land the user on an
-// error screen with no clue why. Better to surface the gate.
-func (m Model) handleScopeToggle() (Model, tea.Cmd) {
-	return m.toastScopeGated()
-}
-
-// toastScopeGated surfaces a hint that the all-projects surface is
-// gated until the daemon ships cross-project list support. The TTL
-// matches the no-binding toast's cadence — long enough to read.
-func (m Model) toastScopeGated() (Model, tea.Cmd) {
-	m.toast = &toast{
-		text:      "all-projects not available yet (daemon route pending)",
-		level:     toastError,
-		expiresAt: m.toastNow().Add(toastNoBindingTTL),
-	}
-	return m, toastExpireCmd(toastNoBindingTTL)
-}
 
 // renderEmpty draws the centered onboarding hint shown when the daemon
 // has zero registered projects. lipgloss.Place handles vertical and

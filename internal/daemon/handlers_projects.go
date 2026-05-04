@@ -15,6 +15,76 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
+// activeIssueByNumber resolves an issue by (project_id, number) for surface
+// API handlers, gating on the parent project's archive state first. Returns
+// project_not_found 404 when the project is archived (mirroring every other
+// project-scoped handler) and issue_not_found 404 when the issue does not
+// exist. Errors are pre-wrapped api.NewError envelopes so call sites can
+// `return nil, err`.
+//
+// Internal callers that need to operate on issues whose parent project is
+// archived (merge / restore plumbing) must use store.IssueByNumber directly.
+func activeIssueByNumber(ctx context.Context, store *db.DB, projectID, number int64) (db.Issue, error) {
+	if _, err := activeProjectByID(ctx, store, projectID); err != nil {
+		return db.Issue{}, err
+	}
+	issue, err := store.IssueByNumber(ctx, projectID, number)
+	if errors.Is(err, db.ErrNotFound) {
+		return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+	}
+	if err != nil {
+		return db.Issue{}, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return issue, nil
+}
+
+// activeProjectByID resolves a project by rowid for surface API handlers
+// that should treat archived projects as not-found. Returns the api.NewError
+// envelope directly so call sites can `return nil, err`.
+//
+// Internal helpers (merge, restore, alias resolve) that need to operate on
+// archived rows must use store.ProjectByID directly.
+func activeProjectByID(ctx context.Context, store *db.DB, id int64) (db.Project, error) {
+	p, err := store.ProjectByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return db.Project{}, api.NewError(404, "project_not_found", "project not found", "", nil)
+		}
+		return db.Project{}, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if p.DeletedAt != nil {
+		return db.Project{}, api.NewError(404, "project_not_found", "project not found", "", nil)
+	}
+	return p, nil
+}
+
+// dbProjectToOut maps a db.Project (internal row) to the API-shape
+// ProjectOut. Stats stays nil — that field is populated only by the
+// list-projects handler when ?include=stats is set (Task 3).
+func dbProjectToOut(p db.Project) api.ProjectOut {
+	return api.ProjectOut{
+		ID:              p.ID,
+		UID:             p.UID,
+		Identity:        p.Identity,
+		Name:            p.Name,
+		CreatedAt:       p.CreatedAt,
+		NextIssueNumber: p.NextIssueNumber,
+		DeletedAt:       p.DeletedAt,
+	}
+}
+
+// includeContains reports whether the comma-separated ?include= value
+// names the given token. Whitespace is trimmed; matching is case-
+// insensitive on the token side. Spec §7.1.
+func includeContains(includeParam, token string) bool {
+	for _, part := range strings.Split(includeParam, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), token) {
+			return true
+		}
+	}
+	return false
+}
+
 // registerProjectsHandlers installs project-scoped routes (resolve, init, list,
 // show) on humaAPI. Resolution and init semantics live entirely on the daemon
 // per spec §2.4 so all clients (CLI, TUI, future) see identical behavior.
@@ -50,13 +120,34 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		OperationID: "listProjects",
 		Method:      "GET",
 		Path:        "/api/v1/projects",
-	}, func(ctx context.Context, _ *struct{}) (*api.ListProjectsResponse, error) {
+	}, func(ctx context.Context, in *struct {
+		Include string `query:"include"`
+	}) (*api.ListProjectsResponse, error) {
 		ps, err := cfg.DB.ListProjects(ctx)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+		outs := make([]api.ProjectOut, len(ps))
+		for i, p := range ps {
+			outs[i] = dbProjectToOut(p)
+		}
+		if includeContains(in.Include, "stats") {
+			stats, err := cfg.DB.BatchProjectStats(ctx)
+			if err != nil {
+				return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			}
+			for i, p := range ps {
+				if s, ok := stats[p.ID]; ok {
+					outs[i].Stats = &api.ProjectStatsOut{
+						Open:        s.Open,
+						Closed:      s.Closed,
+						LastEventAt: s.LastEventAt,
+					}
+				}
+			}
+		}
 		out := &api.ListProjectsResponse{}
-		out.Body.Projects = ps
+		out.Body.Projects = outs
 		return out, nil
 	})
 
@@ -67,6 +158,9 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	}, func(ctx context.Context, in *api.ResetCounterRequest) (*api.ResetCounterResponse, error) {
 		if in.Body.To < 1 {
 			return nil, api.NewError(400, "validation", "to must be >= 1", "", nil)
+		}
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 		err := cfg.DB.ResetIssueCounter(ctx, in.ProjectID, in.Body.To)
 		if errors.Is(err, db.ErrInvalidCounterValue) {
@@ -91,7 +185,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		out := &api.ResetCounterResponse{}
-		out.Body.Project = p
+		out.Body.Project = dbProjectToOut(p)
 		return out, nil
 	})
 
@@ -102,19 +196,16 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	}, func(ctx context.Context, in *struct {
 		ProjectID int64 `path:"project_id"`
 	}) (*api.ShowProjectResponse, error) {
-		p, err := cfg.DB.ProjectByID(ctx, in.ProjectID)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-		}
+		p, err := activeProjectByID(ctx, cfg.DB, in.ProjectID)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		aliases, err := cfg.DB.ProjectAliases(ctx, p.ID)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		out := &api.ShowProjectResponse{}
-		out.Body.Project = p
+		out.Body.Project = dbProjectToOut(p)
 		out.Body.Aliases = aliases
 		return out, nil
 	})
@@ -146,13 +237,98 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 				"source and target have overlapping issue numbers",
 				"resolve collisions before merging", map[string]any{"numbers": collision.Numbers})
 		}
+		if errors.Is(err, db.ErrProjectMergeArchivedSource) {
+			return nil, api.NewError(409, "project_merge_archived_source",
+				"source project is archived", "", nil)
+		}
+		if errors.Is(err, db.ErrProjectMergeArchivedTarget) {
+			return nil, api.NewError(409, "project_merge_archived_target",
+				"target project is archived", "", nil)
+		}
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
 		}
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		return &api.MergeProjectResponse{Body: merged}, nil
+		return &api.MergeProjectResponse{Body: api.MergeProjectResultOut{
+			Source:         dbProjectToOut(merged.Source),
+			Target:         dbProjectToOut(merged.Target),
+			IssuesMoved:    merged.IssuesMoved,
+			AliasesMoved:   merged.AliasesMoved,
+			EventsMoved:    merged.EventsMoved,
+			PurgeLogsMoved: merged.PurgeLogsMoved,
+		}}, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "removeProject",
+		Method:      "DELETE",
+		Path:        "/api/v1/projects/{project_id}",
+	}, func(ctx context.Context, in *api.RemoveProjectRequest) (*api.RemoveProjectResponse, error) {
+		if err := validateActor(in.Actor); err != nil {
+			return nil, err
+		}
+		project, evt, err := cfg.DB.RemoveProject(ctx, db.RemoveProjectParams{
+			ProjectID: in.ProjectID, Actor: in.Actor, Force: in.Force,
+		})
+		switch {
+		case errors.Is(err, db.ErrNotFound):
+			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+		case errors.Is(err, db.ErrProjectAlreadyArchived):
+			return nil, api.NewError(409, "project_already_archived",
+				"project is already archived", "", nil)
+		}
+		var openErr *db.ProjectHasOpenIssuesError
+		if errors.As(err, &openErr) {
+			return nil, api.NewError(409, "project_has_open_issues",
+				"project has open issues",
+				"close or purge the open issues first, or pass force=true",
+				map[string]any{"open_issues": openErr.OpenIssues})
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: project.ID})
+		cfg.Hooks.Enqueue(*evt)
+		out := &api.RemoveProjectResponse{}
+		out.Body.Project = dbProjectToOut(project)
+		out.Body.Event = evt
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "detachProjectAlias",
+		Method:      "DELETE",
+		Path:        "/api/v1/projects/{project_id}/aliases/{alias_id}",
+	}, func(ctx context.Context, in *api.DetachProjectAliasRequest) (*api.DetachProjectAliasResponse, error) {
+		if err := validateActor(in.Actor); err != nil {
+			return nil, err
+		}
+		// (project_id, alias_id) is validated atomically inside the delete
+		// transaction so a reassignment between any preflight and the delete
+		// cannot drop an alias from a different project than the request named.
+		alias, evt, err := cfg.DB.DetachProjectAlias(ctx, db.DetachAliasParams{
+			ProjectID: in.ProjectID, AliasID: in.AliasID, Actor: in.Actor, Force: in.Force,
+		})
+		switch {
+		case errors.Is(err, db.ErrNotFound):
+			return nil, api.NewError(404, "alias_not_found",
+				"alias not found for the requested project", "", nil)
+		case errors.Is(err, db.ErrAliasIsLast):
+			return nil, api.NewError(409, "alias_is_last",
+				"alias is the only one for its project",
+				"detach with force=true to drop it anyway, or attach a replacement first", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: alias.ProjectID})
+		cfg.Hooks.Enqueue(*evt)
+		out := &api.DetachProjectAliasResponse{}
+		out.Body.Alias = alias
+		out.Body.Event = evt
+		return out, nil
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -163,6 +339,9 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		name := strings.TrimSpace(in.Body.Name)
 		if name == "" {
 			return nil, api.NewError(400, "validation", "name must be non-empty", "", nil)
+		}
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 		p, err := cfg.DB.RenameProject(ctx, in.ProjectID, name)
 		if errors.Is(err, db.ErrNotFound) {
@@ -176,7 +355,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		out := &api.ShowProjectResponse{}
-		out.Body.Project = p
+		out.Body.Project = dbProjectToOut(p)
 		out.Body.Aliases = aliases
 		return out, nil
 	})
@@ -240,7 +419,7 @@ func resolveByKataToml(ctx context.Context, store *db.DB, disc config.Discovered
 		return nil, false, err
 	}
 	return &api.ProjectResolveBody{
-		Project:       project,
+		Project:       dbProjectToOut(project),
 		Alias:         alias,
 		WorkspaceRoot: disc.WorkspaceRoot,
 	}, true, nil
@@ -275,7 +454,7 @@ func resolveByAlias(ctx context.Context, store *db.DB, disc config.DiscoveredPat
 		return nil, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	return &api.ProjectResolveBody{
-		Project:       project,
+		Project:       dbProjectToOut(project),
 		Alias:         alias,
 		WorkspaceRoot: info.RootPath,
 	}, nil
@@ -351,7 +530,7 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 	}
 
 	return &api.ProjectResolveBody{
-		Project:       project,
+		Project:       dbProjectToOut(project),
 		Alias:         alias,
 		WorkspaceRoot: dest,
 	}, created, nil
@@ -424,7 +603,12 @@ func writeDestination(disc config.DiscoveredPaths, abs string) string {
 }
 
 // upsertProject returns the existing project (created=false) when one matches
-// the identity, otherwise creates a new project (created=true).
+// the identity, otherwise creates a new project (created=true). Archived
+// (deleted_at != NULL) projects are NOT auto-resurrected — re-init against
+// an archived identity returns project_archived (409) so the operator
+// either picks a different identity or runs an explicit restore (when that
+// flow ships). The identity stays UNIQUE in projects, so a silent
+// re-create would otherwise hit a raw UNIQUE constraint error.
 func upsertProject(ctx context.Context, store *db.DB, identity, name string) (db.Project, bool, error) {
 	got, err := projectByIdentityOrAlias(ctx, store, identity)
 	if err == nil {
@@ -432,6 +616,12 @@ func upsertProject(ctx context.Context, store *db.DB, identity, name string) (db
 	}
 	if !errors.Is(err, db.ErrNotFound) {
 		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if archived, archErr := store.ProjectByIdentityIncludingArchived(ctx, identity); archErr == nil && archived.DeletedAt != nil {
+		return db.Project{}, false, api.NewError(409, "project_archived",
+			"project with this identity was archived via `kata projects remove`",
+			"restore the project (not yet supported) or pick a different identity",
+			map[string]any{"identity": identity, "deleted_at": archived.DeletedAt})
 	}
 	created, err := store.CreateProject(ctx, identity, name)
 	if err != nil {

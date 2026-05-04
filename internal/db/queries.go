@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	katauid "github.com/wesm/kata/internal/uid"
 )
@@ -32,14 +33,30 @@ func (d *DB) CreateProject(ctx context.Context, identity, name string) (Project,
 	return d.ProjectByID(ctx, id)
 }
 
-// ProjectByID fetches one project by its rowid.
+// ProjectByID fetches one project by its rowid. Archived (deleted_at != NULL)
+// projects are returned as-is so callers like the merge / restore paths can
+// see them; surface-level callers (HTTP handlers, CLI) inspect DeletedAt
+// themselves.
 func (d *DB) ProjectByID(ctx context.Context, id int64) (Project, error) {
 	row := d.QueryRowContext(ctx, projectSelect+` WHERE id = ?`, id)
 	return scanProject(row)
 }
 
-// ProjectByIdentity fetches one project by its UNIQUE identity.
+// ProjectByIdentity fetches one project by its UNIQUE identity. Archived
+// projects are excluded — resolve flow uses this and an archived project
+// must look gone from the active surface. Callers needing the row even when
+// archived (e.g. to surface a "this identity was archived" error) can
+// follow up with ProjectByIdentityIncludingArchived.
 func (d *DB) ProjectByIdentity(ctx context.Context, identity string) (Project, error) {
+	row := d.QueryRowContext(ctx,
+		projectSelect+` WHERE identity = ? AND deleted_at IS NULL`, identity)
+	return scanProject(row)
+}
+
+// ProjectByIdentityIncludingArchived returns the project even when archived.
+// Used by error-message paths that want to distinguish "no project at all"
+// from "project was archived".
+func (d *DB) ProjectByIdentityIncludingArchived(ctx context.Context, identity string) (Project, error) {
 	row := d.QueryRowContext(ctx, projectSelect+` WHERE identity = ?`, identity)
 	return scanProject(row)
 }
@@ -61,9 +78,27 @@ func (d *DB) RenameProject(ctx context.Context, id int64, name string) (Project,
 	return d.ProjectByID(ctx, id)
 }
 
-// ListProjects returns every project ordered by id ASC.
+// ListProjects returns every active project ordered by id ASC. Archived
+// projects (deleted_at != NULL) are excluded; callers needing them too can
+// use ListProjectsIncludingArchived.
 func (d *DB) ListProjects(ctx context.Context) ([]Project, error) {
-	rows, err := d.QueryContext(ctx, projectSelect+` ORDER BY id ASC`)
+	return d.listProjects(ctx, false)
+}
+
+// ListProjectsIncludingArchived returns every project including archived
+// rows. Used by surfaces that want to render archived state explicitly
+// (e.g. operator inspection or restore tooling).
+func (d *DB) ListProjectsIncludingArchived(ctx context.Context) ([]Project, error) {
+	return d.listProjects(ctx, true)
+}
+
+func (d *DB) listProjects(ctx context.Context, includeArchived bool) ([]Project, error) {
+	q := projectSelect
+	if !includeArchived {
+		q += ` WHERE deleted_at IS NULL`
+	}
+	q += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
@@ -77,6 +112,106 @@ func (d *DB) ListProjects(ctx context.Context) ([]Project, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// BatchProjectStats returns aggregate stats for every active project. The
+// result includes projects with zero issues (Open=0, Closed=0) and zero
+// events (LastEventAt=nil), driven by LEFT JOINs onto pre-aggregated
+// subqueries. Pre-aggregation matters: the naive
+// projects⋈issues⋈events GROUP BY shape would multiply each issue row by
+// each event row and inflate counts. Spec §6.1.
+func (d *DB) BatchProjectStats(ctx context.Context) (map[int64]ProjectStats, error) {
+	const q = `
+WITH
+  issue_counts AS (
+    SELECT
+      project_id,
+      SUM(CASE WHEN status = 'open'   THEN 1 ELSE 0 END) AS open_count,
+      SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed_count
+    FROM issues
+    WHERE deleted_at IS NULL
+    GROUP BY project_id
+  ),
+  event_max AS (
+    -- julianday() normalizes both T-separated RFC3339 and space/offset
+    -- legacy layouts to a numeric julian day, so MAX picks the
+    -- absolute-latest event regardless of which text format was stored.
+    -- strftime() formats it back to RFC3339Nano with a 'Z' zone, matching
+    -- the layout the rest of the code emits via strftime() on insert.
+    SELECT project_id,
+           strftime('%Y-%m-%dT%H:%M:%fZ', MAX(julianday(created_at))) AS last_event_at
+    FROM events
+    GROUP BY project_id
+  )
+SELECT
+  p.id,
+  COALESCE(ic.open_count,   0),
+  COALESCE(ic.closed_count, 0),
+  em.last_event_at
+FROM projects p
+LEFT JOIN issue_counts ic ON ic.project_id = p.id
+LEFT JOIN event_max    em ON em.project_id = p.id
+WHERE p.deleted_at IS NULL
+ORDER BY p.id`
+	rows, err := d.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("batch project stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[int64]ProjectStats{}
+	for rows.Next() {
+		var (
+			id     int64
+			open   int
+			closed int
+			ts     sql.NullString
+		)
+		if err := rows.Scan(&id, &open, &closed, &ts); err != nil {
+			return nil, fmt.Errorf("scan project stats: %w", err)
+		}
+		s := ProjectStats{Open: open, Closed: closed}
+		if ts.Valid {
+			t, err := parseSQLiteTimestamp(ts.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse last_event_at %q: %w", ts.String, err)
+			}
+			s.LastEventAt = &t
+		}
+		out[id] = s
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows: %w", err)
+	}
+	return out, nil
+}
+
+// parseSQLiteTimestamp parses a TIMESTAMP-typed column value returned as a
+// driver string. The current schema's strftime('%Y-%m-%dT%H:%M:%fZ','now')
+// produces RFC3339 with millisecond precision and a 'Z' zone, but databases
+// imported from older snapshots may carry SQLite's other supported text
+// layouts: bare ("YYYY-MM-DD HH:MM:SS[.SSS]") or zoned with an explicit
+// offset suffix (matching jsonl.parseExportTime). Fall through the layouts
+// in order; surface the original error when none match so a corrupt value
+// still returns an actionable wrap.
+func parseSQLiteTimestamp(s string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+	}
+	var firstErr error
+	for _, layout := range layouts {
+		t, err := time.Parse(layout, s)
+		if err == nil {
+			return t, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return time.Time{}, firstErr
 }
 
 // ProjectHasIssuesError is returned by ResetIssueCounter when the target
@@ -170,7 +305,7 @@ func (d *DB) AttachAlias(ctx context.Context, projectID int64, identity, kind, r
 	if err != nil {
 		return ProjectAlias{}, err
 	}
-	return d.aliasByID(ctx, id)
+	return d.AliasByID(ctx, id)
 }
 
 // AliasByIdentity returns the alias for a given alias_identity.
@@ -179,7 +314,8 @@ func (d *DB) AliasByIdentity(ctx context.Context, identity string) (ProjectAlias
 	return scanAlias(row)
 }
 
-func (d *DB) aliasByID(ctx context.Context, id int64) (ProjectAlias, error) {
+// AliasByID returns the project_aliases row with the given id.
+func (d *DB) AliasByID(ctx context.Context, id int64) (ProjectAlias, error) {
 	row := d.QueryRowContext(ctx, aliasSelect+` WHERE id = ?`, id)
 	return scanAlias(row)
 }
@@ -224,7 +360,7 @@ func (d *DB) ProjectAliases(ctx context.Context, projectID int64) ([]ProjectAlia
 }
 
 // projectSelect is the canonical SELECT list for projects rows.
-const projectSelect = `SELECT id, uid, identity, name, created_at, next_issue_number FROM projects`
+const projectSelect = `SELECT id, uid, identity, name, created_at, next_issue_number, deleted_at FROM projects`
 
 // rowScanner is the subset of *sql.Row / *sql.Rows used by scan helpers.
 type rowScanner interface {
@@ -233,7 +369,7 @@ type rowScanner interface {
 
 func scanProject(r rowScanner) (Project, error) {
 	var p Project
-	err := r.Scan(&p.ID, &p.UID, &p.Identity, &p.Name, &p.CreatedAt, &p.NextIssueNumber)
+	err := r.Scan(&p.ID, &p.UID, &p.Identity, &p.Name, &p.CreatedAt, &p.NextIssueNumber, &p.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -341,7 +477,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	if err := tx.QueryRowContext(ctx,
 		`UPDATE projects
 		 SET next_issue_number = next_issue_number + 1
-		 WHERE id = ?
+		 WHERE id = ? AND deleted_at IS NULL
 		 RETURNING next_issue_number - 1, identity, uid`, p.ProjectID).
 		Scan(&nextNum, &identity, &projectUID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -584,6 +720,49 @@ func (d *DB) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, error
 	rows, err := d.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list issues: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Issue
+	for rows.Next() {
+		i, err := scanIssue(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
+// ListAllIssuesParams filters cross-project list output. ProjectID==0 means
+// "every project"; >0 narrows to a single project. Status="" → all statuses.
+type ListAllIssuesParams struct {
+	ProjectID int64
+	Status    string
+	Limit     int
+}
+
+// ListAllIssues returns issues across one or every project, excluding
+// soft-deleted rows. Ordering is (created_at DESC, id DESC) per #22 — a
+// stable "newest first" feed across projects, distinct from the per-project
+// endpoint's updated_at-DESC ordering which leads with recent activity.
+func (d *DB) ListAllIssues(ctx context.Context, p ListAllIssuesParams) ([]Issue, error) {
+	q := issueSelect + ` WHERE i.deleted_at IS NULL AND p.deleted_at IS NULL`
+	var args []any
+	if p.ProjectID > 0 {
+		q += ` AND i.project_id = ?`
+		args = append(args, p.ProjectID)
+	}
+	if p.Status != "" {
+		q += ` AND i.status = ?`
+		args = append(args, p.Status)
+	}
+	q += ` ORDER BY i.created_at DESC, i.id DESC`
+	if p.Limit > 0 {
+		q += fmt.Sprintf(` LIMIT %d`, p.Limit)
+	}
+	rows, err := d.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list all issues: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var out []Issue

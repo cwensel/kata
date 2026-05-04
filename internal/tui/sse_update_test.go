@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // sseUpdateFixture builds a minimal Model wired for the SSE Update-side
@@ -559,4 +562,275 @@ func TestHandleToastExpired_PreservesNewerToast(t *testing.T) {
 	if mm.toast.text != "fresher" {
 		t.Fatalf("toast.text = %q, want fresher", mm.toast.text)
 	}
+}
+
+// TestProjectsView_StaleOnIssueEvent pins spec §6.3: an issue event for
+// a project the table is showing flips m.projectsStale and dispatches
+// the debounce timer. The stale-flip also bumps m.projectsGen so an
+// in-flight fetch with the older gen cannot clear stale on response.
+func TestProjectsView_StaleOnIssueEvent(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{7: "kata"}
+	startGen := m.projectsGen
+
+	out, cmd := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 7})
+	nm := out.(Model)
+	assert.True(t, nm.projectsStale)
+	assert.True(t, nm.projectsRefetchPending)
+	assert.Equal(t, startGen+1, nm.projectsGen, "stale-flip bumps gen")
+	require.NotNil(t, cmd, "first event must dispatch a debounce timer")
+}
+
+// TestProjectsView_IgnoresEventsWhenInactive pins that the same event
+// is a no-op when viewList is active — the next P-into-viewProjects
+// transition does its own refetch. Spec §6.3.
+func TestProjectsView_IgnoresEventsWhenInactive(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewList
+	m.projectsByID = map[int64]string{7: "kata"}
+
+	out, _ := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 7})
+	nm := out.(Model)
+	assert.False(t, nm.projectsStale)
+	assert.False(t, nm.projectsRefetchPending)
+}
+
+// TestProjectsView_DebouncesRefetch pins that a burst of SSE events
+// flips projectsStale once and dispatches exactly one debounce timer
+// (no thundering herd). Spec §6.3.
+func TestProjectsView_DebouncesRefetch(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{7: "kata"}
+
+	var debounceCmds int
+	for i := 0; i < 3; i++ {
+		out, cmd := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 7})
+		m = out.(Model)
+		if cmd != nil {
+			debounceCmds++
+		}
+	}
+	assert.True(t, m.projectsStale)
+	assert.True(t, m.projectsRefetchPending)
+	// sseUpdateFixture has sseCh=nil, so waitForSSE returns nil. The
+	// only non-nil cmd over the burst is the single debounce scheduled
+	// by the first event.
+	assert.Equal(t, 1, debounceCmds, "exactly one debounce timer")
+}
+
+// TestProjectsView_StaleOnUnknownProjectEvent pins that an event for a
+// projectID NOT in m.projectsByID still flips projectsStale and
+// schedules the debounce refetch. The unknown projectID is exactly the
+// signal that a new project has appeared (e.g. `kata init` ran in
+// another terminal); without this refresh, the all-projects table
+// would never learn about it until the user manually refetched.
+func TestProjectsView_StaleOnUnknownProjectEvent(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{7: "kata"}
+
+	out, cmd := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 99})
+	nm := out.(Model)
+	assert.True(t, nm.projectsStale)
+	assert.True(t, nm.projectsRefetchPending)
+	require.NotNil(t, cmd, "unknown-project event must schedule a debounced refetch")
+}
+
+// TestProjectsDebounceFire_DispatchesFetchWhenActive pins that the
+// debounce timer's wakeup dispatches fetchProjectsWithStats when the
+// user is still in viewProjects and the stale flag is set. The flag
+// is NOT cleared at dispatch — a failed fetch must leave the flag
+// armed so the next debounce can retry. The flag is cleared by
+// projectsLoadedMsg when the fetch lands successfully. Spec §6.3.
+func TestProjectsDebounceFire_DispatchesFetchWhenActive(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsStale = true
+	m.projectsRefetchPending = true
+	m.api = &Client{}
+
+	out, cmd := m.Update(projectsDebounceFireMsg{})
+	nm := out.(Model)
+	assert.False(t, nm.projectsRefetchPending, "pending flag must clear on fire")
+	assert.True(t, nm.projectsStale, "stale persists until fetch lands")
+	require.NotNil(t, cmd, "active view + stale → fetch must dispatch")
+}
+
+// TestProjectsDebounceFire_NoFetchWhenInactive pins that the timer's
+// wakeup is a no-op for the fetch when the user has navigated away
+// from viewProjects, but still clears the pending flag so future
+// invalidations can re-arm. Spec §6.3.
+func TestProjectsDebounceFire_NoFetchWhenInactive(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewList // user navigated away
+	m.projectsStale = true
+	m.projectsRefetchPending = true
+
+	out, cmd := m.Update(projectsDebounceFireMsg{})
+	nm := out.(Model)
+	assert.False(t, nm.projectsRefetchPending, "pending flag must clear regardless")
+	assert.True(t, nm.projectsStale, "stale flag preserved when fetch is skipped")
+	assert.Nil(t, cmd, "inactive view → no fetch")
+}
+
+// TestProjectsDebounceFire_NoFetchWhenNotStale pins that the timer's
+// wakeup is a no-op when the stale flag is unset (spurious fire after
+// a manual refresh that consumed staleness). Spec §6.3.
+func TestProjectsDebounceFire_NoFetchWhenNotStale(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsStale = false
+	m.projectsRefetchPending = true
+
+	out, cmd := m.Update(projectsDebounceFireMsg{})
+	nm := out.(Model)
+	assert.False(t, nm.projectsRefetchPending)
+	assert.Nil(t, cmd, "stale=false → no fetch")
+}
+
+// TestProjectsLoadedMsg_ClearsStaleOnSuccessfulStatsFetch pins that a
+// successful projectsLoadedMsg with non-nil stats clears
+// m.projectsStale, so a subsequent debounce fire (timer that was
+// already in flight before the fetch landed) doesn't trigger a
+// redundant refetch. Spec §6.3.
+func TestProjectsLoadedMsg_ClearsStaleOnSuccessfulStatsFetch(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsStale = true
+
+	msg := projectsLoadedMsg{
+		projects: map[int64]string{1: "kata"},
+		idents:   map[int64]string{1: "github.com/wesm/kata"},
+		stats:    map[int64]ProjectStatsSummary{1: {}},
+		gen:      m.projectsGen, // captures the current gen at "dispatch" time
+	}
+	out, _ := m.Update(msg)
+	nm := out.(Model)
+	assert.False(t, nm.projectsStale, "successful stats fetch clears stale")
+}
+
+// TestProjectsLoadedMsg_DropsOlderResponse pins the race: while a
+// fetchProjectsWithStats is in flight, a newer SSE invalidation can
+// flip projectsStale and bump projectsGen. The older response carries
+// the older gen and must be dropped entirely — neither updating the
+// cache maps (which would overwrite a newer in-flight fetch's data)
+// nor clearing the stale flag (which would leave the pending re-fetch
+// thinking the table is fresh).
+func TestProjectsLoadedMsg_DropsOlderResponse(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsStale = true
+	m.projectsGen = 5
+	// Pre-existing newer state — the older response must not overwrite.
+	m.projectsByID = map[int64]string{2: "newer-data"}
+	m.projectIdentByID = map[int64]string{2: "newer-ident"}
+	m.projectStats = map[int64]ProjectStatsSummary{2: {Open: 99}}
+
+	// Response carries gen=4 (an older fetch that was dispatched
+	// before the latest stale-flip).
+	msg := projectsLoadedMsg{
+		projects: map[int64]string{1: "stale-data"},
+		idents:   map[int64]string{1: "stale-ident"},
+		stats:    map[int64]ProjectStatsSummary{1: {Open: 1}},
+		gen:      4,
+	}
+	out, _ := m.Update(msg)
+	nm := out.(Model)
+	assert.True(t, nm.projectsStale, "older response must NOT clear stale")
+	assert.Equal(t, uint64(5), nm.projectsGen, "gen unchanged on response")
+	assert.Equal(t, "newer-data", nm.projectsByID[2], "older response must NOT overwrite newer data")
+	_, hasStaleData := nm.projectsByID[1]
+	assert.False(t, hasStaleData, "older response must NOT inject its data into the cache")
+}
+
+// TestProjectsLoadedMsg_PreservesStaleOnFailure pins that a failed
+// projectsLoadedMsg (carrying err) leaves m.projectsStale armed so the
+// next debounce fire retries. Spec §6.3.
+func TestProjectsLoadedMsg_PreservesStaleOnFailure(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.toastNow = func() time.Time { return now }
+	m.projectsStale = true
+
+	msg := projectsLoadedMsg{err: errors.New("fetch failed")}
+	out, _ := m.Update(msg)
+	nm := out.(Model)
+	assert.True(t, nm.projectsStale, "failed fetch must not clear stale")
+}
+
+// TestProjectsLoadedMsg_DropsOlderErrorResponse pins that an older-gen
+// failure response is dropped without surfacing a toast. If a newer
+// fetch has already landed successfully and the user is looking at
+// fresh data, an older fetch's error must NOT pop a "failed to load"
+// toast over the (current) UI. Regression for roborev job 17576.
+func TestProjectsLoadedMsg_DropsOlderErrorResponse(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsGen = 5
+	// Newer gen=5 response already landed — fresh data, stale cleared.
+	m.projectsByID = map[int64]string{2: "fresh-data"}
+	m.projectIdentByID = map[int64]string{2: "fresh-ident"}
+	m.projectStats = map[int64]ProjectStatsSummary{2: {Open: 7}}
+	m.projectsStale = false
+
+	// Older fetch (gen=4) returns with an error AFTER the newer
+	// success has already applied. Must NOT toast.
+	msg := projectsLoadedMsg{err: errors.New("fetch failed"), gen: 4}
+	out, _ := m.Update(msg)
+	nm := out.(Model)
+	assert.Nil(t, nm.toast, "older error response must not surface a toast")
+	assert.Equal(t, "fresh-data", nm.projectsByID[2],
+		"older error response must not perturb cache")
+	assert.False(t, nm.projectsStale,
+		"older error response must not re-arm stale")
+}
+
+// TestProjectsLoadedMsg_ClampsCursor pins that a refetch result with
+// fewer rows than before still leaves m.projectsCursor pointing at a
+// valid row. Without clamping, Enter on the visually-highlighted row
+// silently no-ops because applyProjectsViewSelection sees cursor out
+// of range.
+func TestProjectsLoadedMsg_ClampsCursor(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{1: "a", 2: "b", 3: "c"}
+	m.projectIdentByID = map[int64]string{1: "...", 2: "...", 3: "..."}
+	m.projectStats = map[int64]ProjectStatsSummary{1: {}, 2: {}, 3: {}}
+	m.projectsCursor = 3 // last row before shrink (sentinel + 3)
+
+	msg := projectsLoadedMsg{
+		projects: map[int64]string{1: "a"}, // 2 of 3 projects archived
+		idents:   map[int64]string{1: "..."},
+		stats:    map[int64]ProjectStatsSummary{1: {}},
+	}
+	out, _ := m.Update(msg)
+	nm := out.(Model)
+	rows := projectsRows(nm.projectsByID, nm.projectIdentByID, nm.projectStats)
+	assert.Len(t, rows, 2, "sentinel + 1 project")
+	assert.Less(t, nm.projectsCursor, len(rows), "cursor in range")
+}
+
+// TestHandleResetRequired_ClearsProjectsState pins that an SSE
+// reset_required clears the projects-view debounce flags and dispatches
+// a stats refetch when the user is in viewProjects. Without this,
+// "resynced" would lie to a viewProjects user — the table numbers
+// would lag the daemon. Spec §6.3 / §10 (resync semantics).
+func TestHandleResetRequired_ClearsProjectsState(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsStale = true
+	m.projectsRefetchPending = true
+	m.api = &Client{}
+
+	out, cmd := m.Update(resetRequiredMsg{})
+	nm := out.(Model)
+	assert.False(t, nm.projectsStale, "stale cleared")
+	assert.False(t, nm.projectsRefetchPending, "pending cleared")
+	require.NotNil(t, cmd, "must batch a fetch")
+	// The cmd is a tea.Batch — we don't introspect it (can't reliably
+	// distinguish refetch types). The flag-clearing + non-nil cmd is
+	// the load-bearing assertion.
 }

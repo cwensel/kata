@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -380,5 +383,161 @@ func TestForm_LegacyEditorReturn_FormGenZero_DoesNotRouteToFormPath(t *testing.T
 	// to the form path.
 	if got := m.input.activeField().value(); got != originalBuffer {
 		t.Fatalf("legacy return wrote into form: %q", got)
+	}
+}
+
+// TestOpenBodyEditForm_UsesDetailScopePID pins that the form built
+// when pressing 'e' on a detail opened from all-projects scope
+// targets the issue's actual project (m.detail.scopePID), not
+// m.scope.projectID — which is 0 in all-projects scope. Without
+// this, save dispatches would post to /api/v1/projects/0/...
+func TestOpenBodyEditForm_UsesDetailScopePID(t *testing.T) {
+	m := formFixture()
+	m.scope = scope{allProjects: true} // m.scope.projectID == 0
+	m.detail.scopePID = 42
+	m.detail.issue = &Issue{Number: 7, Body: "old"}
+
+	out := m.openBodyEditForm()
+	if out.input.kind != inputBodyEditForm {
+		t.Fatalf("input kind = %v, want inputBodyEditForm", out.input.kind)
+	}
+	if got := out.input.target.projectID; got != 42 {
+		t.Fatalf("target.projectID = %d, want 42 (m.detail.scopePID)", got)
+	}
+	if got := out.input.target.issueNumber; got != 7 {
+		t.Fatalf("target.issueNumber = %d, want 7", got)
+	}
+}
+
+// TestOpenCommentForm_UsesDetailScopePID — same pattern for the
+// comment form opened by 'c' on a detail in all-projects scope.
+func TestOpenCommentForm_UsesDetailScopePID(t *testing.T) {
+	m := formFixture()
+	m.scope = scope{allProjects: true}
+	m.detail.scopePID = 42
+	m.detail.issue = &Issue{Number: 7}
+
+	out := m.openCommentForm()
+	if out.input.kind != inputCommentForm {
+		t.Fatalf("input kind = %v, want inputCommentForm", out.input.kind)
+	}
+	if got := out.input.target.projectID; got != 42 {
+		t.Fatalf("target.projectID = %d, want 42 (m.detail.scopePID)", got)
+	}
+	if got := out.input.target.issueNumber; got != 7 {
+		t.Fatalf("target.issueNumber = %d, want 7", got)
+	}
+}
+
+// TestCommitNewIssueForm_SplitLayoutFocusDetail_UsesDetailScopePID
+// pins the split-layout fix: when the user presses N from a detail
+// pane that's focused in split mode (m.layout == layoutSplit,
+// m.focus == focusDetail), m.view is still viewList. The earlier
+// guard switched to m.detail.scopePID only when m.view == viewDetail,
+// which missed this case and dispatched a CreateIssue against
+// m.scope.projectID == 0 in all-projects scope. The fix uses
+// detailIsActive() so split + focusDetail also routes through
+// m.detail.scopePID. Regression for roborev job 17575.
+func TestCommitNewIssueForm_SplitLayoutFocusDetail_UsesDetailScopePID(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issue":   map[string]any{"number": 1, "title": "hi", "status": "open"},
+			"changed": true,
+		})
+	}))
+	defer srv.Close()
+
+	m := Model{
+		api:    NewClient(srv.URL, srv.Client()),
+		view:   viewList,
+		layout: layoutSplit,
+		focus:  focusDetail,
+		keymap: newKeymap(),
+		list:   listModel{actor: "tester"},
+		scope:  scope{allProjects: true},
+		detail: detailModel{
+			issue:    &Issue{Number: 7},
+			scopePID: 42,
+		},
+		cache: newIssueCache(),
+	}
+	if !m.detailIsActive() {
+		t.Fatalf("setup: detailIsActive=false in split+focusDetail; test would not exercise the gate")
+	}
+	m, _ = m.openInput(inputNewIssueForm)
+	if m.input.kind != inputNewIssueForm {
+		t.Fatalf("openInput did not produce inputNewIssueForm; got %v", m.input.kind)
+	}
+	m.input.fields[0].input.SetValue("hi")
+
+	_, cmd := m.commitNewIssueForm()
+	if cmd == nil {
+		t.Fatal("commitNewIssueForm returned no cmd; want a CreateIssue dispatch")
+	}
+	msg := cmd()
+	mut, ok := msg.(mutationDoneMsg)
+	if !ok {
+		t.Fatalf("dispatch returned %T, want mutationDoneMsg", msg)
+	}
+	if mut.err != nil {
+		t.Fatalf("CreateIssue dispatch failed: %v (path=%q)", mut.err, gotPath)
+	}
+	if !strings.Contains(gotPath, "/api/v1/projects/42/issues") {
+		t.Fatalf("URL path = %q, want /api/v1/projects/42/issues "+
+			"(split+focusDetail must use m.detail.scopePID, not m.scope.projectID=0)",
+			gotPath)
+	}
+}
+
+// TestCommitNewIssueForm_StackedViewDetail_UsesDetailScopePID pins
+// the original (pre-split) contract: from stacked viewDetail in
+// all-projects scope, the create-issue dispatch targets the issue's
+// project (m.detail.scopePID), not m.scope.projectID==0. The
+// detailIsActive() switch must keep this path working.
+func TestCommitNewIssueForm_StackedViewDetail_UsesDetailScopePID(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issue":   map[string]any{"number": 1, "title": "hi", "status": "open"},
+			"changed": true,
+		})
+	}))
+	defer srv.Close()
+
+	m := Model{
+		api:    NewClient(srv.URL, srv.Client()),
+		view:   viewDetail,
+		layout: layoutStacked,
+		keymap: newKeymap(),
+		list:   listModel{actor: "tester"},
+		scope:  scope{allProjects: true},
+		detail: detailModel{
+			issue:    &Issue{Number: 7},
+			scopePID: 42,
+		},
+		cache: newIssueCache(),
+	}
+	m, _ = m.openInput(inputNewIssueForm)
+	m.input.fields[0].input.SetValue("hi")
+
+	_, cmd := m.commitNewIssueForm()
+	if cmd == nil {
+		t.Fatal("commitNewIssueForm returned no cmd")
+	}
+	msg := cmd()
+	mut, ok := msg.(mutationDoneMsg)
+	if !ok {
+		t.Fatalf("dispatch returned %T, want mutationDoneMsg", msg)
+	}
+	if mut.err != nil {
+		t.Fatalf("CreateIssue dispatch failed: %v (path=%q)", mut.err, gotPath)
+	}
+	if !strings.Contains(gotPath, "/api/v1/projects/42/issues") {
+		t.Fatalf("URL path = %q, want /api/v1/projects/42/issues", gotPath)
 	}
 }

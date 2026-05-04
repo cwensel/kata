@@ -3,91 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
-
-// scopeFixtureSingle returns a Model in single-project scope with a
-// home project bound. The cache holds a mock entry so the toggle's
-// drop() has something to clear; tests assert it became empty.
-func scopeFixtureSingle() Model {
-	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-	m := Model{
-		view:     viewList,
-		keymap:   newKeymap(),
-		cache:    newIssueCache(),
-		toastNow: func() time.Time { return now },
-		scope: scope{
-			projectID:       7,
-			projectName:     "kata",
-			homeProjectID:   7,
-			homeProjectName: "kata",
-		},
-		list: listModel{actor: "wesm"},
-	}
-	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 1}})
-	return m
-}
-
-// TestScopeToggle_GatedNoOp: pressing R is a toast-only no-op while
-// the cross-project surface is gated. Scope must be unchanged, the
-// list cache untouched, and the toast text must explain the gate so
-// the user isn't confused by the silent no-op.
-func TestScopeToggle_GatedNoOp(t *testing.T) {
-	m := scopeFixtureSingle()
-	next, cmd := m.handleScopeToggle()
-	if next.scope.allProjects {
-		t.Fatal("scope must not flip while all-projects is gated")
-	}
-	if next.scope.projectID != 7 {
-		t.Fatalf("projectID changed: got %d, want 7", next.scope.projectID)
-	}
-	if !next.cache.set {
-		t.Fatal("cache must NOT be dropped when toggle is a no-op")
-	}
-	if next.toast == nil {
-		t.Fatal("expected gate-explanation toast")
-	}
-	if !strings.Contains(next.toast.text, "all-projects not available") {
-		t.Fatalf("toast text = %q, want hint about gated all-projects",
-			next.toast.text)
-	}
-	if cmd == nil {
-		t.Fatal("expected toast-expiry cmd")
-	}
-}
-
-// TestScopeToggle_RKeyDispatch_Gated: R at the top level still routes
-// through handleScopeToggle. The binding is wired; the toggle just
-// produces a toast instead of changing scope.
-func TestScopeToggle_RKeyDispatch_Gated(t *testing.T) {
-	m := scopeFixtureSingle()
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
-	nm := out.(Model)
-	if nm.scope.allProjects {
-		t.Fatal("R must not flip scope while all-projects is gated")
-	}
-	if nm.toast == nil {
-		t.Fatal("R must surface the gate-explanation toast")
-	}
-}
-
-// TestScopeToggle_GatedByInputting: pressing R while the M3a inline
-// command bar is open must reach the bar's textinput buffer instead
-// of toggling scope. canQuit gates global keys via m.input.kind.
-func TestScopeToggle_GatedByInputting(t *testing.T) {
-	m := scopeFixtureSingle()
-	m.input = newSearchBar(ListFilter{})
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
-	nm := out.(Model)
-	if nm.scope.allProjects {
-		t.Fatal("R toggled scope while bar was active; should be gated")
-	}
-	if v := nm.input.activeField().value(); v != "R" {
-		t.Fatalf("bar buffer = %q, want %q (rune must reach prompt)", v, "R")
-	}
-}
 
 // TestEmptyState_RendersHint: viewEmpty renders the onboarding hint
 // containing both the "no kata projects" line and the kata init hint.
