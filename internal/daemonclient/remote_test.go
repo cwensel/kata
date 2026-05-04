@@ -134,3 +134,22 @@ url = "http://127.0.0.1:1"
 	assert.Contains(t, err.Error(), ".kata.local.toml")
 	assert.ErrorIs(t, err, ErrRemoteUnavailable)
 }
+
+func TestResolveRemote_FileFoundInParentDirectory(t *testing.T) {
+	srv := pingingServer(t)
+	t.Setenv("KATA_SERVER", "")
+	parent := t.TempDir()
+	child := filepath.Join(parent, "subdir")
+	require.NoError(t, os.Mkdir(child, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(parent, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+	t.Chdir(child)
+
+	url, ok, err := resolveRemote(context.Background())
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, srv.URL, url)
+}

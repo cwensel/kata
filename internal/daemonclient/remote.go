@@ -80,6 +80,10 @@ func findLocalConfig() (root, path string, ok bool) {
 		candidate := filepath.Join(dir, config.LocalConfigFilename)
 		if _, err := os.Stat(candidate); err == nil {
 			return dir, candidate, true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			// Permission denied, broken symlink, etc. — surface to stderr
+			// so the user is not silently routed past their config file.
+			fmt.Fprintf(os.Stderr, "kata: warning: cannot stat %s: %v\n", candidate, err)
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -110,8 +114,6 @@ func normalizeRemoteURL(v string) (string, error) {
 // the budget tight: a misconfigured remote should fail fast, not stall
 // the user behind the 5-second auto-start deadline.
 func probeRemote(ctx context.Context, base string) bool {
-	probeCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-	defer cancel()
 	client := &http.Client{Timeout: 1 * time.Second}
-	return Ping(probeCtx, client, base)
+	return Ping(ctx, client, base)
 }
