@@ -169,6 +169,104 @@ func TestScenario_NavigateTabs_TabAdvancesActiveSection(t *testing.T) {
 	}
 }
 
+// TestScenario_EscReturnsFromStackedDetailToList drives the same path
+// Bubble Tea uses in the real TUI: Esc reaches the detail view, which
+// returns a popDetailMsg command, and the command is then fed back into
+// Model.Update. A submodel-only test can miss this parent handoff.
+func TestScenario_EscReturnsFromStackedDetailToList(t *testing.T) {
+	m := scenarioModel(t, 120, 30)
+	m = scenarioOpenDetail(t, m, "short body")
+	if m.view != viewDetail {
+		t.Fatalf("setup: view=%v, want viewDetail", m.view)
+	}
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatal("Esc from stacked detail returned nil cmd; want popDetailMsg")
+	}
+	out, _ = m.Update(cmd())
+	m = out.(Model)
+	if m.view != viewList {
+		t.Fatalf("Esc did not return to list: view=%v, want viewList", m.view)
+	}
+}
+
+// TestScenario_EscReturnsFromSplitDetailToList pins the split-pane
+// parent state as well as focus. Enter opens/focuses detail in split
+// mode; Esc should make the list the active view again so future
+// overlays, layout flips, and model-level gates agree with what the
+// user just did.
+func TestScenario_EscReturnsFromSplitDetailToList(t *testing.T) {
+	m := scenarioModel(t, 200, 40)
+	m = scenarioOpenDetail(t, m, "short body")
+	if m.layout != layoutSplit || m.view != viewDetail || m.focus != focusDetail {
+		t.Fatalf("setup: layout=%v view=%v focus=%v, want split/detail/detail",
+			m.layout, m.view, m.focus)
+	}
+	m = pressKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.focus != focusList {
+		t.Fatalf("Esc did not return focus to list: focus=%v", m.focus)
+	}
+	if m.view != viewList {
+		t.Fatalf("Esc left stale active view: view=%v, want viewList", m.view)
+	}
+}
+
+// TestScenario_EscPopsSplitDetailNavStackBeforeLeavingPane covers a
+// nested detail jump in split mode. Esc must first unwind the detail
+// nav stack, matching Backspace and stacked detail behavior; only a
+// second back action should leave the detail pane.
+func TestScenario_EscPopsSplitDetailNavStackBeforeLeavingPane(t *testing.T) {
+	m := scenarioModel(t, 200, 40)
+	m = scenarioOpenDetail(t, m, "parent body")
+	parent := m.detail
+	child := Issue{ProjectID: 7, Number: 2, Title: "child task", Status: "open"}
+	m.detail = detailModel{
+		issue:    &child,
+		scopePID: 7,
+		gen:      parent.gen + 1,
+		navStack: []detailModel{
+			parent,
+		},
+	}
+	m.focus = focusDetail
+	m.view = viewDetail
+
+	m = pressKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.focus != focusDetail {
+		t.Fatalf("Esc with nav stack moved focus=%v, want focusDetail", m.focus)
+	}
+	if m.detail.issue == nil || m.detail.issue.Number != 1 {
+		t.Fatalf("Esc did not pop to parent detail: issue=%+v", m.detail.issue)
+	}
+}
+
+// TestScenario_BackspaceReturnsFromSplitDetailToList exercises the
+// other key advertised by "esc/backspace back". Backspace reaches the
+// detail model first, then emits popDetailMsg; the parent handler must
+// clear split focus as well as view state.
+func TestScenario_BackspaceReturnsFromSplitDetailToList(t *testing.T) {
+	m := scenarioModel(t, 200, 40)
+	m = scenarioOpenDetail(t, m, "short body")
+	if m.layout != layoutSplit || m.view != viewDetail || m.focus != focusDetail {
+		t.Fatalf("setup: layout=%v view=%v focus=%v, want split/detail/detail",
+			m.layout, m.view, m.focus)
+	}
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatal("Backspace from split detail returned nil cmd; want popDetailMsg")
+	}
+	out, _ = m.Update(cmd())
+	m = out.(Model)
+	if m.view != viewList {
+		t.Fatalf("Backspace did not return view to list: view=%v", m.view)
+	}
+	if m.focus != focusList {
+		t.Fatalf("Backspace did not return focus to list: focus=%v", m.focus)
+	}
+}
+
 // TestScenario_LayoutToggle_LFlipsAtSplitEligibleSize: at a size that
 // triggers split layout, pressing L flips to stacked. Catches the L
 // keymap conflict (pre-93e37ec, L in detail opened the link prompt
