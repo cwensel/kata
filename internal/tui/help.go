@@ -19,10 +19,10 @@ func helpSections(km keymap) []helpSection {
 	r := func(k key) helpItem { return helpItem{keyDisplay(k), k.Help} }
 	return []helpSection{
 		{"Global", []helpItem{r(km.Help), r(km.Quit), r(km.ToggleScope), r(km.ToggleLayout)}},
-		{"Queue", []helpItem{
+		{"Graph", []helpItem{
 			r(km.Up), r(km.Down), r(km.PageUp), r(km.PageDown), r(km.Home),
 			r(km.End), r(km.Open), r(km.ExpandCollapse), r(km.NewIssue),
-			r(km.Close), r(km.Reopen),
+			r(km.SortChildren), r(km.Close), r(km.Reopen),
 		}},
 		{"Detail", []helpItem{
 			r(km.NextTab), r(km.PrevTab), r(km.JumpRef), r(km.Back),
