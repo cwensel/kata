@@ -16,6 +16,7 @@ import (
 	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/daemonclient"
 	"github.com/wesm/kata/internal/testenv"
+	"github.com/wesm/kata/internal/version"
 )
 
 // pipeServer starts a TCP listener on a random loopback port, registers
@@ -29,7 +30,12 @@ func pipeServer(t *testing.T) (addr string, cleanup func()) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/ping", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"service": "kata",
+			"version": version.Version,
+			"pid":     os.Getpid(),
+		})
 	})
 	go func() { _ = http.Serve(l, mux) }() //nolint:gosec // test-only, loopback only
 	return l.Addr().String(), func() { _ = l.Close() }

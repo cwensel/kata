@@ -7,7 +7,9 @@ package daemonclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -20,6 +22,14 @@ import (
 // socket. NewHTTPClient/NewStreamingClient detect this prefix and route
 // requests through a unix-socket transport instead of TCP DNS.
 const UnixBase = "http://kata.invalid"
+
+// PingInfo is the live daemon identity returned by /api/v1/ping.
+type PingInfo struct {
+	OK      bool   `json:"ok"`
+	Service string `json:"service"`
+	Version string `json:"version"`
+	PID     int    `json:"pid,omitempty"`
+}
 
 // Discover scans the namespace's runtime files and returns the base URL of
 // the first daemon that passes /api/v1/ping. The bool is false when none
@@ -42,37 +52,61 @@ func Discover(ctx context.Context, dataDir string) (string, bool) {
 }
 
 // pingAddress probes /api/v1/ping at a runtime-file address. Returns the
-// base URL the caller should use to reach the daemon. Only 200 succeeds, so
-// a wrong service that bound the same port is rejected.
+// base URL the caller should use to reach the daemon. Version/service
+// compatibility is enforced by EnsureRunning; plain Discover only needs
+// the endpoint to answer the kata liveness shape.
 func pingAddress(ctx context.Context, address string) (string, bool) {
+	url, _, ok := probeAddress(ctx, address)
+	return url, ok
+}
+
+func probeAddress(ctx context.Context, address string) (string, PingInfo, bool) {
 	if strings.HasPrefix(address, "unix://") {
 		path := strings.TrimPrefix(address, "unix://")
 		client := &http.Client{Transport: UnixTransport(path), Timeout: 1 * time.Second}
-		if Ping(ctx, client, UnixBase) {
-			return UnixBase, true
+		info, err := Probe(ctx, client, UnixBase)
+		if err == nil {
+			return UnixBase, info, true
 		}
-		return "", false
+		return "", PingInfo{}, false
 	}
 	url := "http://" + address
 	client := &http.Client{Timeout: 1 * time.Second}
-	if Ping(ctx, client, url) {
-		return url, true
+	info, err := Probe(ctx, client, url)
+	if err == nil {
+		return url, info, true
 	}
-	return "", false
+	return "", PingInfo{}, false
 }
 
 // Ping is true when GET base+/api/v1/ping returns 200.
 func Ping(ctx context.Context, client *http.Client, base string) bool {
+	_, err := Probe(ctx, client, base)
+	return err == nil
+}
+
+// Probe returns the daemon identity from GET base+/api/v1/ping.
+func Probe(ctx context.Context, client *http.Client, base string) (PingInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/ping", nil)
 	if err != nil {
-		return false
+		return PingInfo{}, err
 	}
 	resp, err := client.Do(req) //nolint:gosec // G107: base built from our own runtime file
 	if err != nil {
-		return false
+		return PingInfo{}, err
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return PingInfo{}, fmt.Errorf("daemon ping returned %d", resp.StatusCode)
+	}
+	var info PingInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return PingInfo{}, fmt.Errorf("decode daemon ping: %w", err)
+	}
+	if !info.OK {
+		return PingInfo{}, errors.New("daemon ping returned ok=false")
+	}
+	return info, nil
 }
 
 // UnixTransport builds a *http.Transport whose DialContext talks to the

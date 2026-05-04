@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"context"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/version"
 )
 
 // registerHealthHandlers installs /api/v1/ping and /api/v1/health on humaAPI.
@@ -22,6 +24,9 @@ func registerHealthHandlers(humaAPI huma.API, cfg ServerConfig) {
 		_ = ctx
 		out := &api.PingResponse{}
 		out.Body.OK = true
+		out.Body.Service = "kata"
+		out.Body.Version = version.Version
+		out.Body.PID = os.Getpid()
 		return out, nil
 	})
 
@@ -43,6 +48,7 @@ func registerHealthHandlers(humaAPI huma.API, cfg ServerConfig) {
 		out.Body.OK = true
 		out.Body.DBPath = cfg.DB.Path()
 		out.Body.SchemaVersion = schema
+		out.Body.Version = version.Version
 		out.Body.StartedAt = cfg.StartedAt
 		out.Body.Uptime = time.Since(cfg.StartedAt).Round(time.Second).String()
 		return out, nil

@@ -16,6 +16,7 @@ type RuntimeRecord struct {
 	PID       int       `json:"pid"`
 	Address   string    `json:"address"` // unix:///path or 127.0.0.1:7474
 	DBPath    string    `json:"db_path"`
+	Version   string    `json:"version,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 }
 

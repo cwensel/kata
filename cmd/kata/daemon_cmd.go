@@ -15,6 +15,7 @@ import (
 	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/hooks"
+	"github.com/wesm/kata/internal/version"
 )
 
 func newDaemonCmd() *cobra.Command {
@@ -51,8 +52,12 @@ func daemonStatusCmd() *cobra.Command {
 			alive := 0
 			for _, r := range recs {
 				if daemon.ProcessAlive(r.PID) {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "daemon pid=%d address=%s db=%s started_at=%s\n",
-						r.PID, r.Address, r.DBPath, r.StartedAt.Format(time.RFC3339))
+					ver := r.Version
+					if ver == "" {
+						ver = "unknown"
+					}
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "daemon pid=%d version=%s address=%s db=%s started_at=%s\n",
+						r.PID, ver, r.Address, r.DBPath, r.StartedAt.Format(time.RFC3339))
 					alive++
 				}
 			}
@@ -174,6 +179,7 @@ func runDaemon(ctx context.Context) error {
 		PID:       os.Getpid(),
 		Address:   endpoint.Address(),
 		DBPath:    dbPath,
+		Version:   version.Version,
 		StartedAt: time.Now().UTC(),
 	}
 	if _, err := daemon.WriteRuntimeFile(ns.DataDir, rec); err != nil {

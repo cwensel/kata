@@ -46,6 +46,9 @@ func newCreateCmd() *cobra.Command {
 		if strings.TrimSpace(title) == "" {
 			return &cliError{Message: "title must not be empty", Kind: kindValidation, ExitCode: ExitValidation}
 		}
+		if err := validateCreateLabels(labels); err != nil {
+			return err
+		}
 
 		ctx := cmd.Context()
 		start, err := resolveStartPath(flags.Workspace)
@@ -79,19 +82,6 @@ func newCreateCmd() *cobra.Command {
 			req["owner"] = owner
 		}
 		if len(labels) > 0 {
-			// Reject blank labels client-side so a typo or accidental
-			// "--label ''" doesn't silently succeed-with-no-label
-			// (hammer-test finding #8). The daemon would just drop
-			// the empty entry on the floor, which is confusing.
-			for _, l := range labels {
-				if strings.TrimSpace(l) == "" {
-					return &cliError{
-						Message:  "--label must not be empty",
-						Kind:     kindValidation,
-						ExitCode: ExitValidation,
-					}
-				}
-			}
 			req["labels"] = labels
 		}
 		var links []map[string]any
@@ -124,6 +114,22 @@ func newCreateCmd() *cobra.Command {
 		return printMutation(cmd, bs)
 	}
 	return cmd
+}
+
+func validateCreateLabels(labels []string) error {
+	// Reject blank labels client-side so a typo or accidental "--label ''"
+	// doesn't silently succeed-with-no-label (hammer-test finding #8). This
+	// must run before daemon resolution so validation failures are local.
+	for _, l := range labels {
+		if strings.TrimSpace(l) == "" {
+			return &cliError{
+				Message:  "--label must not be empty",
+				Kind:     kindValidation,
+				ExitCode: ExitValidation,
+			}
+		}
+	}
+	return nil
 }
 
 // resolveProjectID resolves the project ID for a given workspace start path

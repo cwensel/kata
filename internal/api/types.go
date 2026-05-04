@@ -10,7 +10,10 @@ import (
 // PingResponse mirrors the cheapest liveness response.
 type PingResponse struct {
 	Body struct {
-		OK bool `json:"ok"`
+		OK      bool   `json:"ok"`
+		Service string `json:"service"`
+		Version string `json:"version"`
+		PID     int    `json:"pid,omitempty"`
 	}
 }
 
@@ -20,6 +23,7 @@ type HealthResponse struct {
 		OK            bool      `json:"ok"`
 		DBPath        string    `json:"db_path"`
 		SchemaVersion int       `json:"schema_version"`
+		Version       string    `json:"version"`
 		Uptime        string    `json:"uptime"`
 		StartedAt     time.Time `json:"started_at"`
 	}

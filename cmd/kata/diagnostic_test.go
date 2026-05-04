@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/config"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/testenv"
 )
@@ -120,6 +121,35 @@ func TestProjectsMerge_MergesSourceSelectorIntoSurvivingTarget(t *testing.T) {
 	assert.Equal(t, "carry history forward", issue.Title)
 	_, err = env.DB.ProjectByID(ctx, kenn.ID)
 	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestProjectsMerge_RewritesWorkspaceBindingFromSourceToTarget(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	ctx := context.Background()
+	kenn, err := env.DB.CreateProject(ctx, "github.com/wesm/kenn", "steward")
+	require.NoError(t, err)
+	steward, err := env.DB.CreateProject(ctx, "github.com/wesm/steward", "steward")
+	require.NoError(t, err)
+	_, err = env.DB.AttachAlias(ctx, kenn.ID, "github.com/wesm/kenn", "git", "/tmp/kenn")
+	require.NoError(t, err)
+	_, err = env.DB.AttachAlias(ctx, steward.ID, "github.com/wesm/steward", "git", "/tmp/steward")
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	require.NoError(t, config.WriteProjectConfig(dir, "github.com/wesm/kenn", "steward"))
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--workspace", dir, "projects", "merge", "kenn", "steward"})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/steward", cfg.Project.Identity)
+	assert.Equal(t, "steward", cfg.Project.Name)
 }
 
 func TestProjectsRename_RejectsBlankName(t *testing.T) {

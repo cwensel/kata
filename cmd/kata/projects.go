@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/kata/internal/config"
 )
 
 type projectAliasRef struct {
@@ -185,14 +187,6 @@ func projectsMergeCmd() *cobra.Command {
 			if status >= 400 {
 				return apiErrFromBody(status, bs)
 			}
-			if flags.JSON {
-				var buf bytes.Buffer
-				if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
-					return err
-				}
-				_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
-				return err
-			}
 			var b struct {
 				Source       projectRef `json:"source"`
 				Target       projectRef `json:"target"`
@@ -201,6 +195,17 @@ func projectsMergeCmd() *cobra.Command {
 				EventsMoved  int64      `json:"events_moved"`
 			}
 			if err := json.Unmarshal(bs, &b); err != nil {
+				return err
+			}
+			if err := repairMergedWorkspaceBinding(source, b.Target); err != nil {
+				return err
+			}
+			if flags.JSON {
+				var buf bytes.Buffer
+				if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
+					return err
+				}
+				_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(),
@@ -215,6 +220,46 @@ func projectsMergeCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&targetName, "rename-target", "", "rename the surviving target project after merge")
 	return cmd
+}
+
+func repairMergedWorkspaceBinding(source, target projectRef) error {
+	start, err := resolveStartPath(flags.Workspace)
+	if err != nil {
+		return err
+	}
+	disc, err := config.DiscoverPaths(start)
+	if err != nil {
+		return err
+	}
+	if disc.WorkspaceRoot == "" {
+		return nil
+	}
+	cfg, err := config.ReadProjectConfig(disc.WorkspaceRoot)
+	if err != nil {
+		if errors.Is(err, config.ErrProjectConfigMissing) {
+			return nil
+		}
+		return err
+	}
+	if !projectConfigReferencesSource(cfg.Project.Identity, source) {
+		return nil
+	}
+	if err := config.WriteProjectConfig(disc.WorkspaceRoot, target.Identity, target.Name); err != nil {
+		return fmt.Errorf("repair .kata.toml after project merge: %w", err)
+	}
+	return nil
+}
+
+func projectConfigReferencesSource(identity string, source projectRef) bool {
+	if identity == source.Identity {
+		return true
+	}
+	for _, alias := range source.Aliases {
+		if identity == alias.AliasIdentity {
+			return true
+		}
+	}
+	return false
 }
 
 func projectsShowCmd() *cobra.Command {
