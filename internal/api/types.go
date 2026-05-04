@@ -29,6 +29,15 @@ type HealthResponse struct {
 	}
 }
 
+// InstanceResponse mirrors /api/v1/instance. Surfaces the local kata
+// installation's stable identifier so a future spoke client can discover the
+// peer it is connecting to.
+type InstanceResponse struct {
+	Body struct {
+		InstanceUID string `json:"instance_uid"`
+	}
+}
+
 // ResolveProjectRequest is POST /api/v1/projects/resolve.
 type ResolveProjectRequest struct {
 	Body struct {

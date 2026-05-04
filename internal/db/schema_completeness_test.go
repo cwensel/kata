@@ -37,8 +37,12 @@ func TestSchemaUIDColumnsIndexesAndTriggers(t *testing.T) {
 	assertColumn(t, d, "issues", "uid", "TEXT", true)
 	assertColumn(t, d, "links", "from_issue_uid", "TEXT", true)
 	assertColumn(t, d, "links", "to_issue_uid", "TEXT", true)
+	assertColumn(t, d, "events", "uid", "TEXT", true)
+	assertColumn(t, d, "events", "origin_instance_uid", "TEXT", true)
 	assertColumn(t, d, "events", "issue_uid", "TEXT", false)
 	assertColumn(t, d, "events", "related_issue_uid", "TEXT", false)
+	assertColumn(t, d, "purge_log", "uid", "TEXT", true)
+	assertColumn(t, d, "purge_log", "origin_instance_uid", "TEXT", true)
 	assertColumn(t, d, "purge_log", "issue_uid", "TEXT", false)
 	assertColumn(t, d, "purge_log", "project_uid", "TEXT", false)
 
@@ -47,8 +51,10 @@ func TestSchemaUIDColumnsIndexesAndTriggers(t *testing.T) {
 		"idx_links_to_uid",
 		"idx_events_issue_uid",
 		"idx_events_related_issue_uid",
+		"idx_events_origin_instance",
 		"idx_purge_log_issue_uid",
 		"idx_purge_log_project_uid",
+		"idx_purge_log_origin_instance",
 		"trg_links_uid_consistency_insert",
 		"trg_links_uid_consistency_update",
 		"trg_projects_uid_immutable",

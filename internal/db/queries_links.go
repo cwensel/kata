@@ -400,7 +400,7 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev Link
 	if err != nil {
 		return Link{}, Event{}, fmt.Errorf("marshal link payload: %w", err)
 	}
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       p.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &ev.EventIssueID,
@@ -475,7 +475,7 @@ func (d *DB) DeleteLinkAndEvent(ctx context.Context, link Link, ev LinkEventPara
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal unlink payload: %w", err)
 	}
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       link.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &ev.EventIssueID,

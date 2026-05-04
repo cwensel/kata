@@ -177,6 +177,8 @@ The HTTP server rejects any non-empty `Origin` header (including `null`), requir
 
 The schema baseline is `internal/db/migrations/0001_init.sql`. Normal version upgrades are performed by JSONL export/import cutovers instead of in-place table rebuild migrations: export the source schema exactly as stored, import into a fresh database at the binary's current schema, apply importer fill rules for older `export_version`s, validate, then atomically swap database files. The migration runner records the binary's `currentSchemaVersion` after init; `0001_init.sql` does not seed `meta.schema_version`.
 
+Beyond `schema_version`, the `meta` table also carries `instance_uid` — a single ULID identifying this kata installation, written by `db.Open` at first init and never changed afterwards (see federation-foundation spec §1.1). Every event and purge_log row carries `uid` + `origin_instance_uid` so the data is sync-ready: the daemon stamps `origin_instance_uid` from the local `meta.instance_uid` at insert time, and v2→v3 cutover backfills the same value onto historical rows.
+
 ### 3.1 DB open path
 
 Every connection runs:
@@ -343,32 +345,39 @@ CREATE TABLE issue_labels (
 CREATE INDEX idx_issue_labels_label ON issue_labels(label);
 
 CREATE TABLE events (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id       INTEGER NOT NULL REFERENCES projects(id),
-  project_identity TEXT NOT NULL,
-  issue_id         INTEGER REFERENCES issues(id),
-  issue_uid        TEXT,
-  issue_number     INTEGER,
-  related_issue_id INTEGER REFERENCES issues(id),
-  related_issue_uid TEXT,
-  type             TEXT NOT NULL,
-  actor            TEXT NOT NULL,
-  payload          TEXT NOT NULL DEFAULT '{}',
-  created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid                 TEXT NOT NULL UNIQUE,
+  origin_instance_uid TEXT NOT NULL,
+  project_id          INTEGER NOT NULL REFERENCES projects(id),
+  project_identity    TEXT NOT NULL,
+  issue_id            INTEGER REFERENCES issues(id),
+  issue_uid           TEXT,
+  issue_number        INTEGER,
+  related_issue_id    INTEGER REFERENCES issues(id),
+  related_issue_uid   TEXT,
+  type                TEXT NOT NULL,
+  actor               TEXT NOT NULL,
+  payload             TEXT NOT NULL DEFAULT '{}',
+  created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   CHECK (length(trim(actor)) > 0),
-  CHECK (json_valid(payload))
+  CHECK (json_valid(payload)),
+  CHECK (length(uid) = 26),
+  CHECK (length(origin_instance_uid) = 26)
 );
 CREATE INDEX idx_events_project ON events(project_id, id);
 CREATE INDEX idx_events_issue   ON events(issue_id, id) WHERE issue_id IS NOT NULL;
 CREATE INDEX idx_events_related ON events(related_issue_id, id) WHERE related_issue_id IS NOT NULL;
 CREATE INDEX idx_events_issue_uid ON events(issue_uid) WHERE issue_uid IS NOT NULL;
 CREATE INDEX idx_events_related_issue_uid ON events(related_issue_uid) WHERE related_issue_uid IS NOT NULL;
+CREATE INDEX idx_events_origin_instance ON events(origin_instance_uid);
 CREATE INDEX idx_events_idempotency
   ON events(project_id, json_extract(payload, '$.idempotency_key'), created_at)
   WHERE type = 'issue.created' AND json_extract(payload, '$.idempotency_key') IS NOT NULL;
 
 CREATE TABLE purge_log (
   id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid                         TEXT NOT NULL UNIQUE,
+  origin_instance_uid         TEXT NOT NULL,
   project_id                  INTEGER NOT NULL,   -- snapshot; no FK so audit survives any future project cleanup
   purged_issue_id             INTEGER NOT NULL,   -- the deleted issues.id; no FK (the row is gone)
   issue_uid                   TEXT,
@@ -387,7 +396,9 @@ CREATE TABLE purge_log (
   actor                       TEXT NOT NULL,
   reason                      TEXT,
   purged_at                   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  CHECK (length(trim(actor)) > 0)
+  CHECK (length(trim(actor)) > 0),
+  CHECK (length(uid) = 26),
+  CHECK (length(origin_instance_uid) = 26)
 );
 CREATE INDEX idx_purge_log_reset
   ON purge_log(purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
@@ -397,6 +408,7 @@ CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
 CREATE INDEX idx_purge_log_lookup ON purge_log(project_identity, issue_number);
 CREATE INDEX idx_purge_log_issue_uid ON purge_log(issue_uid) WHERE issue_uid IS NOT NULL;
 CREATE INDEX idx_purge_log_project_uid ON purge_log(project_uid) WHERE project_uid IS NOT NULL;
+CREATE INDEX idx_purge_log_origin_instance ON purge_log(origin_instance_uid);
 
 CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
@@ -494,6 +506,7 @@ Bypassed by `force_new=true` in the request body. **Idempotency wins** over `for
 ```
 GET    /api/v1/ping                                                # cheap liveness; no DB touch
 GET    /api/v1/health                                              # deep health (DB, subscribers, uptime)
+GET    /api/v1/instance                                            # local meta.instance_uid (federation discovery)
 
 POST   /api/v1/projects                                            # body: {start_path, project_identity?, name?, replace?, reassign?}; daemon parses .kata.toml. used by `kata init`.
 GET    /api/v1/projects                                            # list known projects
@@ -529,7 +542,7 @@ GET    /api/v1/events?after_id=N&limit=N                           # cross-proje
 GET    /api/v1/events/stream                                       # SSE; ?after_id or Last-Event-ID
 ```
 
-All issue/project/link/event JSON shapes include additive UID fields. `Project` includes `uid`; `Issue` includes `uid` and `project_uid`; `LinkOut` includes `from_issue_uid` and `to_issue_uid`; event envelopes include `project_uid`, `issue_uid`, and `related_issue_uid` where applicable. UIDs are never synthesized by exporters for an older source schema; importer fill rules add them while importing old JSONL into a current database.
+All issue/project/link/event JSON shapes include additive UID fields. `Project` includes `uid`; `Issue` includes `uid` and `project_uid`; `LinkOut` includes `from_issue_uid` and `to_issue_uid`; event envelopes include `event_uid`, `origin_instance_uid`, `project_uid`, `issue_uid`, and `related_issue_uid` where applicable; `PurgeLog` envelopes include `uid` and `origin_instance_uid`. The federation-foundation spec (`docs/superpowers/specs/2026-05-04-kata-federation-foundation-design.md`) covers how `event_uid` and `origin_instance_uid` interact with future sync; `event_uid` is a stable cross-instance identity but **not** a global ordering cursor — the ordered feed remains `events.id`. UIDs are never synthesized by exporters for an older source schema; importer fill rules add them while importing old JSONL into a current database.
 
 ### 4.2 Project resolution flow
 
@@ -632,7 +645,7 @@ Frame:
 ```
 id: 81235
 event: issue.commented
-data: {"event_id":81235,"type":"issue.commented","project_id":3,"project_identity":"github.com/wesm/kata","issue_number":42,"actor":"claude-4.7","payload":{"comment_id":104},"created_at":"2026-04-29T14:22:11.482Z"}
+data: {"event_id":81235,"event_uid":"01J...","origin_instance_uid":"01J...","type":"issue.commented","project_id":3,"project_identity":"github.com/wesm/kata","issue_number":42,"actor":"claude-4.7","payload":{"comment_id":104},"created_at":"2026-04-29T14:22:11.482Z"}
 ```
 
 - `event:` field = `events.type` (e.g. `issue.commented`) or `sync.reset_required`. Same fully qualified strings used in `events.type` and hook matchers.

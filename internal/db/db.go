@@ -12,12 +12,14 @@ import (
 	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver registered as "sqlite"
+
+	katauid "github.com/wesm/kata/internal/uid"
 )
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // CurrentSchemaVersion returns the schema version expected by this binary.
 func CurrentSchemaVersion() int { return currentSchemaVersion }
@@ -29,12 +31,16 @@ var ErrSchemaCutoverRequired = errors.New("schema cutover required")
 // DB wraps *sql.DB. Use Open to construct one with PRAGMAs applied.
 type DB struct {
 	*sql.DB
-	path string
+	path        string
+	instanceUID string
 }
 
 // Open opens (and if needed initializes) the kata SQLite database at path.
 // PRAGMAs are applied for every connection (via the connection string and
-// post-open exec) and pending migrations are run inside a transaction.
+// post-open exec) and pending migrations are run inside a transaction. Open is
+// the single authoritative writer of meta.instance_uid outside an import
+// transaction: after migrations, if the row is absent it generates one via
+// uid.New(). The cached value is exposed via InstanceUID for insert paths.
 func Open(ctx context.Context, path string) (*DB, error) {
 	dsn := fmt.Sprintf(
 		"file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)",
@@ -54,7 +60,43 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		_ = sdb.Close()
 		return nil, err
 	}
+	if err := d.ensureInstanceUID(ctx); err != nil {
+		_ = sdb.Close()
+		return nil, err
+	}
 	return d, nil
+}
+
+// InstanceUID returns the local kata installation's stable identifier. The
+// value is read once at Open and used to stamp origin_instance_uid on every
+// event and purge_log row written by this daemon.
+func (d *DB) InstanceUID() string { return d.instanceUID }
+
+// ensureInstanceUID is the single ownership rule for meta.instance_uid: if the
+// row is absent it is inserted with a fresh ULID; if present it is read into
+// d.instanceUID. Idempotent across reboots and across every Open caller (tests,
+// import target init, cutover temp DB).
+func (d *DB) ensureInstanceUID(ctx context.Context) error {
+	var existing string
+	err := d.QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&existing)
+	if err == nil {
+		d.instanceUID = existing
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read instance_uid: %w", err)
+	}
+	fresh, err := katauid.New()
+	if err != nil {
+		return fmt.Errorf("generate instance_uid: %w", err)
+	}
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO meta(key, value) VALUES('instance_uid', ?)`, fresh); err != nil {
+		return fmt.Errorf("seed instance_uid: %w", err)
+	}
+	d.instanceUID = fresh
+	return nil
 }
 
 // OpenReadOnly opens an existing kata database without applying migrations.

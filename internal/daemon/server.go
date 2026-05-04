@@ -151,6 +151,7 @@ func isMutation(method string) bool {
 // (Huma doesn't model streaming responses).
 func registerRoutes(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	registerHealth(humaAPI, cfg)
+	registerInstanceHandlers(humaAPI, cfg)
 	registerProjects(humaAPI, cfg)
 	registerIssues(humaAPI, cfg)
 	registerComments(humaAPI, cfg)

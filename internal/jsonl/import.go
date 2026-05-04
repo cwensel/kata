@@ -14,8 +14,24 @@ import (
 	katauid "github.com/wesm/kata/internal/uid"
 )
 
+// ImportOptions controls optional import behaviors.
+type ImportOptions struct {
+	// NewInstance preserves the target's meta.instance_uid (the value db.Open
+	// wrote on first open) instead of overwriting it with the source's. The
+	// imported events.origin_instance_uid and purge_log.origin_instance_uid
+	// columns are NOT rewritten — they preserve the original origins so a
+	// future federation loop-detector can tell which events came from the
+	// cloned-from instance versus the new local one.
+	NewInstance bool
+}
+
 // Import reads JSONL records from r and inserts them into target.
 func Import(ctx context.Context, r io.Reader, target *db.DB) error {
+	return ImportWithOptions(ctx, r, target, ImportOptions{})
+}
+
+// ImportWithOptions is like Import but applies opts to control behavior.
+func ImportWithOptions(ctx context.Context, r io.Reader, target *db.DB, opts ImportOptions) error {
 	envs, err := NewDecoder(r).ReadAll(ctx)
 	if err != nil {
 		return err
@@ -33,8 +49,18 @@ func Import(ctx context.Context, r io.Reader, target *db.DB) error {
 		return fmt.Errorf("defer foreign keys: %w", err)
 	}
 
+	// Capture the target's meta.instance_uid (set by db.Open) before the
+	// envelope loop has a chance to overwrite it. This value is the LOCAL
+	// origin used by v2→v3 fill rules even when the source's later upserts
+	// replace meta.instance_uid in the same transaction (default-mode v3
+	// import).
+	localInstanceUID, err := readMetaInstanceUID(ctx, tx)
+	if err != nil {
+		return err
+	}
+
 	for _, env := range envs {
-		if err := importEnvelope(ctx, tx, env, exportVersion); err != nil {
+		if err := importEnvelope(ctx, tx, env, exportVersion, localInstanceUID, opts); err != nil {
 			return err
 		}
 	}
@@ -51,6 +77,16 @@ func Import(ctx context.Context, r io.Reader, target *db.DB) error {
 		return fmt.Errorf("commit import: %w", err)
 	}
 	return nil
+}
+
+func readMetaInstanceUID(ctx context.Context, tx *sql.Tx) (string, error) {
+	var v string
+	err := tx.QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&v)
+	if err != nil {
+		return "", fmt.Errorf("read target instance_uid: %w", err)
+	}
+	return v, nil
 }
 
 func validateExportVersion(envs []Envelope) (int, error) {
@@ -71,7 +107,7 @@ func validateExportVersion(envs []Envelope) (int, error) {
 	return version, nil
 }
 
-func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion int) error {
+func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion int, localInstanceUID string, opts ImportOptions) error {
 	switch env.Kind {
 	case KindMeta:
 		var rec metaRecord
@@ -82,6 +118,14 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			return nil
 		}
 		if rec.Key == "schema_version" && exportVersion < db.CurrentSchemaVersion() {
+			return nil
+		}
+		// --new-instance: skip the source's meta.instance_uid record so the
+		// target keeps the value db.Open wrote. The imported events and
+		// purge_log rows still carry the source's origin_instance_uid (per
+		// §5.2): they were authored elsewhere and the new clone needs to know
+		// that for future federation loop detection.
+		if rec.Key == "instance_uid" && opts.NewInstance {
 			return nil
 		}
 		_, err := tx.ExecContext(ctx,
@@ -170,17 +214,21 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if err := fillEventUIDs(ctx, tx, &rec); err != nil {
 			return err
 		}
+		if err := fillEventV3Identity(&rec, exportVersion, localInstanceUID); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO events(id, project_id, project_identity, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid,
+			`INSERT INTO events(id, uid, origin_instance_uid, project_id, project_identity, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid,
 			                    type, actor, payload, created_at)
 			 VALUES(
-			   ?, ?, ?, ?,
+			   ?, ?, ?, ?, ?, ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 			   ?, ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 			   ?, ?, ?, ?
 			 )`,
-			rec.ID, rec.ProjectID, rec.ProjectIdentity, rec.IssueID,
+			rec.ID, rec.UID, rec.OriginInstanceUID,
+			rec.ProjectID, rec.ProjectIdentity, rec.IssueID,
 			stringPtrValue(rec.IssueUID), rec.IssueID,
 			rec.IssueNumber, rec.RelatedIssueID,
 			stringPtrValue(rec.RelatedIssueUID), rec.RelatedIssueID,
@@ -191,18 +239,22 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if err := decodeData(env, &rec); err != nil {
 			return err
 		}
+		if err := fillPurgeLogV3Identity(&rec, exportVersion, localInstanceUID); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO purge_log(id, project_id, purged_issue_id, issue_uid, project_uid, project_identity, issue_number, issue_title,
+			`INSERT INTO purge_log(id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid, project_identity, issue_number, issue_title,
 			                       issue_author, comment_count, link_count, label_count, event_count,
 			                       events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
 			                       actor, reason, purged_at)
 			 VALUES(
-			   ?, ?, ?,
+			   ?, ?, ?, ?, ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 			   COALESCE(?, (SELECT uid FROM projects WHERE id = ?)),
 			   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 			 )`,
-			rec.ID, rec.ProjectID, rec.PurgedIssueID,
+			rec.ID, rec.UID, rec.OriginInstanceUID,
+			rec.ProjectID, rec.PurgedIssueID,
 			stringPtrValue(rec.IssueUID), rec.PurgedIssueID,
 			stringPtrValue(rec.ProjectUID), rec.ProjectID,
 			rec.ProjectIdentity, rec.IssueNumber,
@@ -292,6 +344,57 @@ func fillEventUIDs(ctx context.Context, tx *sql.Tx, rec *eventRecord) error {
 			return fmt.Errorf("corrupt_event_fk: event %d related_issue_id %d: %w", rec.ID, *rec.RelatedIssueID, err)
 		}
 		rec.RelatedIssueUID = &issueUID
+	}
+	return nil
+}
+
+// fillEventV3Identity backfills events.uid + events.origin_instance_uid for
+// pre-v3 sources per spec §5.3. The event UID is deterministic across reruns
+// (FromStableSeed of project_id+id+created_at). The origin_instance_uid is the
+// destination's local instance UID — intentionally non-deterministic across
+// reruns: re-cutover from the same v2 source produces a different LOCAL and
+// therefore different origins on every backfilled event. v3 sources carry both
+// fields verbatim.
+func fillEventV3Identity(rec *eventRecord, exportVersion int, localInstanceUID string) error {
+	if exportVersion >= 3 {
+		return nil
+	}
+	if rec.UID == "" {
+		t, err := parseExportTime(rec.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("fill event uid: %w", err)
+		}
+		uid, err := katauid.FromStableSeed([]byte(fmt.Sprintf("event:%d:%d", rec.ProjectID, rec.ID)), t)
+		if err != nil {
+			return fmt.Errorf("fill event uid: %w", err)
+		}
+		rec.UID = uid
+	}
+	if rec.OriginInstanceUID == "" {
+		rec.OriginInstanceUID = localInstanceUID
+	}
+	return nil
+}
+
+// fillPurgeLogV3Identity backfills purge_log.uid + purge_log.origin_instance_uid
+// for pre-v3 sources per spec §5.3. Mirrors fillEventV3Identity.
+func fillPurgeLogV3Identity(rec *purgeLogRecord, exportVersion int, localInstanceUID string) error {
+	if exportVersion >= 3 {
+		return nil
+	}
+	if rec.UID == "" {
+		t, err := parseExportTime(rec.PurgedAt)
+		if err != nil {
+			return fmt.Errorf("fill purge_log uid: %w", err)
+		}
+		uid, err := katauid.FromStableSeed([]byte(fmt.Sprintf("purge:%d:%d", rec.ProjectID, rec.ID)), t)
+		if err != nil {
+			return fmt.Errorf("fill purge_log uid: %w", err)
+		}
+		rec.UID = uid
+	}
+	if rec.OriginInstanceUID == "" {
+		rec.OriginInstanceUID = localInstanceUID
 	}
 	return nil
 }
@@ -387,22 +490,26 @@ type linkRecord struct {
 }
 
 type eventRecord struct {
-	ID              int64           `json:"id"`
-	ProjectID       int64           `json:"project_id"`
-	ProjectIdentity string          `json:"project_identity"`
-	IssueID         *int64          `json:"issue_id"`
-	IssueUID        *string         `json:"issue_uid"`
-	IssueNumber     *int64          `json:"issue_number"`
-	RelatedIssueID  *int64          `json:"related_issue_id"`
-	RelatedIssueUID *string         `json:"related_issue_uid"`
-	Type            string          `json:"type"`
-	Actor           string          `json:"actor"`
-	Payload         json.RawMessage `json:"payload"`
-	CreatedAt       string          `json:"created_at"`
+	ID                int64           `json:"id"`
+	UID               string          `json:"uid"`
+	OriginInstanceUID string          `json:"origin_instance_uid"`
+	ProjectID         int64           `json:"project_id"`
+	ProjectIdentity   string          `json:"project_identity"`
+	IssueID           *int64          `json:"issue_id"`
+	IssueUID          *string         `json:"issue_uid"`
+	IssueNumber       *int64          `json:"issue_number"`
+	RelatedIssueID    *int64          `json:"related_issue_id"`
+	RelatedIssueUID   *string         `json:"related_issue_uid"`
+	Type              string          `json:"type"`
+	Actor             string          `json:"actor"`
+	Payload           json.RawMessage `json:"payload"`
+	CreatedAt         string          `json:"created_at"`
 }
 
 type purgeLogRecord struct {
 	ID                     int64   `json:"id"`
+	UID                    string  `json:"uid"`
+	OriginInstanceUID      string  `json:"origin_instance_uid"`
 	ProjectID              int64   `json:"project_id"`
 	PurgedIssueID          int64   `json:"purged_issue_id"`
 	IssueUID               *string `json:"issue_uid"`

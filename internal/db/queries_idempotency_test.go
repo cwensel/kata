@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/uid"
 )
 
 func TestFingerprint_DeterministicOverInputOrder(t *testing.T) {
@@ -188,12 +189,14 @@ func TestLookupIdempotency_OnlyIssueCreatedEvents(t *testing.T) {
 	// Stamp the idempotency_key onto a NON-issue.created row by inserting a
 	// fake issue.edited event. The partial index excludes this row by type;
 	// the WHERE e.type = 'issue.created' clause reinforces.
+	eventUID, err := uid.New()
+	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `
-		INSERT INTO events (project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
-		VALUES (?, ?, ?, ?, 'issue.edited', 'tester',
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester',
 		        json_object('idempotency_key', 'K1', 'idempotency_fingerprint', 'fp'),
 		        strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-		p.ID, p.Identity, issue.ID, issue.Number)
+		eventUID, p.ID, p.Identity, issue.ID, issue.Number)
 	require.NoError(t, err)
 
 	got, err := d.LookupIdempotency(ctx, p.ID, "K1", time.Now().Add(-1*time.Hour))

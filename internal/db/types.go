@@ -53,19 +53,21 @@ type Comment struct {
 
 // Event mirrors a row in events.
 type Event struct {
-	ID              int64     `json:"id"`
-	ProjectID       int64     `json:"project_id"`
-	ProjectUID      string    `json:"project_uid"`
-	ProjectIdentity string    `json:"project_identity"`
-	IssueID         *int64    `json:"issue_id,omitempty"`
-	IssueUID        *string   `json:"issue_uid,omitempty"`
-	IssueNumber     *int64    `json:"issue_number,omitempty"`
-	RelatedIssueID  *int64    `json:"related_issue_id,omitempty"`
-	RelatedIssueUID *string   `json:"related_issue_uid,omitempty"`
-	Type            string    `json:"type"`
-	Actor           string    `json:"actor"`
-	Payload         string    `json:"payload"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID                int64     `json:"id"`
+	UID               string    `json:"uid"`
+	OriginInstanceUID string    `json:"origin_instance_uid"`
+	ProjectID         int64     `json:"project_id"`
+	ProjectUID        string    `json:"project_uid"`
+	ProjectIdentity   string    `json:"project_identity"`
+	IssueID           *int64    `json:"issue_id,omitempty"`
+	IssueUID          *string   `json:"issue_uid,omitempty"`
+	IssueNumber       *int64    `json:"issue_number,omitempty"`
+	RelatedIssueID    *int64    `json:"related_issue_id,omitempty"`
+	RelatedIssueUID   *string   `json:"related_issue_uid,omitempty"`
+	Type              string    `json:"type"`
+	Actor             string    `json:"actor"`
+	Payload           string    `json:"payload"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // Link mirrors a row in links.
@@ -126,6 +128,8 @@ type IdempotencyMatch struct {
 // to the purged issue.
 type PurgeLog struct {
 	ID                     int64     `json:"id"`
+	UID                    string    `json:"uid"`
+	OriginInstanceUID      string    `json:"origin_instance_uid"`
 	ProjectID              int64     `json:"project_id"`
 	PurgedIssueID          int64     `json:"purged_issue_id"`
 	IssueUID               *string   `json:"issue_uid,omitempty"`

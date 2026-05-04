@@ -333,7 +333,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 
 	payload := buildCreatedPayload(labels, links, owner, p.IdempotencyKey, p.IdempotencyFingerprint)
 
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       p.ProjectID,
 		ProjectUID:      projectUID,
 		ProjectIdentity: identity,
@@ -557,7 +557,7 @@ func (d *DB) CreateComment(ctx context.Context, p CreateCommentParams) (Comment,
 	}
 
 	payload := fmt.Sprintf(`{"comment_id":%d}`, commentID)
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &issue.ID,
@@ -611,7 +611,7 @@ func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string
 		return Issue{}, nil, false, fmt.Errorf("close: %w", err)
 	}
 	payload := fmt.Sprintf(`{"reason":%q}`, reason)
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &issue.ID,
@@ -657,7 +657,7 @@ func (d *DB) ReopenIssue(ctx context.Context, issueID int64, actor string) (Issu
 		 WHERE id = ?`, issueID); err != nil {
 		return Issue{}, nil, false, fmt.Errorf("reopen: %w", err)
 	}
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &issue.ID,
@@ -725,7 +725,7 @@ func (d *DB) EditIssue(ctx context.Context, p EditIssueParams) (Issue, *Event, b
 	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
 		return Issue{}, nil, false, fmt.Errorf("update issue: %w", err)
 	}
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &issue.ID,
@@ -851,7 +851,7 @@ func (d *DB) UpdateOwner(ctx context.Context, issueID int64, newOwner *string, a
 		}
 		payload = string(bs)
 	}
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &issue.ID,
@@ -917,16 +917,21 @@ func (d *DB) ReadyIssues(ctx context.Context, projectID int64, limit int) ([]Iss
 	return out, rows.Err()
 }
 
-func insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Event, error) {
+func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Event, error) {
+	eventUID, err := katauid.New()
+	if err != nil {
+		return Event{}, fmt.Errorf("generate event uid: %w", err)
+	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO events(project_id, project_identity, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid, type, actor, payload)
+		`INSERT INTO events(uid, origin_instance_uid, project_id, project_identity, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid, type, actor, payload)
 		 VALUES(
-		   ?, ?, ?,
+		   ?, ?, ?, ?, ?,
 		   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 		   ?, ?,
 		   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 		   ?, ?, ?
 		 )`,
+		eventUID, d.instanceUID,
 		in.ProjectID, in.ProjectIdentity, in.IssueID,
 		stringPtrValue(in.IssueUID), in.IssueID,
 		in.IssueNumber, in.RelatedIssueID,
@@ -940,14 +945,8 @@ func insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Event, erro
 		return Event{}, err
 	}
 	var e Event
-	err = tx.QueryRowContext(ctx,
-		`SELECT e.id, e.project_id, p.uid, e.project_identity, e.issue_id, e.issue_uid,
-		        e.issue_number, e.related_issue_id, e.related_issue_uid, e.type, e.actor,
-		        e.payload, e.created_at
-		   FROM events e
-		   JOIN projects p ON p.id = e.project_id
-		  WHERE e.id = ?`, id).
-		Scan(&e.ID, &e.ProjectID, &e.ProjectUID, &e.ProjectIdentity, &e.IssueID,
+	err = tx.QueryRowContext(ctx, eventSelectByID, id).
+		Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectIdentity, &e.IssueID,
 			&e.IssueUID, &e.IssueNumber, &e.RelatedIssueID, &e.RelatedIssueUID,
 			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt)
 	if err != nil {
@@ -955,6 +954,13 @@ func insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Event, erro
 	}
 	return e, nil
 }
+
+const eventSelectByID = `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_identity,
+       e.issue_id, e.issue_uid, e.issue_number, e.related_issue_id, e.related_issue_uid,
+       e.type, e.actor, e.payload, e.created_at
+  FROM events e
+  JOIN projects p ON p.id = e.project_id
+ WHERE e.id = ?`
 
 func stringPtrValue(s *string) any {
 	if s == nil {

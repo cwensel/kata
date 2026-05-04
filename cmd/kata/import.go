@@ -13,6 +13,7 @@ func newImportCmd() *cobra.Command {
 	var input string
 	var target string
 	var force bool
+	var newInstance bool
 	cmd := &cobra.Command{
 		Use:   "import",
 		Short: "import a JSONL kata database export",
@@ -51,7 +52,9 @@ func newImportCmd() *cobra.Command {
 				return err
 			}
 			defer func() { _ = d.Close() }()
-			if err := jsonl.Import(cmd.Context(), in, d); err != nil {
+			if err := jsonl.ImportWithOptions(cmd.Context(), in, d, jsonl.ImportOptions{
+				NewInstance: newInstance,
+			}); err != nil {
 				return err
 			}
 			if !flags.Quiet && !flags.JSON {
@@ -64,5 +67,7 @@ func newImportCmd() *cobra.Command {
 	cmd.Flags().StringVar(&input, "input", "", "path to JSONL export")
 	cmd.Flags().StringVar(&target, "target", "", "database path to create")
 	cmd.Flags().BoolVar(&force, "force", false, "replace existing target database")
+	cmd.Flags().BoolVar(&newInstance, "new-instance", false,
+		"keep the target's fresh meta.instance_uid instead of overwriting it with the source's; preserves imported events' origin_instance_uid for federation loop-detection")
 	return cmd
 }

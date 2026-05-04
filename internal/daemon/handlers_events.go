@@ -142,19 +142,21 @@ func eventToEnvelope(e db.Event) api.EventEnvelope {
 		payload = json.RawMessage(e.Payload)
 	}
 	return api.EventEnvelope{
-		EventID:         e.ID,
-		Type:            e.Type,
-		ProjectID:       e.ProjectID,
-		ProjectUID:      e.ProjectUID,
-		ProjectIdentity: e.ProjectIdentity,
-		IssueID:         e.IssueID,
-		IssueUID:        e.IssueUID,
-		IssueNumber:     e.IssueNumber,
-		RelatedIssueID:  e.RelatedIssueID,
-		RelatedIssueUID: e.RelatedIssueUID,
-		Actor:           e.Actor,
-		Payload:         payload,
-		CreatedAt:       e.CreatedAt,
+		EventID:           e.ID,
+		EventUID:          e.UID,
+		OriginInstanceUID: e.OriginInstanceUID,
+		Type:              e.Type,
+		ProjectID:         e.ProjectID,
+		ProjectUID:        e.ProjectUID,
+		ProjectIdentity:   e.ProjectIdentity,
+		IssueID:           e.IssueID,
+		IssueUID:          e.IssueUID,
+		IssueNumber:       e.IssueNumber,
+		RelatedIssueID:    e.RelatedIssueID,
+		RelatedIssueUID:   e.RelatedIssueUID,
+		Actor:             e.Actor,
+		Payload:           payload,
+		CreatedAt:         e.CreatedAt,
 	}
 }
 

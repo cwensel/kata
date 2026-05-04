@@ -175,7 +175,7 @@ func (d *DB) AddLabelAndEvent(ctx context.Context, issueID int64, ev LabelEventP
 	if err != nil {
 		return IssueLabel{}, Event{}, fmt.Errorf("marshal label payload: %w", err)
 	}
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &issue.ID,
@@ -242,7 +242,7 @@ func (d *DB) RemoveLabelAndEvent(ctx context.Context, issueID int64, ev LabelEve
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal label payload: %w", err)
 	}
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &issue.ID,

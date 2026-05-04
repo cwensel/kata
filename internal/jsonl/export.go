@@ -372,6 +372,53 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	if sourceSchemaVersion < 2 {
 		return exportEventsV1(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 3 {
+		return exportEventsV2(ctx, d, enc, opts)
+	}
+	type record struct {
+		ID                int64           `json:"id"`
+		UID               string          `json:"uid"`
+		OriginInstanceUID string          `json:"origin_instance_uid"`
+		ProjectID         int64           `json:"project_id"`
+		ProjectIdentity   string          `json:"project_identity"`
+		IssueID           *int64          `json:"issue_id"`
+		IssueUID          *string         `json:"issue_uid"`
+		IssueNumber       *int64          `json:"issue_number"`
+		RelatedIssueID    *int64          `json:"related_issue_id"`
+		RelatedIssueUID   *string         `json:"related_issue_uid"`
+		Type              string          `json:"type"`
+		Actor             string          `json:"actor"`
+		Payload           json.RawMessage `json:"payload"`
+		CreatedAt         string          `json:"created_at"`
+	}
+	query := `SELECT id, uid, origin_instance_uid, project_id, project_identity, issue_id, issue_uid,
+	                 issue_number, related_issue_id, related_issue_uid,
+	                 type, actor, payload, CAST(created_at AS TEXT)
+	          FROM events`
+	where, args := eventExportWhere(opts)
+	query += where + ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export events: %w", err)
+	}
+	return scanRecords(rows, KindEvent, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		var payload string
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.ProjectIdentity, &rec.IssueID,
+			&rec.IssueUID, &rec.IssueNumber, &rec.RelatedIssueID, &rec.RelatedIssueUID,
+			&rec.Type, &rec.Actor, &payload, &rec.CreatedAt)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(payload)) {
+			return rec, fmt.Errorf("event %d payload is invalid JSON", rec.ID)
+		}
+		rec.Payload = json.RawMessage(payload)
+		return rec, nil
+	})
+}
+
+func exportEventsV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID              int64           `json:"id"`
 		ProjectID       int64           `json:"project_id"`
@@ -456,6 +503,60 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	if sourceSchemaVersion < 2 {
 		return exportPurgeLogV1(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 3 {
+		return exportPurgeLogV2(ctx, d, enc, opts)
+	}
+	type record struct {
+		ID                     int64   `json:"id"`
+		UID                    string  `json:"uid"`
+		OriginInstanceUID      string  `json:"origin_instance_uid"`
+		ProjectID              int64   `json:"project_id"`
+		PurgedIssueID          int64   `json:"purged_issue_id"`
+		IssueUID               *string `json:"issue_uid"`
+		ProjectUID             *string `json:"project_uid"`
+		ProjectIdentity        string  `json:"project_identity"`
+		IssueNumber            int64   `json:"issue_number"`
+		IssueTitle             string  `json:"issue_title"`
+		IssueAuthor            string  `json:"issue_author"`
+		CommentCount           int64   `json:"comment_count"`
+		LinkCount              int64   `json:"link_count"`
+		LabelCount             int64   `json:"label_count"`
+		EventCount             int64   `json:"event_count"`
+		EventsDeletedMinID     *int64  `json:"events_deleted_min_id"`
+		EventsDeletedMaxID     *int64  `json:"events_deleted_max_id"`
+		PurgeResetAfterEventID *int64  `json:"purge_reset_after_event_id"`
+		Actor                  string  `json:"actor"`
+		Reason                 *string `json:"reason"`
+		PurgedAt               string  `json:"purged_at"`
+	}
+	query := `SELECT id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid,
+	                 project_identity, issue_number, issue_title,
+	                 issue_author, comment_count, link_count, label_count, event_count,
+	                 events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
+	                 actor, reason, CAST(purged_at AS TEXT)
+	          FROM purge_log`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE project_id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export purge_log: %w", err)
+	}
+	return scanRecords(rows, KindPurgeLog, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.PurgedIssueID, &rec.IssueUID,
+			&rec.ProjectUID, &rec.ProjectIdentity, &rec.IssueNumber, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
+			&rec.LinkCount, &rec.LabelCount, &rec.EventCount, &rec.EventsDeletedMinID,
+			&rec.EventsDeletedMaxID, &rec.PurgeResetAfterEventID, &rec.Actor, &rec.Reason,
+			&rec.PurgedAt)
+		return rec, err
+	})
+}
+
+func exportPurgeLogV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID                     int64   `json:"id"`
 		ProjectID              int64   `json:"project_id"`

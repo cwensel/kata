@@ -90,7 +90,7 @@ func TestImportV1FillsUIDsDeterministically(t *testing.T) {
 	}
 	var schemaVersion string
 	require.NoError(t, first.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&schemaVersion))
-	assert.Equal(t, "2", schemaVersion)
+	assert.Equal(t, "3", schemaVersion)
 }
 
 func TestImportV1RejectsCorruptEventFK(t *testing.T) {

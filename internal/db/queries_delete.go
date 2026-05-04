@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	katauid "github.com/wesm/kata/internal/uid"
 )
 
 // SoftDeleteIssue sets deleted_at on the issue and emits issue.soft_deleted.
@@ -55,7 +57,7 @@ func (d *DB) SoftDeleteIssue(ctx context.Context, issueID int64, actor string) (
 		}
 		return updated, nil, false, nil
 	}
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &issue.ID,
@@ -121,7 +123,7 @@ func (d *DB) RestoreIssue(ctx context.Context, issueID int64, actor string) (Iss
 		}
 		return updated, nil, false, nil
 	}
-	evt, err := insertEventTx(ctx, tx, eventInsert{
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       issue.ProjectID,
 		ProjectIdentity: projectIdentity,
 		IssueID:         &issue.ID,
@@ -186,7 +188,7 @@ func (d *DB) PurgeIssue(ctx context.Context, issueID int64, actor string, reason
 		return PurgeLog{}, err
 	}
 
-	purgeLogID, err := purgeCascade(ctx, conn, issue, projectIdentity, actor, reason)
+	purgeLogID, err := purgeCascade(ctx, conn, issue, projectIdentity, actor, reason, d.instanceUID)
 	if err != nil {
 		return PurgeLog{}, err
 	}
@@ -221,6 +223,7 @@ func purgeCascade(
 	projectIdentity string,
 	actor string,
 	reason *string,
+	originInstanceUID string,
 ) (int64, error) {
 	// Step 2: capture the events.id range about to be cascade-deleted so the
 	// audit row records what the SSE reset cursor is reserving past.
@@ -287,15 +290,21 @@ func purgeCascade(
 		return 0, err
 	}
 
+	purgeUID, err := katauid.New()
+	if err != nil {
+		return 0, fmt.Errorf("generate purge uid: %w", err)
+	}
 	// Step 6: write the audit row. sql.NullInt64 carries through as either
 	// INTEGER or NULL; database/sql handles the marshaling.
 	res, err := c.ExecContext(ctx,
 		`INSERT INTO purge_log(
+		   uid, origin_instance_uid,
 		   project_id, purged_issue_id, issue_uid, project_uid, project_identity, issue_number,
 		   issue_title, issue_author, comment_count, link_count, label_count,
 		   event_count, events_deleted_min_id, events_deleted_max_id,
 		   purge_reset_after_event_id, actor, reason)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		purgeUID, originInstanceUID,
 		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectIdentity, issue.Number,
 		issue.Title, issue.Author, commentCount, linkCount, labelCount,
 		eventCount, minEventID, maxEventID, reservedCursor, actor, reason)
@@ -352,14 +361,14 @@ func reserveEventSequence(ctx context.Context, c connExec, hadEvents bool) (sql.
 // if the just-inserted row is missing (which would indicate a DB-level bug).
 func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) {
 	const q = `
-		SELECT id, project_id, purged_issue_id, issue_uid, project_uid, project_identity, issue_number,
-		       issue_title, issue_author, comment_count, link_count, label_count,
+		SELECT id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid,
+		       project_identity, issue_number, issue_title, issue_author, comment_count, link_count, label_count,
 		       event_count, events_deleted_min_id, events_deleted_max_id,
 		       purge_reset_after_event_id, actor, reason, purged_at
 		FROM purge_log WHERE id = ?`
 	var pl PurgeLog
 	err := r.QueryRowContext(ctx, q, id).Scan(
-		&pl.ID, &pl.ProjectID, &pl.PurgedIssueID, &pl.IssueUID,
+		&pl.ID, &pl.UID, &pl.OriginInstanceUID, &pl.ProjectID, &pl.PurgedIssueID, &pl.IssueUID,
 		&pl.ProjectUID, &pl.ProjectIdentity, &pl.IssueNumber, &pl.IssueTitle, &pl.IssueAuthor, &pl.CommentCount,
 		&pl.LinkCount, &pl.LabelCount, &pl.EventCount,
 		&pl.EventsDeletedMinID, &pl.EventsDeletedMaxID,
