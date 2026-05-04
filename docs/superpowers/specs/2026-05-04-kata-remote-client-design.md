@@ -222,7 +222,13 @@ These are captured here so the implementation plan does not silently absorb them
 4. **Identity-divergence handling.** Currently a warning. If field experience shows accidental divergence is a real source of bug-misfiling, escalate to a hard error.
 5. **`.kata.local.toml` discovery semantics.** Today: walk up from CWD, same as `.kata.toml`. If we ever support nested kata workspaces (one repo, sub-projects each with its own `.kata.toml`), the walk semantics will need a more careful spec.
 
-## 11. Implementation pointers
+## 11. Relationship to federation foundation
+
+Orthogonal. The federation foundation spec (`2026-05-04-kata-federation-foundation-design.md`) adds `meta.instance_uid`, event/purge UIDs, and `origin_instance_uid` so a future sync protocol has stable cross-instance identity. This spec changes only transport (daemon binding + client server resolution); nothing here touches schema, identity, or sync.
+
+Hosts running in remote-client mode have no local DB and therefore no local `meta.instance_uid` — every event they file inherits the *server's* instance_uid, which is correct under federation's hub-authoritative model. If a host later wants its own identity (running a local daemon for offline work, then syncing back to the hub), it switches off `KATA_SERVER` / `.kata.local.toml` and federation does its job.
+
+## 12. Implementation pointers
 
 - The `requireLoopback` private range tables exist in Go's `net` package only partially. The implementation can use `net.IP.IsPrivate()` (Go 1.17+, covers RFC1918 and ULA), `IsLoopback()`, `IsLinkLocalUnicast()`, plus an explicit CGNAT check (`100.64.0.0/10`). Each predicate is small and worth a unit test.
 - The `.gitignore` writer is a small append-with-dedup; reuse no helper, write it inline in `init.go` with a focused test. It is the kind of utility that grows wrong if abstracted prematurely.
