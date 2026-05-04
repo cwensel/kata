@@ -95,7 +95,9 @@ func (s *queueBuildState) computeIncluded() {
 		}
 		s.matched[key] = true
 		s.included[key] = true
-		s.includeAncestors(key)
+		if s.revealMatches {
+			s.includeAncestors(key)
+		}
 	}
 }
 

@@ -184,6 +184,35 @@ func TestList_StatusOpenDoesNotAutoExpandMatchingChildren(t *testing.T) {
 	}
 }
 
+func TestList_StatusOpenPromotesChildWhenParentClosed(t *testing.T) {
+	api := &fakeListAPI{}
+	km := newKeymap()
+	sc := scope{projectID: 7}
+	parent := int64(17)
+	lm := listModel{issues: []Issue{
+		{
+			ProjectID: 7, Number: parent, Status: "closed",
+			Title: "closed parent", ChildCounts: &ChildCounts{Open: 1, Total: 1},
+		},
+		{
+			ProjectID: 7, Number: 90, Status: "open",
+			Title: "open child", ParentNumber: &parent,
+		},
+	}}
+
+	lm, cmd := lm.Update(runeKey('s'), km, api, sc)
+	if cmd != nil {
+		t.Fatalf("status toggle should not dispatch a command, got %T", cmd)
+	}
+	rows := lm.visibleRows()
+	if len(rows) != 1 || rows[0].issue.Number != 90 {
+		t.Fatalf("visible rows after status=open = %+v, want promoted open child only", rows)
+	}
+	if rows[0].depth != 0 || rows[0].context {
+		t.Fatalf("open child row = %+v, want top-level non-context row", rows[0])
+	}
+}
+
 // TestList_Search_AccumulatesAndCommits drives /, then "abc", then
 // Enter through Model.Update so the M3a inline command bar handles
 // the keys. The buffer mirrors live into filter.Search on every
