@@ -13,7 +13,7 @@ import (
 
 func newShowCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "show <number>",
+		Use:   "show <issue-ref>",
 		Short: "show issue + comments",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

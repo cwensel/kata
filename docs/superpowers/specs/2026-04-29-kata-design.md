@@ -144,10 +144,12 @@ All v1 reads go through the daemon. No direct SQLite access from the CLI in v1.
 
 A future `OpenReadOnly` (no migrations, no PRAGMA mutation, schema-version check) can land later for hot paths if measured. Don't pay that complexity tax until measured.
 
-### 2.6 SSE durability
+### 2.6 Stable IDs and SSE durability
 
-- Events have monotonic `event_id` (= `events.id`), `actor`, `project_id`, `project_identity` (snapshot), `issue_id`, `issue_number`, `related_issue_id` (nullable), `type`, `payload`, `created_at`.
-- Persisted in the `events` table (which is also the audit trail).
+- Projects and issues have immutable ULID strings in `projects.uid` and `issues.uid`. `uid` is the authoritative external identity; `#N` / `number` is the human display label scoped to one project.
+- Links store both endpoint UIDs (`from_issue_uid`, `to_issue_uid`) and endpoint integer FKs (`from_issue_id`, `to_issue_id`). The integer FKs remain the hot-path join cache; triggers reject drift between the UID columns and the FK targets.
+- Event envelopes have monotonic `event_id` (= `events.id`), `actor`, `project_id`, `project_uid`, `project_identity` (snapshot), `issue_id`, `issue_uid`, `issue_number`, `related_issue_id` (nullable), `related_issue_uid` (nullable), `type`, `payload`, `created_at`.
+- Persisted rows live in the `events` table (which is also the audit trail). `project_uid` is derived from `projects.uid`; issue UIDs are stored on the event row so issue identity survives issue-row deletion until purge removes the events.
 - Daemon broadcasts only **after DB commit**, with the row's `event_id` as the SSE `id:` field.
 - **Purge reserves a synthetic SSE cursor** strictly greater than the current max `events.id`. Concretely: in the same transaction that purges an issue, if any events were deleted, the daemon advances `sqlite_sequence.seq` for `events` by one (without inserting a row) and stores that reserved value as `purge_log.purge_reset_after_event_id`. Future real `events.id` values continue from `reserved + 1`, so the synthetic cursor is unique and unattainable by any real event.
 - On reconnect with `Last-Event-ID` (or `?after_id=N`; both → 400), daemon computes `MAX(purge_reset_after_event_id) FROM purge_log WHERE purge_reset_after_event_id > <cursor>`. The per-project stream (`?project_id=N`) adds `AND project_id = ?` so a purge in some other project can't invalidate this client's cursor; the cross-project stream omits the predicate. If the result is non-null, the client's cursor is invalidated. Because every reserved cursor exceeds every event id that existed at the corresponding purge time, even a client at max-at-purge will be reset (strict `>` is correct against a strictly-greater reserved value; no off-by-one miss, no need for `>=`).
@@ -165,7 +167,7 @@ A future `OpenReadOnly` (no migrations, no PRAGMA mutation, schema-version check
 - `comments` table is append-only — no edit, no delete (purge only).
 - Issues are mutable in their current-state row; the events log captures every mutation with field diffs in `payload`.
 - Soft-delete sets `deleted_at`; reversible via `kata restore`.
-- Purge requires `kata purge <id> --force --confirm "PURGE #N"`, writes a `purge_log` row that survives the cascade, then physically removes `comments`/`links`/`labels`/`events` for the issue and the issue itself.
+- Purge requires `kata purge <id> --force --confirm "PURGE #N"`, writes a `purge_log` row that survives the cascade and includes `issue_uid` / `project_uid`, then physically removes `comments`/`links`/`labels`/`events` for the issue and the issue itself.
 
 ### 2.9 Browser CSRF defense
 
@@ -173,7 +175,7 @@ The HTTP server rejects any non-empty `Origin` header (including `null`), requir
 
 ## 3. Data Model
 
-All schema lives in numbered files under `internal/db/migrations/`. The single `0001_init.sql` baseline is below; future migrations are additive.
+The schema baseline is `internal/db/migrations/0001_init.sql`. Normal version upgrades are performed by JSONL export/import cutovers instead of in-place table rebuild migrations: export the source schema exactly as stored, import into a fresh database at the binary's current schema, apply importer fill rules for older `export_version`s, validate, then atomically swap database files. The migration runner records the binary's `currentSchemaVersion` after init; `0001_init.sql` does not seed `meta.schema_version`.
 
 ### 3.1 DB open path
 
@@ -195,10 +197,12 @@ Timestamp columns are typed `DATETIME` (not `TEXT`) so `modernc.org/sqlite v1.49
 ```sql
 CREATE TABLE projects (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid               TEXT NOT NULL UNIQUE,
   identity          TEXT UNIQUE NOT NULL,
   name              TEXT NOT NULL,
   created_at        DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   next_issue_number INTEGER NOT NULL DEFAULT 1,
+  CHECK (length(uid) = 26),
   CHECK (length(trim(identity)) > 0),
   CHECK (length(trim(name)) > 0)
 );
@@ -218,6 +222,7 @@ CREATE INDEX idx_project_aliases_project ON project_aliases(project_id);
 
 CREATE TABLE issues (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid           TEXT NOT NULL UNIQUE,
   project_id    INTEGER NOT NULL REFERENCES projects(id),
   number        INTEGER NOT NULL,
   title         TEXT NOT NULL,
@@ -231,6 +236,7 @@ CREATE TABLE issues (
   closed_at     DATETIME,
   deleted_at    DATETIME,
   UNIQUE(project_id, number),
+  CHECK (length(uid) = 26),
   CHECK (length(trim(title))  > 0),
   CHECK (length(trim(author)) > 0),
   CHECK (status = 'closed' OR (closed_at IS NULL AND closed_reason IS NULL))
@@ -258,11 +264,15 @@ CREATE TABLE links (
   project_id    INTEGER NOT NULL REFERENCES projects(id),
   from_issue_id INTEGER NOT NULL REFERENCES issues(id),
   to_issue_id   INTEGER NOT NULL REFERENCES issues(id),
+  from_issue_uid TEXT NOT NULL,
+  to_issue_uid   TEXT NOT NULL,
   type          TEXT NOT NULL CHECK(type IN ('parent','blocks','related')),
   author        TEXT NOT NULL,
   created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE(from_issue_id, to_issue_id, type),
   CHECK (from_issue_id <> to_issue_id),
+  CHECK (length(from_issue_uid) = 26),
+  CHECK (length(to_issue_uid) = 26),
   CHECK (length(trim(author)) > 0),
   CHECK (type <> 'related' OR from_issue_id < to_issue_id)
 );
@@ -271,6 +281,8 @@ CREATE UNIQUE INDEX uniq_one_parent_per_child
 CREATE INDEX idx_links_from    ON links(from_issue_id, type);
 CREATE INDEX idx_links_to      ON links(to_issue_id, type);
 CREATE INDEX idx_links_project ON links(project_id);
+CREATE INDEX idx_links_from_uid ON links(from_issue_uid);
+CREATE INDEX idx_links_to_uid   ON links(to_issue_uid);
 
 -- Enforce same-project: both endpoints must belong to links.project_id.
 CREATE TRIGGER trg_links_same_project_insert
@@ -286,6 +298,36 @@ FOR EACH ROW BEGIN
   SELECT RAISE(ABORT, 'cross-project links are not allowed')
   WHERE (SELECT project_id FROM issues WHERE id = NEW.from_issue_id) <> NEW.project_id
      OR (SELECT project_id FROM issues WHERE id = NEW.to_issue_id)   <> NEW.project_id;
+END;
+
+CREATE TRIGGER trg_links_uid_consistency_insert
+BEFORE INSERT ON links
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'from_issue_uid does not match from_issue_id')
+  WHERE NEW.from_issue_uid <> (SELECT uid FROM issues WHERE id = NEW.from_issue_id);
+  SELECT RAISE(ABORT, 'to_issue_uid does not match to_issue_id')
+  WHERE NEW.to_issue_uid <> (SELECT uid FROM issues WHERE id = NEW.to_issue_id);
+END;
+CREATE TRIGGER trg_links_uid_consistency_update
+BEFORE UPDATE ON links
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'from_issue_uid does not match from_issue_id')
+  WHERE NEW.from_issue_uid <> (SELECT uid FROM issues WHERE id = NEW.from_issue_id);
+  SELECT RAISE(ABORT, 'to_issue_uid does not match to_issue_id')
+  WHERE NEW.to_issue_uid <> (SELECT uid FROM issues WHERE id = NEW.to_issue_id);
+END;
+
+CREATE TRIGGER trg_projects_uid_immutable
+BEFORE UPDATE OF uid ON projects
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'projects.uid is immutable')
+  WHERE NEW.uid <> OLD.uid;
+END;
+CREATE TRIGGER trg_issues_uid_immutable
+BEFORE UPDATE OF uid ON issues
+FOR EACH ROW BEGIN
+  SELECT RAISE(ABORT, 'issues.uid is immutable')
+  WHERE NEW.uid <> OLD.uid;
 END;
 
 CREATE TABLE issue_labels (
@@ -305,8 +347,10 @@ CREATE TABLE events (
   project_id       INTEGER NOT NULL REFERENCES projects(id),
   project_identity TEXT NOT NULL,
   issue_id         INTEGER REFERENCES issues(id),
+  issue_uid        TEXT,
   issue_number     INTEGER,
   related_issue_id INTEGER REFERENCES issues(id),
+  related_issue_uid TEXT,
   type             TEXT NOT NULL,
   actor            TEXT NOT NULL,
   payload          TEXT NOT NULL DEFAULT '{}',
@@ -317,6 +361,8 @@ CREATE TABLE events (
 CREATE INDEX idx_events_project ON events(project_id, id);
 CREATE INDEX idx_events_issue   ON events(issue_id, id) WHERE issue_id IS NOT NULL;
 CREATE INDEX idx_events_related ON events(related_issue_id, id) WHERE related_issue_id IS NOT NULL;
+CREATE INDEX idx_events_issue_uid ON events(issue_uid) WHERE issue_uid IS NOT NULL;
+CREATE INDEX idx_events_related_issue_uid ON events(related_issue_uid) WHERE related_issue_uid IS NOT NULL;
 CREATE INDEX idx_events_idempotency
   ON events(project_id, json_extract(payload, '$.idempotency_key'), created_at)
   WHERE type = 'issue.created' AND json_extract(payload, '$.idempotency_key') IS NOT NULL;
@@ -325,6 +371,8 @@ CREATE TABLE purge_log (
   id                          INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id                  INTEGER NOT NULL,   -- snapshot; no FK so audit survives any future project cleanup
   purged_issue_id             INTEGER NOT NULL,   -- the deleted issues.id; no FK (the row is gone)
+  issue_uid                   TEXT,
+  project_uid                 TEXT,
   project_identity            TEXT NOT NULL,      -- snapshot of projects.identity at purge time
   issue_number                INTEGER NOT NULL,
   issue_title                 TEXT NOT NULL,
@@ -347,12 +395,13 @@ CREATE INDEX idx_purge_log_project_reset
   ON purge_log(project_id, purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
 CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
 CREATE INDEX idx_purge_log_lookup ON purge_log(project_identity, issue_number);
+CREATE INDEX idx_purge_log_issue_uid ON purge_log(issue_uid) WHERE issue_uid IS NOT NULL;
+CREATE INDEX idx_purge_log_project_uid ON purge_log(project_uid) WHERE project_uid IS NOT NULL;
 
 CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-INSERT INTO meta(key, value) VALUES ('schema_version', '1');
 INSERT INTO meta(key, value) VALUES ('created_by_version', '0.1.0');
 
 -- FTS5 virtual table over issue title+body+comments, kept in sync via triggers in Plan 3.
@@ -457,6 +506,7 @@ POST   /api/v1/projects/{project_id}/issues                        # body includ
 GET    /api/v1/projects/{project_id}/issues
 GET    /api/v1/projects/{project_id}/issues/{number}
 PATCH  /api/v1/projects/{project_id}/issues/{number}
+GET    /api/v1/issues/{uid_or_prefix}                              # full UID or unique prefix (min 8 chars)
 
 POST   /api/v1/projects/{project_id}/issues/{number}/actions/close
 POST   /api/v1/projects/{project_id}/issues/{number}/actions/reopen
@@ -479,6 +529,8 @@ GET    /api/v1/events?after_id=N&limit=N                           # cross-proje
 GET    /api/v1/events/stream                                       # SSE; ?after_id or Last-Event-ID
 ```
 
+All issue/project/link/event JSON shapes include additive UID fields. `Project` includes `uid`; `Issue` includes `uid` and `project_uid`; `LinkOut` includes `from_issue_uid` and `to_issue_uid`; event envelopes include `project_uid`, `issue_uid`, and `related_issue_uid` where applicable. UIDs are never synthesized by exporters for an older source schema; importer fill rules add them while importing old JSONL into a current database.
+
 ### 4.2 Project resolution flow
 
 CLI commands (other than `kata init`) call `POST /api/v1/projects/resolve` with a `start_path` (typically cwd or `--workspace <path>`). The daemon walks upward to discover `W` (first `.kata.toml` ancestor) and `G` (first `.git` ancestor), then applies the resolution rules from §2.4.
@@ -489,7 +541,7 @@ Successful response:
 
 ```json
 {
-  "project":        { "id": 7,  "identity": "github.com/wesm/kata", "name": "kata", "next_issue_number": 42 },
+  "project":        { "id": 7, "uid": "01JZ0000000000000000000001", "identity": "github.com/wesm/kata", "name": "kata", "next_issue_number": 42 },
   "alias":          { "id": 13, "alias_identity": "github.com/wesm/kata", "alias_kind": "git", "root_path": "/Users/wesm/code/kata" },
   "workspace_root": "/Users/wesm/code/kata"
 }
@@ -647,6 +699,8 @@ The CLI text path treats `reset_required: true` the same way the TUI does on `sy
 - `--quiet, -q` suppresses non-essential output; compatible with `--json`. For `create`, `--quiet` without `--json` prints just the issue number.
 - `kata events --tail --json` is **NDJSON** (one envelope per line).
 - `kata events --after-id N --json` is the primary agent polling primitive; returns `next_after_id` for the next call. Timestamps (`--since`) are the human path. If the polling response sets `reset_required: true`, the agent must drop any cached state and resume polling from `next_after_id` (= the new baseline). See §4.11.
+- `kata show` and relationship-command issue references accept `#N`, bare number `N`, full issue UID, or a unique UID prefix of at least 8 characters. Numbers remain project-scoped display labels; UIDs are the stable cross-cutover identity. Other lifecycle commands are still number-first until their parsers are moved onto the shared resolver.
+- `kata export` / `kata import` are the supported schema-evolution and backup/restore path. JSONL exports preserve the source schema version exactly; imports into a newer binary apply deterministic fill rules, including UID generation for legacy records, inside a fresh database before validation and swap.
 - **Project binding is workspace-driven, not flag-driven.** Agents do not pass `--project <identity>` on writes. They run from a workspace whose `.kata.toml` declares the binding. If `.kata.toml` is missing, write commands fail with `project_not_initialized` and a hint to run `kata init`. **Do not** auto-create a project — that is exactly how agents end up writing into the wrong namespace.
 
 ### 5.2 Identity (actor)
@@ -755,7 +809,7 @@ Note: there is no public `--project-id <N>` flag for agent-facing commands. Agen
 |---|---|---|
 | Init | `kata init [--project <identity>] [--name <name>] [--replace] [--reassign]` | Fresh-clone flow: with no flags, reads existing `.kata.toml` if present; else derives identity from git remote. Creates/upserts the project, attaches the workspace alias, writes `.kata.toml` if missing. The **only** path that creates project rows. Idempotent. |
 | Lifecycle | `kata create <title> [--body* / --idempotency-key K / --force-new / --label L / --owner O / --parent N / --blocks N]` | `--label` repeated only (no CSV). Initial labels/links/owner go into the `issue.created` event payload. Fails with `project_not_initialized` if no `.kata.toml` and no matching alias. |
-| | `kata show <number> [--include-events] [--include-deleted]` | Default: issue + comments + links + labels. |
+| | `kata show <issue-ref> [--include-events] [--include-deleted]` | Default: issue + comments + links + labels. `<issue-ref>` is `#N`, `N`, full UID, or unique UID prefix. |
 | | `kata list [--status / --label / --owner / --author / --workspace / --all-projects / --updated-since / --limit / --search]` | Default: this project, `status=open`, `updated_at DESC`, limit 50. |
 | | `kata edit <number> [--title / --body* / --owner]` | At least one field; else exit 3. |
 | | `kata close <number> [--reason done\|wontfix\|duplicate]` | Default reason `done`. |
@@ -764,11 +818,11 @@ Note: there is no public `--project-id <N>` flag for agent-facing commands. Agen
 | | `kata delete <number> --force [--confirm "DELETE #N"]` | Soft delete; reversible. |
 | | `kata restore <number>` | |
 | | `kata purge <number> --force [--confirm "PURGE #N"]` | Irreversible. |
-| Relationships | `kata parent <child> <parent> [--replace]` | One-parent constraint; `--replace` swaps. |
-| | `kata unparent <child>` | |
-| | `kata block <blocker> <blocked>` / `kata unblock <blocker> <blocked>` | |
-| | `kata relate <a> <b>` / `kata unrelate <a> <b>` | Canonical-ordered. |
-| | `kata link <from> <type> <to>` / `kata unlink <from> <type> <to>` | Generic escape hatch. |
+| Relationships | `kata parent <child-ref> <parent-ref> [--replace]` | One-parent constraint; `--replace` swaps. Refs accept numbers, full UIDs, or unique UID prefixes. |
+| | `kata unparent <child-ref>` | |
+| | `kata block <blocker-ref> <blocked-ref>` / `kata unblock <blocker-ref> <blocked-ref>` | |
+| | `kata relate <a-ref> <b-ref>` / `kata unrelate <a-ref> <b-ref>` | Canonical-ordered. |
+| | `kata link <from-ref> <type> <to-ref>` / `kata unlink <from-ref> <type> <to-ref>` | Generic escape hatch. Refs accept numbers, full UIDs, or unique UID prefixes. |
 | Labels | `kata label add <number> <label>` / `kata label rm <number> <label>` | Charset `[a-z0-9._:-]{1,64}`. |
 | | `kata labels [--workspace / --all-projects]` | Counts. |
 | Ownership | `kata assign <number> <owner>` / `kata unassign <number>` | |
@@ -779,6 +833,8 @@ Note: there is no public `--project-id <N>` flag for agent-facing commands. Agen
 | | `kata whoami` | `{actor, source}`. |
 | | `kata health` | `/api/v1/health`. |
 | Projects | `kata projects [list\|show]` | List known projects (with their aliases) / show one. |
+| Backup | `kata export [--output path] [--project-id N] [--allow-running-daemon]` | Writes a git-friendly JSONL database export. |
+| | `kata import --input path --target path [--force]` | Imports JSONL into a fresh target DB; validates before commit. |
 | Skills | `kata skills install [--target claude\|codex\|all]` | Idempotent; honors `$CLAUDE_CONFIG_DIR`/`$CODEX_HOME`. |
 | | `kata skills doctor` / `kata skills list` | |
 | | `kata agent-instructions` | Canonical agent doc. |

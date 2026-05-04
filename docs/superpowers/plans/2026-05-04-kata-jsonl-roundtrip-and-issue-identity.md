@@ -1192,7 +1192,7 @@ git commit -m "tui: display issue UIDs in detail footer"
 - Modify: any README/help docs that list CLI commands.
 - Test: full repo.
 
-- [ ] **Step 1: Update master spec**
+- [x] **Step 1: Update master spec**
 
 Document:
 
@@ -1201,7 +1201,7 @@ Document:
 - `#N` is display label
 - wire shapes include UID fields
 
-- [ ] **Step 2: Run full test suite**
+- [x] **Step 2: Run full test suite**
 
 ```bash
 go test ./...
@@ -1209,7 +1209,9 @@ go test ./...
 
 Expected: PASS.
 
-- [ ] **Step 3: Optional live DB validation**
+- [x] **Step 3: Optional live DB validation**
+
+Skipped in code because the live-DB test names listed below are not present in `internal/jsonl`; the production DB remained untouched and the pre-work backup remains at `/Users/wesm/.kata/backups/kata-prod-pre-jsonl-uid-20260504T003726Z.db`.
 
 Only if safe on a copied DB:
 
@@ -1219,7 +1221,7 @@ KATA_TEST_LIVE_DB=1 go test ./internal/jsonl -run 'TestRoundtrip_LiveDB|TestCuto
 
 Expected: PASS or skip when no live DB fixture is configured.
 
-- [ ] **Step 4: Check worktree**
+- [x] **Step 4: Check worktree**
 
 ```bash
 git status --short
@@ -1227,7 +1229,7 @@ git status --short
 
 Expected: only intentional doc/test changes staged for final commit.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-04-29-kata-design.md

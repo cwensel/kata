@@ -31,6 +31,10 @@ How it's built:
 - Workspace-to-project binding lives in `.kata.toml`, falling back to a git
   remote URL when no binding file exists.
 - Data lives locally in SQLite under `KATA_HOME` behind a long-running daemon.
+- Issues have stable ULID `uid` values in JSON; `#N` remains the project-scoped
+  display label.
+- `kata export` and `kata import` provide a git-friendly JSONL backup and
+  schema cutover path.
 - Successful commands emit JSON for reliable parsing by agents and scripts.
 
 ## Goals
@@ -181,7 +185,7 @@ kata create <title> [--body TEXT | --body-file PATH | --body-stdin]
                   [--label LABEL] [--owner NAME]
                   [--parent N] [--blocks N] [--idempotency-key KEY]
 kata list [--status open|closed|all] [--limit N]
-kata show <number>
+kata show <issue-ref>
 kata edit <number> [--title TEXT] [--body TEXT] [--owner NAME]
 kata comment <number> [--body TEXT | --body-file PATH | --body-stdin]
 kata close <number> [--reason done|wontfix|duplicate]
@@ -197,15 +201,18 @@ kata labels
 kata assign <number> <owner>
 kata unassign <number>
 
-kata parent <child> <parent> [--replace]
-kata unparent <child>
-kata block <blocker> <blocked>
-kata unblock <blocker> <blocked>
-kata relate <a> <b>
-kata unrelate <a> <b>
-kata link <from> <parent|blocks|related> <to>
-kata unlink <from> <parent|blocks|related> <to>
+kata parent <child-ref> <parent-ref> [--replace]
+kata unparent <child-ref>
+kata block <blocker-ref> <blocked-ref>
+kata unblock <blocker-ref> <blocked-ref>
+kata relate <a-ref> <b-ref>
+kata unrelate <a-ref> <b-ref>
+kata link <from-ref> <parent|blocks|related> <to-ref>
+kata unlink <from-ref> <parent|blocks|related> <to-ref>
 ```
+
+For `show` and relationship commands, an issue ref can be `#N`, `N`, a full
+UID, or a unique UID prefix of at least 8 characters.
 
 Search, readiness, events, and project inspection:
 
@@ -218,6 +225,8 @@ kata projects list
 kata projects show <project>
 kata projects rename <project> <name>
 kata projects merge <source> <target> [--rename-target NAME]
+kata export [--output PATH]
+kata import --input PATH --target PATH [--force]
 ```
 
 Destructive operations are explicit:

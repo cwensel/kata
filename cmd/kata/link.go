@@ -13,7 +13,7 @@ import (
 
 func newLinkCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "link <from> <type> <to>",
+		Use:   "link <from-ref> <type> <to-ref>",
 		Short: "create a link between two issues (type: parent|blocks|related)",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -25,7 +25,7 @@ func newLinkCmd() *cobra.Command {
 func newParentCmd() *cobra.Command {
 	var replace bool
 	cmd := &cobra.Command{
-		Use:   "parent <child> <parent>",
+		Use:   "parent <child-ref> <parent-ref>",
 		Short: "set the parent link of <child> to <parent>",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -38,7 +38,7 @@ func newParentCmd() *cobra.Command {
 
 func newUnlinkCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unlink <from> <type> <to>",
+		Use:   "unlink <from-ref> <type> <to-ref>",
 		Short: "remove a link between two issues",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -49,7 +49,7 @@ func newUnlinkCmd() *cobra.Command {
 
 func newUnparentCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unparent <child>",
+		Use:   "unparent <child-ref>",
 		Short: "remove the parent link of <child>",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -60,7 +60,7 @@ func newUnparentCmd() *cobra.Command {
 
 func newBlockCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "block <blocker> <blocked>",
+		Use:   "block <blocker-ref> <blocked-ref>",
 		Short: "mark <blocker> as blocking <blocked>",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -71,7 +71,7 @@ func newBlockCmd() *cobra.Command {
 
 func newUnblockCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unblock <blocker> <blocked>",
+		Use:   "unblock <blocker-ref> <blocked-ref>",
 		Short: "remove the blocks link from <blocker> to <blocked>",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -82,7 +82,7 @@ func newUnblockCmd() *cobra.Command {
 
 func newRelateCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "relate <a> <b>",
+		Use:   "relate <a-ref> <b-ref>",
 		Short: "mark two issues as related (canonical-ordered)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -93,7 +93,7 @@ func newRelateCmd() *cobra.Command {
 
 func newUnrelateCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unrelate <a> <b>",
+		Use:   "unrelate <a-ref> <b-ref>",
 		Short: "remove a related link between two issues",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
