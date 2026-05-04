@@ -134,6 +134,73 @@ func TestResolve_AfterInitSucceeds(t *testing.T) {
 	assert.Contains(t, string(bs), `"identity":"github.com/wesm/kata"`)
 }
 
+// TestResolve_ByProjectIdentity_PathFree verifies the remote-client
+// resolution path: the daemon looks up the project by its committed
+// identity without touching the filesystem. This is what lets a kata
+// client on host B reach a project registered on host A's daemon.
+func TestResolve_ByProjectIdentity_PathFree(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+	ts := newTestServer(t)
+
+	// Register the project (local-style init).
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": dir})
+
+	// Now resolve by identity only — no start_path. Note that the
+	// identity we send doesn't refer to anything on the daemon's
+	// filesystem; the lookup must be path-free.
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"project_identity": "github.com/wesm/kata",
+	})
+	assert.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"identity":"github.com/wesm/kata"`)
+}
+
+// TestResolve_ByProjectIdentity_NotRegistered surfaces the right error
+// when a remote client claims an identity the daemon doesn't know about.
+func TestResolve_ByProjectIdentity_NotRegistered(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"project_identity": "github.com/never/registered",
+	})
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "project_not_initialized")
+	assert.Contains(t, string(bs), "github.com/never/registered")
+}
+
+// TestResolve_NeitherFieldSet rejects a request that supplies neither
+// project_identity nor start_path.
+func TestResolve_NeitherFieldSet(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "project_identity")
+	assert.Contains(t, string(bs), "start_path")
+}
+
+// TestResolve_IdentityWinsOverStartPath verifies precedence: when both
+// project_identity and start_path are supplied, identity takes priority
+// and the daemon never touches the (potentially nonexistent) path.
+func TestResolve_IdentityWinsOverStartPath(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+	ts := newTestServer(t)
+
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": dir})
+
+	// start_path is bogus and would not stat; identity must win.
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"project_identity": "github.com/wesm/kata",
+		"start_path":       "/no/such/path/anywhere",
+	})
+	assert.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"identity":"github.com/wesm/kata"`)
+}
+
 func TestInit_AliasConflictWithoutReassign(t *testing.T) {
 	dir := t.TempDir()
 	runGit(t, dir, "init", "--quiet")

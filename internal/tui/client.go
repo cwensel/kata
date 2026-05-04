@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+
+	"github.com/wesm/kata/internal/config"
 )
 
 // Client is the typed adapter the TUI uses to talk to the daemon. Errors
@@ -161,9 +163,19 @@ func (c *Client) EditBody(
 }
 
 // ResolveProject runs the §4.2 resolution flow against startPath.
+//
+// When the workspace has a readable .kata.toml, the project identity
+// is sent and the daemon skips its filesystem walk — required for
+// remote-client mode where the daemon cannot stat the client's path.
+// Otherwise the start_path fallback walks the daemon's filesystem.
 func (c *Client) ResolveProject(ctx context.Context, startPath string) (*ResolveResp, error) {
 	var resp ResolveResp
-	req := map[string]string{"start_path": startPath}
+	req := map[string]string{}
+	if cfg, err := config.ReadProjectConfig(startPath); err == nil && cfg.Project.Identity != "" {
+		req["project_identity"] = cfg.Project.Identity
+	} else {
+		req["start_path"] = startPath
+	}
 	if err := c.do(ctx, http.MethodPost, "/api/v1/projects/resolve", req, &resp); err != nil {
 		return nil, err
 	}

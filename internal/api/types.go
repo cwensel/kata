@@ -68,10 +68,15 @@ type ProjectOut struct {
 	Stats *ProjectStatsOut `json:"stats,omitempty"`
 }
 
-// ResolveProjectRequest is POST /api/v1/projects/resolve.
+// ResolveProjectRequest is POST /api/v1/projects/resolve. One of
+// ProjectIdentity or StartPath must be set. ProjectIdentity is used by
+// remote clients (which have a local .kata.toml but a workspace path
+// the daemon cannot stat); StartPath is the original local-mode flow
+// where the daemon walks up from a path on its own filesystem.
 type ResolveProjectRequest struct {
 	Body struct {
-		StartPath string `json:"start_path" doc:"absolute path to resolve from" required:"true"`
+		ProjectIdentity string `json:"project_identity,omitempty" doc:"project identity from a client-side .kata.toml; preferred over start_path"`
+		StartPath       string `json:"start_path,omitempty" doc:"absolute path to resolve from (daemon-side filesystem)"`
 	}
 }
 

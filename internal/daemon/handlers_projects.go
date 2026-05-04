@@ -94,7 +94,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "POST",
 		Path:        "/api/v1/projects/resolve",
 	}, func(ctx context.Context, in *api.ResolveProjectRequest) (*api.ResolveProjectResponse, error) {
-		out, err := resolveProject(ctx, cfg.DB, in.Body.StartPath)
+		out, err := resolveProject(ctx, cfg.DB, in.Body.ProjectIdentity, in.Body.StartPath)
 		if err != nil {
 			return nil, err
 		}
@@ -361,11 +361,23 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	})
 }
 
-// resolveProject implements the strict resolution flow per spec §2.4. Order:
-// .kata.toml binding wins; then alias lookup from the git root; else fail.
-func resolveProject(ctx context.Context, store *db.DB, startPath string) (*api.ProjectResolveBody, error) {
+// resolveProject implements the strict resolution flow per spec §2.4.
+//
+// When projectIdentity is non-empty (remote-client path), the daemon
+// looks the project up by identity directly — no filesystem walk on
+// the daemon's machine. This is what lets a kata client on host B
+// resolve a project that is registered on host A's daemon when host
+// A cannot stat the workspace path on host B.
+//
+// Otherwise (local-mode path), startPath must be set and the daemon
+// walks up from it to find .kata.toml or .git, exactly as before.
+func resolveProject(ctx context.Context, store *db.DB, projectIdentity, startPath string) (*api.ProjectResolveBody, error) {
+	if projectIdentity != "" {
+		return resolveByIdentity(ctx, store, projectIdentity)
+	}
 	if startPath == "" {
-		return nil, api.NewError(400, "validation", "start_path required", "", nil)
+		return nil, api.NewError(400, "validation",
+			"either project_identity or start_path is required", "", nil)
 	}
 	abs, err := filepath.Abs(startPath)
 	if err != nil {
@@ -389,6 +401,28 @@ func resolveProject(ctx context.Context, store *db.DB, startPath string) (*api.P
 	return nil, api.NewError(404, "project_not_initialized",
 		"no .kata.toml ancestor and no git ancestor",
 		`run "kata init" inside a workspace`, nil)
+}
+
+// resolveByIdentity looks the project up by its committed identity
+// (e.g. "github.com/wesm/kata") without touching the filesystem. Used
+// by remote clients that have a local .kata.toml but a workspace path
+// the daemon cannot stat. No alias is upserted: aliases are tied to
+// daemon-side workspace metadata, which a remote client cannot supply.
+func resolveByIdentity(ctx context.Context, store *db.DB, identity string) (*api.ProjectResolveBody, error) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return nil, api.NewError(400, "validation", "project_identity must be non-empty", "", nil)
+	}
+	project, err := projectByIdentityOrAlias(ctx, store, identity)
+	if errors.Is(err, db.ErrNotFound) {
+		return nil, api.NewError(404, "project_not_initialized",
+			"project "+identity+" is bound by .kata.toml but not registered",
+			`run "kata init" in this workspace`, nil)
+	}
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return &api.ProjectResolveBody{Project: dbProjectToOut(project)}, nil
 }
 
 // resolveByKataToml returns (body, true, nil) when a .kata.toml binding

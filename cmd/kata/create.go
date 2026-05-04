@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/kata/internal/config"
 	"github.com/wesm/kata/internal/textsafe"
 )
 
@@ -132,16 +133,31 @@ func validateCreateLabels(labels []string) error {
 	return nil
 }
 
-// resolveProjectID resolves the project ID for a given workspace start path
-// by calling POST /api/v1/projects/resolve on the daemon.
+// resolveProjectID resolves the project ID for a given workspace start
+// path by calling POST /api/v1/projects/resolve on the daemon.
+//
+// When the workspace has a readable .kata.toml, the project identity is
+// sent and the daemon skips its filesystem walk. This is what lets a
+// client on host B resolve a project registered on host A's daemon —
+// the daemon cannot stat the client's startPath, but it can look up
+// the project by its committed identity.
+//
+// When .kata.toml is absent or unreadable (the usual case mid-init),
+// the start_path fallback engages and the daemon walks its own
+// filesystem as before. Local-mode behavior is unchanged.
 func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, error) {
 	client, err := httpClientFor(ctx, baseURL)
 	if err != nil {
 		return 0, err
 	}
+	body := map[string]any{}
+	if cfg, err := config.ReadProjectConfig(startPath); err == nil && cfg.Project.Identity != "" {
+		body["project_identity"] = cfg.Project.Identity
+	} else {
+		body["start_path"] = startPath
+	}
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
-		baseURL+"/api/v1/projects/resolve",
-		map[string]any{"start_path": startPath})
+		baseURL+"/api/v1/projects/resolve", body)
 	if err != nil {
 		return 0, err
 	}
