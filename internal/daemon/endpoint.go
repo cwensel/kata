@@ -125,12 +125,12 @@ func requireNonPublic(addr string) error {
 		return fmt.Errorf("address %q is not a literal IP (resolve hostnames before calling)", addr)
 	}
 	if ip.IsUnspecified() {
-		return fmt.Errorf("address %q is non-public reject: unspecified bind not allowed (use a private address: loopback, RFC1918, CGNAT, link-local, ULA)", addr)
+		return fmt.Errorf("address %q is non-public: unspecified bind not allowed; use a private address (loopback, RFC1918, CGNAT, link-local, ULA)", addr)
 	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || cgnatBlock.Contains(ip) {
 		return nil
 	}
-	return fmt.Errorf("address %q is non-public reject: only loopback, RFC1918, CGNAT (100.64.0.0/10), link-local, or ULA are allowed", addr)
+	return fmt.Errorf("address %q is non-public: use a private address (loopback, RFC1918, CGNAT, link-local, ULA)", addr)
 }
 
 // ParseAddress decodes a serialized form (unix:///path or host:port).
