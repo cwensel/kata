@@ -97,10 +97,19 @@ func TestClient_GetIssueDetail_DecodesWrappedEnvelope(t *testing.T) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issue":    map[string]any{"number": 42, "title": "fix", "status": "open"},
+			"issue": map[string]any{
+				"uid": "01JZ0000000000000000000001", "project_uid": "01JZ0000000000000000000002",
+				"number": 42, "title": "fix", "status": "open",
+			},
 			"comments": []any{},
-			"links":    []any{},
-			"labels":   []any{},
+			"links": []map[string]any{
+				{
+					"id": 1, "type": "blocks", "from_number": 42, "to_number": 7,
+					"from_issue_uid": "01JZ0000000000000000000001",
+					"to_issue_uid":   "01JZ0000000000000000000003",
+				},
+			},
+			"labels": []any{},
 		})
 	}))
 	defer srv.Close()
@@ -115,6 +124,20 @@ func TestClient_GetIssueDetail_DecodesWrappedEnvelope(t *testing.T) {
 	got := detail.Issue
 	if got == nil || got.Number != 42 || got.Title != "fix" {
 		t.Fatalf("unexpected issue: %+v", got)
+	}
+	if got.UID != "01JZ0000000000000000000001" {
+		t.Fatalf("issue UID = %q", got.UID)
+	}
+	if got.ProjectUID != "01JZ0000000000000000000002" {
+		t.Fatalf("project UID = %q", got.ProjectUID)
+	}
+	links, err := c.ListLinks(context.Background(), 7, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].FromIssueUID != "01JZ0000000000000000000001" ||
+		links[0].ToIssueUID != "01JZ0000000000000000000003" {
+		t.Fatalf("link UIDs not decoded: %+v", links)
 	}
 }
 
@@ -308,9 +331,19 @@ func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"events": []map[string]any{
-				{"event_id": 1, "type": "issue.commented", "issue_number": 42, "actor": "a"},
+				{
+					"event_id": 1, "type": "issue.commented", "issue_number": 42, "actor": "a",
+					"project_uid": "01JZ0000000000000000000002",
+					"issue_uid":   "01JZ0000000000000000000001",
+				},
 				{"event_id": 2, "type": "issue.commented", "issue_number": 99, "actor": "a"},
-				{"event_id": 3, "type": "issue.labeled", "issue_number": 42, "actor": "a"},
+				{
+					"event_id": 3, "type": "issue.labeled", "issue_number": 42, "actor": "a",
+					"project_uid":          "01JZ0000000000000000000002",
+					"issue_uid":            "01JZ0000000000000000000001",
+					"related_issue_uid":    "01JZ0000000000000000000004",
+					"related_issue_number": 84,
+				},
 			},
 			"next_after_id":  3,
 			"reset_required": false,
@@ -329,6 +362,13 @@ func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
 		if e.Type != "issue.commented" && e.Type != "issue.labeled" {
 			t.Fatalf("unexpected event leaked through filter: %+v", e)
 		}
+	}
+	if got[0].ProjectUID != "01JZ0000000000000000000002" ||
+		got[0].IssueUID != "01JZ0000000000000000000001" {
+		t.Fatalf("event UIDs not decoded: %+v", got[0])
+	}
+	if got[1].RelatedIssueUID != "01JZ0000000000000000000004" {
+		t.Fatalf("related issue UID not decoded: %+v", got[1])
 	}
 }
 

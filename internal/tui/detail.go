@@ -31,6 +31,14 @@ const (
 // a no-op; Esc still pops back to level 1.
 const detailNavCap = 1
 
+type uidDisplayFormat int
+
+const (
+	uidDisplayNone uidDisplayFormat = iota
+	uidDisplayShort
+	uidDisplayFull
+)
+
 // detailAPI is the subset of *Client the detail view needs. Mirrors
 // listAPI so detail_test.go can drive Update with a fake.
 type detailAPI interface {
@@ -126,6 +134,7 @@ type detailModel struct {
 	lastDetailWidth  int
 	lastDetailHeight int
 	lastDetailSplit  bool
+	uidFormat        uidDisplayFormat
 	// dm.modal was removed in M3b — the M3a/b input infrastructure on
 	// Model.input owns inline label/owner/link prompts now.
 }

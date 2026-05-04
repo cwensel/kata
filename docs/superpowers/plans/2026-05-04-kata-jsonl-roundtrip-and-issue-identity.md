@@ -1135,7 +1135,7 @@ git commit -m "cli: resolve issue refs by UID"
 - Test: `internal/tui/*_test.go`
 - Test: `internal/tui/testdata/golden/*`
 
-- [ ] **Step 1: Write failing TUI tests**
+- [x] **Step 1: Write failing TUI tests**
 
 Cover:
 
@@ -1146,7 +1146,7 @@ Cover:
 - compact issue sheet remains unchanged
 - SSE update parsing preserves UID fields
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [x] **Step 2: Run focused tests and confirm failure**
 
 ```bash
 go test ./internal/tui -run 'UID|Detail|SSE' -count=1
@@ -1154,23 +1154,23 @@ go test ./internal/tui -run 'UID|Detail|SSE' -count=1
 
 Expected: fail until types/rendering are updated.
 
-- [ ] **Step 3: Update client types**
+- [x] **Step 3: Update client types**
 
 Add UID fields to issue/link/event structs. Avoid changing existing JSON field names.
 
-- [ ] **Step 4: Add display config support**
+- [x] **Step 4: Add display config support**
 
 If config plumbing does not yet exist for `display.uid_format`, add the minimal enum/setting needed by the TUI. Default `none`.
 
-- [ ] **Step 5: Update detail footer only**
+- [x] **Step 5: Update detail footer only**
 
 Do not put UID in list rows or compact sheet. Render it in the detail metadata/footer area.
 
-- [ ] **Step 6: Update goldens**
+- [x] **Step 6: Update goldens**
 
 Run the project’s golden update flow if one exists; otherwise update expected files manually after inspecting output.
 
-- [ ] **Step 7: Run focused tests**
+- [x] **Step 7: Run focused tests**
 
 ```bash
 go test ./internal/tui -run 'UID|Detail|SSE' -count=1
@@ -1178,7 +1178,7 @@ go test ./internal/tui -run 'UID|Detail|SSE' -count=1
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/tui

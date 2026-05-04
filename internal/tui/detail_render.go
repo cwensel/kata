@@ -108,7 +108,9 @@ func (dm detailModel) documentHeader(width int, chrome viewChrome) []string {
 	if byline := renderDocumentByline(width, iss); byline != "" {
 		lines = append(lines, withGutter(byline))
 	}
-	for _, row := range renderDocumentMetadata(width, iss, dm.parent, dm.children, chrome.scope) {
+	for _, row := range renderDocumentMetadata(
+		width, iss, dm.parent, dm.children, chrome.scope, dm.uidFormat,
+	) {
 		lines = append(lines, withGutter(row))
 	}
 	return lines
@@ -191,7 +193,7 @@ func formatDocumentTime(t time.Time) string {
 // without consulting the global title bar (which reads "all" in
 // that scope).
 func renderDocumentMetadata(
-	width int, iss Issue, parent *IssueRef, children []Issue, sc scope,
+	width int, iss Issue, parent *IssueRef, children []Issue, sc scope, uidFormat uidDisplayFormat,
 ) []string {
 	rows := []string{}
 	if sc.allProjects {
@@ -209,7 +211,38 @@ func renderDocumentMetadata(
 		count := metadataLabel("children:") + " " + childrenCountSummary(children)
 		rows = append(rows, truncate(count, width))
 	}
+	if uid := formatIssueUID(iss.UID, uidFormat); uid != "" {
+		rows = append(rows, truncate(metadataLabel("uid:")+" "+uid, width))
+	}
 	return rows
+}
+
+func parseUIDDisplayFormat(v string) uidDisplayFormat {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "short":
+		return uidDisplayShort
+	case "full":
+		return uidDisplayFull
+	default:
+		return uidDisplayNone
+	}
+}
+
+func formatIssueUID(uid string, format uidDisplayFormat) string {
+	if uid == "" {
+		return ""
+	}
+	switch format {
+	case uidDisplayShort:
+		if len(uid) <= 8 {
+			return "~" + uid
+		}
+		return "~" + uid[:8]
+	case uidDisplayFull:
+		return uid
+	default:
+		return ""
+	}
 }
 
 // joinMetadataRow returns the (owner, parent) pair as one inline row

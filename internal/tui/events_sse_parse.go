@@ -35,10 +35,13 @@ type frame struct {
 // inspects. Lives here so the parser does not pull internal/api into
 // the TUI tree.
 type sseEventPayload struct {
-	Type        string          `json:"type"`
-	ProjectID   int64           `json:"project_id"`
-	IssueNumber *int64          `json:"issue_number,omitempty"`
-	Payload     json.RawMessage `json:"payload,omitempty"`
+	Type            string          `json:"type"`
+	ProjectID       int64           `json:"project_id"`
+	ProjectUID      string          `json:"project_uid,omitempty"`
+	IssueNumber     *int64          `json:"issue_number,omitempty"`
+	IssueUID        string          `json:"issue_uid,omitempty"`
+	RelatedIssueUID string          `json:"related_issue_uid,omitempty"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
 }
 
 // errSSEEOF is the sentinel readNextFrame returns when the underlying
@@ -138,7 +141,13 @@ func finalizeFrame(f frame) frame {
 func decodeEventReceived(f frame) eventReceivedMsg {
 	var p sseEventPayload
 	_ = json.Unmarshal(f.data, &p)
-	out := eventReceivedMsg{eventType: p.Type, projectID: p.ProjectID}
+	out := eventReceivedMsg{
+		eventType:       p.Type,
+		projectID:       p.ProjectID,
+		projectUID:      p.ProjectUID,
+		issueUID:        p.IssueUID,
+		relatedIssueUID: p.RelatedIssueUID,
+	}
 	if p.IssueNumber != nil {
 		out.issueNumber = *p.IssueNumber
 	}
@@ -149,7 +158,7 @@ func decodeEventReceived(f frame) eventReceivedMsg {
 		}
 	}
 	if p.Type == "issue.created" && len(p.Payload) > 0 {
-		out.link = parentLinkFromCreatedPayload(p.Payload, out.issueNumber)
+		out.link = parentLinkFromCreatedPayload(p.Payload, out.issueNumber, out.issueUID)
 	}
 	return out
 }
@@ -159,11 +168,12 @@ func decodeEventReceived(f frame) eventReceivedMsg {
 // has no parent link or fails to parse. fromNumber is the new issue's
 // own number — the payload only stores to_number, so we fill in from
 // at decode time so downstream matchesIssueNumber checks both ends.
-func parentLinkFromCreatedPayload(payload []byte, fromNumber int64) *linkPayload {
+func parentLinkFromCreatedPayload(payload []byte, fromNumber int64, fromIssueUID string) *linkPayload {
 	var body struct {
 		Links []struct {
-			Type     string `json:"type"`
-			ToNumber int64  `json:"to_number"`
+			Type       string `json:"type"`
+			ToNumber   int64  `json:"to_number"`
+			ToIssueUID string `json:"to_issue_uid,omitempty"`
 		} `json:"links"`
 	}
 	if err := json.Unmarshal(payload, &body); err != nil {
@@ -172,9 +182,11 @@ func parentLinkFromCreatedPayload(payload []byte, fromNumber int64) *linkPayload
 	for _, l := range body.Links {
 		if l.Type == "parent" {
 			return &linkPayload{
-				Type:       "parent",
-				FromNumber: fromNumber,
-				ToNumber:   l.ToNumber,
+				Type:         "parent",
+				FromNumber:   fromNumber,
+				ToNumber:     l.ToNumber,
+				FromIssueUID: fromIssueUID,
+				ToIssueUID:   l.ToIssueUID,
 			}
 		}
 	}

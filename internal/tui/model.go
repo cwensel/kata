@@ -128,6 +128,7 @@ type Model struct {
 	// stale tick (one whose gen < the current value) drops cleanly
 	// without firing a fetch the user no longer wants.
 	nextDetailFollowGen int64
+	uidFormat           uidDisplayFormat
 }
 
 // initialModel constructs the root Bubble Tea model. Style vars are
@@ -143,6 +144,7 @@ func initialModel(opts Options) Model {
 	applyDefaultColorMode(opts.Stdout)
 	lm := newListModel()
 	lm.actor = resolveTUIActor()
+	uidFormat := parseUIDDisplayFormat(opts.DisplayUIDFormat)
 	return Model{
 		opts:          opts,
 		view:          viewList,
@@ -156,6 +158,7 @@ func initialModel(opts Options) Model {
 		projectLabels: newLabelCache(),
 		layout:        layoutStacked,
 		focus:         focusList,
+		uidFormat:     uidFormat,
 	}
 }
 
@@ -1794,6 +1797,7 @@ func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	m.detail.scopePID = pid
 	m.detail.allProjects = m.scope.allProjects
 	m.detail.actor = m.list.actor
+	m.detail.uidFormat = m.uidFormat
 	// Per-tab loading flags drive the placeholder strings until each
 	// fetch returns; they're cleared (with the per-tab err set) by
 	// applyFetched.
@@ -1874,6 +1878,7 @@ func (m Model) handleJumpDetail(msg jumpDetailMsg) (tea.Model, tea.Cmd) {
 		scopePID:        pid,
 		allProjects:     m.detail.allProjects,
 		actor:           m.detail.actor,
+		uidFormat:       m.detail.uidFormat,
 		commentsLoading: true,
 		eventsLoading:   true,
 		linksLoading:    true,
@@ -2036,6 +2041,7 @@ func (m Model) scheduleDetailFollow() (Model, tea.Cmd) {
 	m.detail.scopePID = pid
 	m.detail.allProjects = m.scope.allProjects
 	m.detail.actor = m.list.actor
+	m.detail.uidFormat = m.uidFormat
 	m.detail.commentsLoading = true
 	m.detail.eventsLoading = true
 	m.detail.linksLoading = true

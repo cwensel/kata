@@ -29,8 +29,9 @@ import (
 // endpoint), so a TUI all-projects mode would 404 on every fetch. The
 // CLI flag, the R toggle, and the boot fallback are all gated on this.
 type Options struct {
-	Stdout io.Writer // typically os.Stdout
-	Stderr io.Writer // typically os.Stderr
+	Stdout           io.Writer // typically os.Stdout
+	Stderr           io.Writer // typically os.Stderr
+	DisplayUIDFormat string    // none, short, or full
 }
 
 // Run starts the TUI. Blocks until the user quits or ctx is cancelled.

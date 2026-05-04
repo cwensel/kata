@@ -51,6 +51,73 @@ func TestDetail_Render_Header_Title(t *testing.T) {
 	}
 }
 
+func TestDetail_RenderUIDDefaultHidden(t *testing.T) {
+	dm := detailFixture()
+	dm.issue.UID = "01JZ0000000000000000000001"
+	out := stripANSI(dm.View(80, 24, viewChrome{}))
+	if strings.Contains(out, "01JZ0000000000000000000001") ||
+		strings.Contains(out, "~01JZ0000") {
+		t.Fatalf("UID rendered with default format:\n%s", out)
+	}
+}
+
+func TestDetail_RenderUIDShortFormat(t *testing.T) {
+	dm := detailFixture()
+	dm.issue.UID = "01JZ0000000000000000000001"
+	dm.uidFormat = uidDisplayShort
+	out := stripANSI(dm.View(80, 24, viewChrome{}))
+	if !strings.Contains(out, "uid: ~01JZ0000") {
+		t.Fatalf("short UID missing from detail metadata:\n%s", out)
+	}
+	if strings.Contains(out, "01JZ0000000000000000000001") {
+		t.Fatalf("short UID render leaked full UID:\n%s", out)
+	}
+}
+
+func TestDetail_RenderUIDFullFormat(t *testing.T) {
+	dm := detailFixture()
+	dm.issue.UID = "01JZ0000000000000000000001"
+	dm.uidFormat = uidDisplayFull
+	out := stripANSI(dm.View(80, 24, viewChrome{}))
+	if !strings.Contains(out, "uid: 01JZ0000000000000000000001") {
+		t.Fatalf("full UID missing from detail metadata:\n%s", out)
+	}
+}
+
+func TestDetail_OpenCopiesConfiguredUIDFormat(t *testing.T) {
+	m := initialModel(Options{DisplayUIDFormat: "short"})
+	out, _ := m.handleOpenDetail(openDetailMsg{issue: Issue{
+		ProjectID: 7,
+		Number:    42,
+		Title:     "configured",
+		Status:    "open",
+		UID:       "01JZ0000000000000000000001",
+	}})
+	next := out.(Model)
+	if next.detail.uidFormat != uidDisplayShort {
+		t.Fatalf("detail uidFormat = %v, want short", next.detail.uidFormat)
+	}
+	rendered := stripANSI(next.detail.View(80, 24, viewChrome{}))
+	if !strings.Contains(rendered, "uid: ~01JZ0000") {
+		t.Fatalf("configured UID format not rendered:\n%s", rendered)
+	}
+}
+
+func TestDetail_CompactSheetDoesNotRenderUID(t *testing.T) {
+	iss := Issue{
+		Number: 42,
+		Title:  "compact",
+		Status: "open",
+		UID:    "01JZ0000000000000000000001",
+	}
+	dm := detailModel{issue: &iss, uidFormat: uidDisplayFull}
+	out := stripANSI(dm.renderTinyFallback(32))
+	if strings.Contains(out, "01JZ0000000000000000000001") ||
+		strings.Contains(out, "~01JZ0000") {
+		t.Fatalf("compact sheet rendered UID:\n%s", out)
+	}
+}
+
 func TestRenderHierarchySummary_FormatsParentAndChildren(t *testing.T) {
 	parent := &IssueRef{Number: 12, Title: "workspace polish parent", Status: "open"}
 	children := []Issue{

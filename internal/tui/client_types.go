@@ -15,7 +15,9 @@ import (
 // slice. The deleted bool is derived from DeletedAt being non-nil.
 type Issue struct {
 	ID           int64        `json:"id"`
+	UID          string       `json:"uid,omitempty"`
 	ProjectID    int64        `json:"project_id"`
+	ProjectUID   string       `json:"project_uid,omitempty"`
 	Number       int64        `json:"number"`
 	Title        string       `json:"title"`
 	Body         string       `json:"body"`
@@ -114,9 +116,12 @@ type MutationResp struct {
 // EventEnvelope is the minimal event projection embedded in mutation
 // responses. The richer poll/SSE shape uses EventLogEntry.
 type EventEnvelope struct {
-	ID        int64     `json:"id"`
-	Type      string    `json:"type"`
-	CreatedAt time.Time `json:"created_at"`
+	ID              int64     `json:"id"`
+	Type            string    `json:"type"`
+	ProjectUID      string    `json:"project_uid,omitempty"`
+	IssueUID        string    `json:"issue_uid,omitempty"`
+	RelatedIssueUID string    `json:"related_issue_uid,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // ResolveResp is the body of POST /projects/resolve.
@@ -147,22 +152,27 @@ type CommentEntry struct {
 
 // EventLogEntry is the per-event projection used by the events tab.
 type EventLogEntry struct {
-	ID          int64          `json:"event_id"`
-	Type        string         `json:"type"`
-	Actor       string         `json:"actor"`
-	IssueNumber *int64         `json:"issue_number,omitempty"`
-	CreatedAt   time.Time      `json:"created_at"`
-	Payload     map[string]any `json:"payload,omitempty"`
+	ID              int64          `json:"event_id"`
+	Type            string         `json:"type"`
+	Actor           string         `json:"actor"`
+	ProjectUID      string         `json:"project_uid,omitempty"`
+	IssueUID        string         `json:"issue_uid,omitempty"`
+	RelatedIssueUID string         `json:"related_issue_uid,omitempty"`
+	IssueNumber     *int64         `json:"issue_number,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	Payload         map[string]any `json:"payload,omitempty"`
 }
 
 // LinkEntry mirrors the daemon's LinkOut wire shape.
 type LinkEntry struct {
-	ID         int64     `json:"id"`
-	Type       string    `json:"type"`
-	FromNumber int64     `json:"from_number"`
-	ToNumber   int64     `json:"to_number"`
-	Author     string    `json:"author"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID           int64     `json:"id"`
+	Type         string    `json:"type"`
+	FromNumber   int64     `json:"from_number"`
+	ToNumber     int64     `json:"to_number"`
+	FromIssueUID string    `json:"from_issue_uid,omitempty"`
+	ToIssueUID   string    `json:"to_issue_uid,omitempty"`
+	Author       string    `json:"author"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // APIError is the structured form of the §4.6 error envelope.

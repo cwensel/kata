@@ -106,7 +106,13 @@ func TestSSEParser_EOFNoTrailingFrame(t *testing.T) {
 // TestSSEParser_DecodeEventReceived: a well-formed frame's payload is
 // decoded into eventReceivedMsg with type+projectID+issueNumber.
 func TestSSEParser_DecodeEventReceived(t *testing.T) {
-	body := []byte(`{"type":"issue.created","project_id":7,"issue_number":42}`)
+	body := []byte(`{
+		"type":"issue.created",
+		"project_id":7,
+		"project_uid":"01JZ0000000000000000000002",
+		"issue_number":42,
+		"issue_uid":"01JZ0000000000000000000001"
+	}`)
 	got := decodeEventReceived(frame{kind: frameEvent, data: body})
 	if got.eventType != "issue.created" {
 		t.Fatalf("eventType = %q, want issue.created", got.eventType)
@@ -116,6 +122,12 @@ func TestSSEParser_DecodeEventReceived(t *testing.T) {
 	}
 	if got.issueNumber != 42 {
 		t.Fatalf("issueNumber = %d, want 42", got.issueNumber)
+	}
+	if got.projectUID != "01JZ0000000000000000000002" {
+		t.Fatalf("projectUID = %q", got.projectUID)
+	}
+	if got.issueUID != "01JZ0000000000000000000001" {
+		t.Fatalf("issueUID = %q", got.issueUID)
 	}
 }
 
@@ -134,7 +146,14 @@ func TestSSEParser_LinkPayloadType(t *testing.T) {
 		"type":"issue.linked",
 		"project_id":7,
 		"issue_number":43,
-		"payload":{"type":"parent","from_number":43,"to_number":42}
+		"related_issue_uid":"01JZ0000000000000000000004",
+		"payload":{
+			"type":"parent",
+			"from_number":43,
+			"to_number":42,
+			"from_issue_uid":"01JZ0000000000000000000001",
+			"to_issue_uid":"01JZ0000000000000000000004"
+		}
 	}`)
 	got := decodeEventReceived(frame{kind: frameEvent, data: body})
 	if got.eventType != "issue.linked" {
@@ -145,6 +164,13 @@ func TestSSEParser_LinkPayloadType(t *testing.T) {
 	}
 	if got.link.Type != "parent" || got.link.FromNumber != 43 || got.link.ToNumber != 42 {
 		t.Fatalf("link payload = %+v, want parent 43->42", got.link)
+	}
+	if got.relatedIssueUID != "01JZ0000000000000000000004" {
+		t.Fatalf("relatedIssueUID = %q", got.relatedIssueUID)
+	}
+	if got.link.FromIssueUID != "01JZ0000000000000000000001" ||
+		got.link.ToIssueUID != "01JZ0000000000000000000004" {
+		t.Fatalf("link payload UIDs = %+v", got.link)
 	}
 }
 
