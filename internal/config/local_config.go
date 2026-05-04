@@ -55,10 +55,10 @@ func MergeLocal(base, local *ProjectConfig) *ProjectConfig {
 // MergeLocalWithStderr is MergeLocal with an explicit warning sink so
 // tests can capture the divergent-identity warning.
 func MergeLocalWithStderr(base, local *ProjectConfig, stderr io.Writer) *ProjectConfig {
-	if local == nil {
-		return base
-	}
 	merged := *base
+	if local == nil {
+		return &merged
+	}
 	if local.Project.Identity != "" && local.Project.Identity != base.Project.Identity {
 		fmt.Fprintf(stderr, "kata: ignoring divergent project.identity %q in .kata.local.toml (canonical is %q in .kata.toml)\n",
 			local.Project.Identity, base.Project.Identity)

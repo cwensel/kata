@@ -51,9 +51,9 @@ func envHTTPTimeout(def time.Duration) time.Duration {
 // .kata.local.toml) but does not respond, the CLI surfaces this as a
 // daemon-unavailable error so callers see a stable exit code and shape.
 func ensureDaemon(ctx context.Context) (string, error) {
-	url, err := daemonclient.EnsureRunning(ctx)
+	baseURL, err := daemonclient.EnsureRunning(ctx)
 	if err == nil {
-		return url, nil
+		return baseURL, nil
 	}
 	if errors.Is(err, daemonclient.ErrRemoteUnavailable) {
 		return "", &cliError{

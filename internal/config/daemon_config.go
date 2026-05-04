@@ -39,8 +39,16 @@ func ReadDaemonConfig() (*DaemonConfig, error) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	var cfg DaemonConfig
-	if _, err := toml.Decode(string(data), &cfg); err != nil {
+	meta, err := toml.Decode(string(data), &cfg)
+	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if u := meta.Undecoded(); len(u) > 0 {
+		keys := make([]string, len(u))
+		for i, k := range u {
+			keys[i] = k.String()
+		}
+		return nil, fmt.Errorf("parse %s: unknown key(s): %s", path, strings.Join(keys, ", "))
 	}
 	cfg.Listen = strings.TrimSpace(cfg.Listen)
 	return &cfg, nil

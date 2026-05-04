@@ -78,7 +78,8 @@ func TestMergeLocal_NilLocalReturnsBase(t *testing.T) {
 		Project: config.ProjectBindings{Identity: "github.com/wesm/kata", Name: "kata"},
 	}
 	got := config.MergeLocal(base, nil)
-	assert.Same(t, base, got)
+	assert.Equal(t, base, got)
+	assert.NotSame(t, base, got, "MergeLocal must always return a copy, never the base pointer")
 }
 
 func TestMergeLocal_LocalServerWins(t *testing.T) {

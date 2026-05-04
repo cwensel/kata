@@ -408,12 +408,17 @@ func resolveProject(ctx context.Context, store *db.DB, projectIdentity, startPat
 // by remote clients that have a local .kata.toml but a workspace path
 // the daemon cannot stat. No alias is upserted: aliases are tied to
 // daemon-side workspace metadata, which a remote client cannot supply.
+//
+// Strict identity-only lookup: alias names are not accepted here, since
+// the API contract is that this field carries the canonical identity
+// from .kata.toml. An alias collision on the daemon could otherwise
+// leak to a remote client that only knows the committed identity.
 func resolveByIdentity(ctx context.Context, store *db.DB, identity string) (*api.ProjectResolveBody, error) {
 	identity = strings.TrimSpace(identity)
 	if identity == "" {
 		return nil, api.NewError(400, "validation", "project_identity must be non-empty", "", nil)
 	}
-	project, err := projectByIdentityOrAlias(ctx, store, identity)
+	project, err := store.ProjectByIdentity(ctx, identity)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, api.NewError(404, "project_not_initialized",
 			"project "+identity+" is bound by .kata.toml but not registered",
