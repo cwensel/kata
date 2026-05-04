@@ -163,3 +163,8 @@ func TestProjectsRename_RejectsBlankName(t *testing.T) {
 	assert.Equal(t, kindValidation, ce.Kind)
 	assert.Contains(t, ce.Message, "project name must be non-empty")
 }
+
+func TestPluralCount_PluralizesAlias(t *testing.T) {
+	assert.Equal(t, "1 alias", pluralCount(1, "alias"))
+	assert.Equal(t, "2 aliases", pluralCount(2, "alias"))
+}

@@ -469,5 +469,8 @@ func pluralCount(n int64, noun string) string {
 	if n == 1 {
 		return fmt.Sprintf("%d %s", n, noun)
 	}
+	if strings.HasSuffix(noun, "s") {
+		return fmt.Sprintf("%d %ses", n, noun)
+	}
 	return fmt.Sprintf("%d %ss", n, noun)
 }
