@@ -42,6 +42,11 @@ func EnsureRunning(ctx context.Context) (string, error) {
 	if v, ok := ctx.Value(BaseURLKey{}).(string); ok && v != "" {
 		return v, nil
 	}
+	if url, ok, err := resolveRemote(ctx); err != nil {
+		return "", err
+	} else if ok {
+		return url, nil
+	}
 	ns, err := daemon.NewNamespace()
 	if err != nil {
 		return "", err
