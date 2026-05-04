@@ -39,7 +39,8 @@ func daemonStartCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&listen, "listen", "",
 		"bind TCP at host:port (admin-only; non-public addresses only). "+
-			"Default: Unix socket under $KATA_HOME/runtime.")
+			"Falls back to $KATA_HOME/config.toml's `listen` value when "+
+			"unset. Default with neither: Unix socket under $KATA_HOME/runtime.")
 	return cmd
 }
 

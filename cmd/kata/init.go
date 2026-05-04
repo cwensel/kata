@@ -106,6 +106,16 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "bind workspace to a project",
+		Long: `Initialize kata in this workspace.
+
+Writes a committed .kata.toml that binds the workspace to a project
+identity. The daemon derives the identity from a git remote when one
+is present; pass --project to override, or --name to set the
+human-readable name.
+
+Also adds .kata.local.toml to .gitignore so a developer's per-machine
+overrides (e.g., a remote daemon URL via [server] url = "...") never
+get committed.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			baseURL, err := ensureDaemon(cmd.Context())
 			if err != nil {
