@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,32 @@ import (
 	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/daemonclient"
 )
+
+// defaultHTTPTimeout is the per-request budget for non-streaming CLI calls.
+// Override at runtime with KATA_HTTP_TIMEOUT (any time.ParseDuration string).
+const defaultHTTPTimeout = 5 * time.Second
+
+// envHTTPTimeout reads KATA_HTTP_TIMEOUT, falling back to def on empty or
+// unparseable input. Bulk imports against an FTS-indexed DB can take longer
+// than the default per request, so this knob lets callers extend the budget
+// without rebuilding the binary. A non-empty but unparseable value writes a
+// warning to stderr — silently using the default would defeat the point of
+// setting the env var ("KATA_HTTP_TIMEOUT=30" misses the unit and would
+// otherwise look like the bump took effect).
+func envHTTPTimeout(def time.Duration) time.Duration {
+	v := os.Getenv("KATA_HTTP_TIMEOUT")
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		fmt.Fprintf(os.Stderr,
+			"kata: ignoring invalid KATA_HTTP_TIMEOUT=%q (expected a Go duration like 30s or 2m); using default %s\n",
+			v, def)
+		return def
+	}
+	return d
+}
 
 // ensureDaemon discovers a live daemon's HTTP base URL, auto-starting one
 // if none is found. Thin wrapper over daemonclient.EnsureRunning so the CLI
@@ -53,7 +80,7 @@ func discoverDaemon(ctx context.Context) (string, error) {
 // CLI command site is already named for it.
 func httpClientFor(ctx context.Context, baseURL string) (*http.Client, error) {
 	return daemonclient.NewHTTPClient(ctx, baseURL,
-		daemonclient.Opts{Timeout: 5 * time.Second})
+		daemonclient.Opts{Timeout: envHTTPTimeout(defaultHTTPTimeout)})
 }
 
 // streamingClientFor builds the SSE-friendly variant: no overall

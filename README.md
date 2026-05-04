@@ -361,6 +361,9 @@ Useful environment variables:
 - `KATA_HOME`: data directory. Defaults to `~/.kata`.
 - `KATA_DB`: explicit SQLite database path.
 - `KATA_AUTHOR`: default actor for mutations.
+- `KATA_HTTP_TIMEOUT`: per-request CLI timeout for non-streaming daemon calls
+  (any `time.ParseDuration` string, e.g. `30s`, `2m`). Defaults to `5s`. Bump
+  this for bulk imports where create requests can exceed the default.
 - `XDG_RUNTIME_DIR`: runtime socket parent on Unix.
 
 The workspace binding file is intentionally secret-free:

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,41 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		}
 		out := &api.ListProjectsResponse{}
 		out.Body.Projects = ps
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "resetIssueCounter",
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/reset-counter",
+	}, func(ctx context.Context, in *api.ResetCounterRequest) (*api.ResetCounterResponse, error) {
+		if in.Body.To < 1 {
+			return nil, api.NewError(400, "validation", "to must be >= 1", "", nil)
+		}
+		err := cfg.DB.ResetIssueCounter(ctx, in.ProjectID, in.Body.To)
+		if errors.Is(err, db.ErrInvalidCounterValue) {
+			return nil, api.NewError(400, "validation", "to must be >= 1", "", nil)
+		}
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+		}
+		var hasIssues *db.ProjectHasIssuesError
+		if errors.As(err, &hasIssues) {
+			return nil, api.NewError(http.StatusConflict, "project_has_issues",
+				fmt.Sprintf("cannot reset: project has %d issues; only counter resets on an empty project are allowed", hasIssues.Count),
+				"purge all issues before resetting the counter", map[string]any{
+					"issue_count": hasIssues.Count,
+				})
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		p, err := cfg.DB.ProjectByID(ctx, in.ProjectID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.ResetCounterResponse{}
+		out.Body.Project = p
 		return out, nil
 	})
 

@@ -168,6 +168,68 @@ name     = "other"
 	require.Equal(t, 200, resp2.StatusCode, string(bs2))
 }
 
+func TestResetCounter_EmptyProjectSucceeds(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	pidStr := strconv.FormatInt(pid, 10)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/reset-counter",
+		map[string]any{"to": 7})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var body struct {
+		Project struct {
+			ID              int64 `json:"id"`
+			NextIssueNumber int64 `json:"next_issue_number"`
+		} `json:"project"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.Equal(t, pid, body.Project.ID)
+	assert.EqualValues(t, 7, body.Project.NextIssueNumber)
+
+	// Counter actually moved: a fresh create allocates from the new value.
+	resp2, bs2 := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/issues",
+		map[string]any{"actor": "agent", "title": "x"})
+	require.Equal(t, 200, resp2.StatusCode, string(bs2))
+	assert.Contains(t, string(bs2), `"number":7`)
+}
+
+func TestResetCounter_RefusesWhenIssuesExist(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	pidStr := strconv.FormatInt(pid, 10)
+
+	requireOK(t, postWithHeader(t, ts, "/api/v1/projects/"+pidStr+"/issues",
+		nil, map[string]any{"actor": "agent", "title": "x"}))
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/reset-counter",
+		map[string]any{"to": 1})
+	require.Equal(t, http.StatusConflict, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"project_has_issues"`)
+	assert.Contains(t, string(bs), `"issue_count":1`)
+}
+
+func TestResetCounter_RejectsZeroOrNegative(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	pidStr := strconv.FormatInt(pid, 10)
+
+	for _, to := range []int64{0, -5} {
+		resp, bs := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/reset-counter",
+			map[string]any{"to": to})
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
+		assert.Contains(t, string(bs), `"validation"`)
+	}
+}
+
+func TestResetCounter_ProjectNotFound(t *testing.T) {
+	ts := newTestServer(t)
+	resp, bs := postJSON(t, ts, "/api/v1/projects/9999/reset-counter",
+		map[string]any{"to": 1})
+	require.Equal(t, http.StatusNotFound, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"project_not_found"`)
+}
+
 func TestListProjectsAndShow(t *testing.T) {
 	dir := t.TempDir()
 	runGit(t, dir, "init", "--quiet")
