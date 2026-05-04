@@ -16,6 +16,8 @@ import (
 func TestImportCreatesTargetDB(t *testing.T) {
 	resetFlags(t)
 	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	t.Setenv("KATA_DB", filepath.Join(home, "kata.db"))
 	input := writeExportFixture(t, home)
 	target := filepath.Join(home, "target.db")
 
@@ -37,6 +39,8 @@ func TestImportCreatesTargetDB(t *testing.T) {
 func TestImportRejectsExistingTargetWithoutForce(t *testing.T) {
 	resetFlags(t)
 	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	t.Setenv("KATA_DB", filepath.Join(home, "kata.db"))
 	input := writeExportFixture(t, home)
 	target := filepath.Join(home, "target.db")
 	d, err := db.Open(context.Background(), target)
@@ -53,6 +57,31 @@ func TestImportRejectsExistingTargetWithoutForce(t *testing.T) {
 	var ce *cliError
 	require.ErrorAs(t, err, &ce)
 	assert.Contains(t, ce.Message, "target already exists")
+}
+
+func TestImportRefusesDaemon(t *testing.T) {
+	resetFlags(t)
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "kata.db")
+	t.Setenv("KATA_HOME", home)
+	t.Setenv("KATA_DB", dbPath)
+	input := writeExportFixture(t, home)
+	target := filepath.Join(home, "target.db")
+	d, err := db.Open(context.Background(), dbPath)
+	require.NoError(t, err)
+	require.NoError(t, d.Close())
+	addr, cleanup := pipeServer(t)
+	t.Cleanup(cleanup)
+	require.NoError(t, writeRuntimeFor(home, addr))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"import", "--input", input, "--target", target})
+	err = cmd.Execute()
+
+	require.Error(t, err)
+	var ce *cliError
+	require.ErrorAs(t, err, &ce)
+	assert.Contains(t, ce.Message, "daemon is running")
 }
 
 func writeExportFixture(t *testing.T, home string) string {

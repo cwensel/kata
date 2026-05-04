@@ -23,6 +23,9 @@ func newImportCmd() *cobra.Command {
 			if target == "" {
 				return &cliError{Message: "import requires --target", Kind: kindValidation, ExitCode: ExitValidation}
 			}
+			if err := refuseRunningDaemon(cmd.Context()); err != nil {
+				return err
+			}
 			if _, err := os.Stat(target); err == nil && !force {
 				return &cliError{
 					Message:  "target already exists; pass --force to replace it",
