@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -174,6 +175,10 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 		return "", fmt.Errorf("decode response: %w", err)
 	}
 
+	if err := ensureGitignoreEntry(startPath, ".kata.local.toml"); err != nil {
+		fmt.Fprintf(os.Stderr, "kata: warning: could not update .gitignore: %v\n", err)
+	}
+
 	if flags.JSON {
 		// Route JSON output through emitJSON so kata_api_version is present
 		// (CLI JSON contract per spec §5.1). The daemon's response body is
@@ -245,5 +250,44 @@ func mapStatusToExit(status int, _ string) int {
 		return ExitConfirm
 	default:
 		return ExitInternal
+	}
+}
+
+// ensureGitignoreEntry appends a single line to <dir>/.gitignore if
+// the entry is not already present. Creates the file if absent.
+// Idempotent: re-running on a file that already lists the entry is a
+// no-op.
+func ensureGitignoreEntry(dir, entry string) error {
+	path := filepath.Join(dir, ".gitignore")
+	existing, err := os.ReadFile(path) //nolint:gosec
+	switch {
+	case err == nil:
+		// Walk lines so we don't false-match a substring inside a longer
+		// pattern (e.g. ".kata.local.toml.bak").
+		for _, line := range strings.Split(string(existing), "\n") {
+			if strings.TrimSpace(line) == entry {
+				return nil
+			}
+		}
+		// Preserve trailing-newline convention: if the file ends without
+		// a newline, add one before appending so we don't merge our line
+		// into theirs.
+		var prefix string
+		if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+			prefix = "\n"
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := f.WriteString(prefix + entry + "\n"); err != nil {
+			return err
+		}
+		return nil
+	case errors.Is(err, os.ErrNotExist):
+		return os.WriteFile(path, []byte(entry+"\n"), 0o644) //nolint:gosec
+	default:
+		return err
 	}
 }

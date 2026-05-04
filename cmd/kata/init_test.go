@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,4 +35,64 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "git %v: %s", args, out)
+}
+
+func TestInit_AddsLocalToGitignoreWhenAbsent(t *testing.T) {
+	env := testenv.New(t)
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	flags.JSON = true
+	t.Cleanup(func() { flags.JSON = false })
+
+	_, err := callInit(context.Background(), env.URL, dir, callInitOpts{})
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), ".kata.local.toml")
+}
+
+func TestInit_GitignoreIsIdempotent(t *testing.T) {
+	env := testenv.New(t)
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"),
+		[]byte("node_modules/\n.kata.local.toml\n"), 0o644))
+
+	flags.JSON = true
+	t.Cleanup(func() { flags.JSON = false })
+
+	_, err := callInit(context.Background(), env.URL, dir, callInitOpts{})
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	// Exactly one occurrence — no duplication on re-run.
+	assert.Equal(t, 1, strings.Count(string(content), ".kata.local.toml"))
+	assert.Contains(t, string(content), "node_modules/")
+}
+
+func TestInit_GitignoreAppendsToExisting(t *testing.T) {
+	env := testenv.New(t)
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"),
+		[]byte("dist/\n"), 0o644))
+
+	flags.JSON = true
+	t.Cleanup(func() { flags.JSON = false })
+
+	_, err := callInit(context.Background(), env.URL, dir, callInitOpts{})
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "dist/")
+	assert.Contains(t, string(content), ".kata.local.toml")
 }
