@@ -13,6 +13,71 @@ import (
 	"github.com/wesm/kata/internal/uid"
 )
 
+// TestV2ToV3CutoverFillsIdentity covers spec §8.4: a curated v2 source DB —
+// covering events with varied types and an idempotency-key payload, and a
+// purge_log row carrying the synthetic purge_reset_after_event_id reservation
+// — flows through the cutover and lands at v3 with valid identity columns.
+// The reset-cursor reservation is preserved verbatim (a v2-era invariant
+// inherited by v3).
+func TestV2ToV3CutoverFillsIdentity(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kata.db")
+	writeLegacyV2DB(t, path)
+
+	require.NoError(t, jsonl.AutoCutover(ctx, path))
+
+	d, err := db.Open(ctx, path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	var localUID string
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&localUID))
+	assert.True(t, uid.Valid(localUID))
+
+	// Every event has a valid uid + origin == new instance.
+	rows, err := d.QueryContext(ctx, `SELECT uid, origin_instance_uid FROM events ORDER BY id`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var eventCount int
+	for rows.Next() {
+		var u, origin string
+		require.NoError(t, rows.Scan(&u, &origin))
+		assert.True(t, uid.Valid(u), "event uid %q invalid", u)
+		assert.Equal(t, localUID, origin)
+		eventCount++
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, 2, eventCount, "fixture seeds 2 events (issue.created with idempotency_key + issue.commented)")
+
+	// purge_log row also has uid + origin and the reservation is preserved.
+	var purgeUID, purgeOrigin string
+	var resetAfter int64
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT uid, origin_instance_uid, purge_reset_after_event_id FROM purge_log WHERE id=1`).
+		Scan(&purgeUID, &purgeOrigin, &resetAfter))
+	assert.True(t, uid.Valid(purgeUID))
+	assert.Equal(t, localUID, purgeOrigin)
+	assert.Equal(t, int64(99), resetAfter, "synthetic reset cursor must survive cutover")
+
+	// Re-running the cutover on a fresh copy of the same v2 source must yield
+	// identical event/purge_log row UIDs (FromStableSeed determinism), even
+	// though instance_uid/origin are intentionally non-deterministic.
+	pathB := filepath.Join(t.TempDir(), "b.db")
+	writeLegacyV2DB(t, pathB)
+	require.NoError(t, jsonl.AutoCutover(ctx, pathB))
+	b, err := db.Open(ctx, pathB)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = b.Close() })
+
+	for _, q := range []string{
+		`SELECT uid FROM events ORDER BY id ASC`,
+		`SELECT uid FROM purge_log ORDER BY id ASC`,
+	} {
+		assert.Equal(t, scanUIDs(t, d, q), scanUIDs(t, b, q), q)
+	}
+}
+
 // TestV1ToV3CutoverFillsIdentity covers spec §8.5: a v1 source going through
 // the cutover path lands at v3 with valid project UIDs, issue UIDs, event UIDs,
 // purge_log UIDs, and origin_instance_uid stamped on every event/purge_log row
