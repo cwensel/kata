@@ -1,14 +1,14 @@
-# Tailnet Remote Client — Design
+# Remote Client — Design
 
 > **Status:** design / spec.
 > **Date:** 2026-05-04.
 > **Companions:** `docs/superpowers/specs/2026-04-29-kata-design.md` (master), `docs/superpowers/specs/2026-04-29-kata-shared-server-mode.md` (future shared-mode guardrails).
 >
-> This spec is the smallest viable step from "v1 local-only daemon" to "one shared kata daemon on a tailnet, multiple thin clients on other hosts." It does **not** introduce auth, sync, or schema changes. It only relaxes daemon binding (opt-in, admin-only) and teaches the client how to discover a remote server via a workspace-local override.
+> This spec is the smallest viable step from "v1 local-only daemon" to "one shared kata daemon on a private network, multiple thin clients on other hosts." It does **not** introduce auth, sync, or schema changes. It only relaxes daemon binding (opt-in, admin-only) and teaches the client how to discover a remote server via a workspace-local override.
 
 ## 1. Goals
 
-1. A kata daemon, started by an admin under launchd/systemd/equivalent, can bind to a tailnet IP and serve other hosts on the same tailnet.
+1. A kata daemon, started by an admin under launchd/systemd/equivalent, can bind to a private-network IP and serve other hosts on the same network.
 2. The kata CLI and the kata TUI on a *different* host can target that remote daemon without auto-starting a local one.
 3. The mechanism honors a per-workspace override (`.kata.local.toml`) and an environment variable (`KATA_SERVER`), in that precedence with env winning.
 4. Default behavior (no flags, no env, no local file) is byte-identical to today: loopback Unix-socket daemon, auto-started on demand.
@@ -16,10 +16,10 @@
 
 ## 2. Non-goals (deferred)
 
-- **Authentication.** No bearer tokens, no shared secrets, no per-user identity. Tailnet ACLs are the access boundary in v1. A follow-up will add a coarse shared token; see §10.
+- **Authentication.** No bearer tokens, no shared secrets, no per-user identity. Network-level ACLs (firewall, VPN, tailnet) are the access boundary in v1. A follow-up will add a coarse shared token; see §10.
 - **TLS / HTTPS.** Deployments that need encryption put a reverse proxy in front of `--listen`. kata speaks plain HTTP.
 - **Per-user fallback config (`~/.kata/config.toml`).** Deferred until interaction with `.kata.local.toml` and per-machine vs per-workspace precedence is understood. See §10.
-- **Tailscale-specific code.** No interface enumeration, no MagicDNS resolution. "Tailnet" is a deployment pattern; kata depends on no specific VPN.
+- **VPN-specific code.** No interface enumeration, no MagicDNS resolution, no tailscale/wireguard/zerotier integration. The network is a deployment concern; kata depends on no specific VPN.
 - **Sync, federation, multi-daemon coordination.** Out of scope.
 
 ## 3. Locked decisions
@@ -28,7 +28,7 @@ These are settled and not re-litigated by the implementation plan.
 
 1. **Daemon `--listen host:port` flag is admin-only.** Auto-start never produces a `--listen`-bound daemon. The flag is consumed only by `kata daemon start`.
 2. **Default daemon binding is unchanged.** Without `--listen`, the daemon binds a Unix socket exactly as today, and `requireLoopback` continues to apply to any TCP endpoint produced by `ParseAddress`.
-3. **`--listen` rejects clearly-public addresses.** Loopback, RFC1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64/10`), link-local (`169.254/16`, `fe80::/10`), and ULA (`fc00::/7`) are accepted. Anything else (public IPv4, GUA IPv6, `0.0.0.0`, `::`) is rejected with a clear error. This catches typos like `--listen 0.0.0.0:7777` and prevents accidentally exposing kata on a public interface; it deliberately does not bake in tailscale-specific knowledge.
+3. **`--listen` rejects clearly-public addresses.** Loopback, RFC1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64/10`), link-local (`169.254/16`, `fe80::/10`), and ULA (`fc00::/7`) are accepted. Anything else (public IPv4, GUA IPv6, `0.0.0.0`, `::`) is rejected with a clear error. This catches typos like `--listen 0.0.0.0:7777` and prevents accidentally exposing kata on a public interface; it deliberately does not encode any specific VPN's address ranges.
 4. **`KATA_SERVER` is the env name** (value: full URL like `http://100.64.0.5:7777`). Env wins over file so CI and ad-hoc overrides do not require editing checked-in or developer-local files.
 5. **`.kata.local.toml` reuses the `.kata.toml` struct.** Same `version = 1`, same `[project]`, same optional `[server]` block. One parser, one struct, one merge step. Validation differs slightly: in the local file `[project]` is optional (since a developer may want to set only `[server]`), while in `.kata.toml` it remains required.
 6. **`[server]` is the only meaningful new key.** It is optional in *both* files. In `.kata.toml` it would be ignored-but-not-rejected (the field is simply optional); in practice it lives in `.kata.local.toml`.
@@ -167,7 +167,7 @@ Steps 2 and 3 deliberately bypass local discovery and auto-start. A bot host wit
 
 The case this design serves directly:
 
-- **Host A (admin / kata server).** Tailnet IP `100.64.0.5`. Runs `kata daemon start --listen 100.64.0.5:7777` under launchd. Holds the SQLite DB. Local CLI/TUI on this host either find the daemon via the runtime file or set `KATA_SERVER=http://127.0.0.1:7777` for a direct path.
+- **Host A (admin / kata server).** Private-network IP `100.64.0.5` (CGNAT range, e.g. tailscale). Runs `kata daemon start --listen 100.64.0.5:7777` under launchd. Holds the SQLite DB. Local CLI/TUI on this host either find the daemon via the runtime file or set `KATA_SERVER=http://127.0.0.1:7777` for a direct path.
 - **Host B (filing bot).** Different machine, different repo (a test harness checkout). Sets `KATA_SERVER=http://100.64.0.5:7777` in the bot's process env, or commits a `.kata.local.toml` (gitignored) with `[server] url = "http://100.64.0.5:7777"`. Runs `kata create ...` to file bugs. No local daemon, no Unix socket.
 - **Host C (implementing bot).** Different machine again, different repo (the implementation checkout). Same setup as Host B. Runs `kata list`, `kata show`, `kata close` to consume and resolve issues.
 
