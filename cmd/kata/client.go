@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -45,8 +46,23 @@ func envHTTPTimeout(def time.Duration) time.Duration {
 // if none is found. Thin wrapper over daemonclient.EnsureRunning so the CLI
 // and TUI share one resolution path; tests still inject a base URL via
 // daemonclient.BaseURLKey{} on the context.
+//
+// If a remote is explicitly configured (via KATA_SERVER or
+// .kata.local.toml) but does not respond, the CLI surfaces this as a
+// daemon-unavailable error so callers see a stable exit code and shape.
 func ensureDaemon(ctx context.Context) (string, error) {
-	return daemonclient.EnsureRunning(ctx)
+	url, err := daemonclient.EnsureRunning(ctx)
+	if err == nil {
+		return url, nil
+	}
+	if errors.Is(err, daemonclient.ErrRemoteUnavailable) {
+		return "", &cliError{
+			Message:  err.Error(),
+			Kind:     kindDaemonUnavail,
+			ExitCode: ExitDaemonUnavail,
+		}
+	}
+	return "", err
 }
 
 // discoverDaemon returns the live daemon URL without auto-starting one.

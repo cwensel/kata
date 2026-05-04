@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -28,5 +30,26 @@ func TestEnvHTTPTimeout(t *testing.T) {
 				t.Fatalf("envHTTPTimeout(%q) = %v, want %v", tc.env, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEnsureDaemon_RemoteUnavailableMapsToCLIError(t *testing.T) {
+	t.Setenv("KATA_HOME", t.TempDir())
+	t.Setenv("KATA_SERVER", "http://127.0.0.1:1") // closed port
+
+	_, err := ensureDaemon(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var ce *cliError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cliError, got %T (%v)", err, err)
+	}
+	if ce.Kind != kindDaemonUnavail {
+		t.Errorf("expected Kind=%v, got %v", kindDaemonUnavail, ce.Kind)
+	}
+	if ce.ExitCode != ExitDaemonUnavail {
+		t.Errorf("expected ExitCode=%d, got %d", ExitDaemonUnavail, ce.ExitCode)
 	}
 }
