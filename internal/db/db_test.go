@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,17 @@ func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
 	var version string
 	require.NoError(t, d.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
 	assert.Equal(t, "1", version)
+}
+
+func TestOpen_RecordsCurrentSchemaVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kata.db")
+	d, err := db.Open(context.Background(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	var got string
+	require.NoError(t, d.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&got))
+	assert.Equal(t, strconv.Itoa(db.CurrentSchemaVersion()), got)
 }
 
 func TestOpen_IsIdempotent(t *testing.T) {

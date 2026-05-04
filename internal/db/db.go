@@ -17,6 +17,11 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+const currentSchemaVersion = 1
+
+// CurrentSchemaVersion returns the schema version expected by this binary.
+func CurrentSchemaVersion() int { return currentSchemaVersion }
+
 // DB wraps *sql.DB. Use Open to construct one with PRAGMAs applied.
 type DB struct {
 	*sql.DB
@@ -83,9 +88,9 @@ func (d *DB) migrate(ctx context.Context) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO meta(key,value) VALUES('schema_version', ?)
-			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.Itoa(ver)); err != nil {
+			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.Itoa(currentSchemaVersion)); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("record version %d: %w", ver, err)
+			return fmt.Errorf("record schema version %d: %w", currentSchemaVersion, err)
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit %s: %w", f.Name(), err)

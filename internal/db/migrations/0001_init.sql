@@ -157,7 +157,6 @@ CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-INSERT INTO meta(key, value) VALUES ('schema_version', '1');
 INSERT INTO meta(key, value) VALUES ('created_by_version', '0.1.0');
 
 -- FTS5 virtual table over issue title+body+comments, kept in sync via triggers in Plan 3.
