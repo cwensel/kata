@@ -106,7 +106,7 @@ func TestStopRunningDaemonsDoesNotSignalUnverifiedRuntimePID(t *testing.T) {
 	}
 }
 
-func TestStopRunningDaemonsRemovesUnverifiableIncompatibleRuntime(t *testing.T) {
+func TestStopRunningDaemonsErrorsOnUnverifiableIncompatibleRuntime(t *testing.T) {
 	t.Setenv("KATA_SKIP_DAEMON_VERSION_CHECK", "")
 	tmp := t.TempDir()
 	t.Setenv("KATA_HOME", tmp)
@@ -129,10 +129,12 @@ func TestStopRunningDaemonsRemovesUnverifiableIncompatibleRuntime(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 
-	require.NoError(t, stopRunningDaemons(ctx, ns.DataDir))
+	err = stopRunningDaemons(ctx, ns.DataDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PID could not be verified")
 
 	_, err = os.Stat(filepath.Join(ns.DataDir, fmt.Sprintf("daemon.%d.json", os.Getpid())))
-	assert.True(t, os.IsNotExist(err), "unverifiable incompatible runtime file should be removed")
+	assert.NoError(t, err, "unverifiable reachable daemon runtime file should be preserved")
 }
 
 func writeRuntimeRecord(t *testing.T, home, addr string) error {

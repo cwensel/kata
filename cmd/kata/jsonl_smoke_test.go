@@ -27,6 +27,8 @@ func TestSmoke_ExportImport(t *testing.T) {
 	runSmokeCLI(t, env.URL, []string{"--workspace", dir, "label", "add", "2", "backend"})
 
 	before := runSmokeCLI(t, env.URL, []string{"--workspace", dir, "--json", "list"})
+	beforeShow := runSmokeCLI(t, env.URL, []string{"--workspace", dir, "--json", "show", "1"})
+	assert.Contains(t, beforeShow, "watermelon note")
 	exportPath := filepath.Join(env.Home, "smoke.jsonl")
 	runSmokeCLI(t, env.URL, []string{"export", "--output", exportPath})
 	targetPath := filepath.Join(t.TempDir(), "imported.db")
@@ -34,8 +36,10 @@ func TestSmoke_ExportImport(t *testing.T) {
 
 	importedURL := startSmokeDaemonForDB(t, targetPath)
 	after := runSmokeCLI(t, importedURL, []string{"--workspace", dir, "--json", "list"})
+	afterShow := runSmokeCLI(t, importedURL, []string{"--workspace", dir, "--json", "show", "1"})
 
 	assert.JSONEq(t, before, after)
+	assert.JSONEq(t, beforeShow, afterShow)
 }
 
 func runSmokeCLI(t *testing.T, baseURL string, args []string) string {

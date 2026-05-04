@@ -107,8 +107,7 @@ func stopRunningDaemons(ctx context.Context, dataDir string) error {
 			continue
 		}
 		if info.PID == 0 || info.PID != r.PID {
-			_ = os.Remove(filepath.Join(dataDir, fmt.Sprintf("daemon.%d.json", r.PID)))
-			continue
+			return fmt.Errorf("daemon at %s is running but its PID could not be verified; stop it manually", r.Address)
 		}
 		p, err := os.FindProcess(r.PID)
 		if err != nil {
