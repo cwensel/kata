@@ -113,6 +113,25 @@ type MergeProjectResponse struct {
 	Body db.ProjectMergeResult
 }
 
+// ResetCounterRequest is POST /api/v1/projects/{project_id}/reset-counter.
+// To is the value next_issue_number will be rewritten to; must be >= 1.
+type ResetCounterRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Body      struct {
+		To int64 `json:"to" required:"true"`
+	}
+}
+
+// ResetCounterResponse echoes the updated project so callers don't need a
+// follow-up GET. Returns 409 with kind="project_has_issues" when the project
+// still has at least one row in the issues table.
+type ResetCounterResponse struct {
+	Body struct {
+		Project db.Project `json:"project"`
+	}
+}
+
+
 // CreateIssueRequest is POST /api/v1/projects/{id}/issues.
 //
 // IdempotencyKey is read from the Idempotency-Key HTTP header (spec §4.4).

@@ -32,7 +32,7 @@ type projectRef struct {
 
 func newProjectsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "projects", Short: "list and inspect kata projects"}
-	cmd.AddCommand(projectsListCmd(), projectsShowCmd(), projectsRenameCmd(), projectsMergeCmd())
+	cmd.AddCommand(projectsListCmd(), projectsShowCmd(), projectsRenameCmd(), projectsMergeCmd(), projectsResetCounterCmd())
 	return cmd
 }
 
@@ -142,6 +142,68 @@ func projectsRenameCmd() *cobra.Command {
 			return err
 		},
 	}
+}
+
+func projectsResetCounterCmd() *cobra.Command {
+	var to int64
+	cmd := &cobra.Command{
+		Use:   "reset-counter <project_id>",
+		Short: "reset next_issue_number for an empty project",
+		Long: "Reset projects.next_issue_number on an empty project. " +
+			"Refuses if any issues exist; the only path to empty is to purge them first.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return &cliError{Message: "project id must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
+			}
+			if to < 1 {
+				return &cliError{Message: "--to must be >= 1", Kind: kindValidation, ExitCode: ExitValidation}
+			}
+			ctx := cmd.Context()
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			client, err := httpClientFor(ctx, baseURL)
+			if err != nil {
+				return err
+			}
+			reqBody := map[string]any{"to": to}
+			status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
+				fmt.Sprintf("%s/api/v1/projects/%d/reset-counter", baseURL, id), reqBody)
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			if flags.JSON {
+				var buf bytes.Buffer
+				if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
+					return err
+				}
+				_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
+				return err
+			}
+			var b struct {
+				Project struct {
+					ID              int64  `json:"id"`
+					Identity        string `json:"identity"`
+					Name            string `json:"name"`
+					NextIssueNumber int64  `json:"next_issue_number"`
+				} `json:"project"`
+			}
+			if err := json.Unmarshal(bs, &b); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s (%s, next #%d)\n",
+				b.Project.ID, b.Project.Identity, b.Project.Name, b.Project.NextIssueNumber)
+			return err
+		},
+	}
+	cmd.Flags().Int64Var(&to, "to", 1, "value to set next_issue_number to (>= 1)")
+	return cmd
 }
 
 func projectsMergeCmd() *cobra.Command {

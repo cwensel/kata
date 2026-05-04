@@ -304,3 +304,109 @@ func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
 	require.NoError(t, lookupErr)
 	assert.Equal(t, "github.com/wesm/kenn", got.Identity)
 }
+
+func TestResetIssueCounter_EmptyProjectMovesCounter(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	require.NoError(t, d.ResetIssueCounter(ctx, p.ID, 42))
+
+	p2, err := d.ProjectByID(ctx, p.ID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 42, p2.NextIssueNumber)
+}
+
+func TestResetIssueCounter_ReturnsTypedErrorWithCount(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	for range 3 {
+		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "a"})
+		require.NoError(t, err)
+	}
+	before, err := d.ProjectByID(ctx, p.ID)
+	require.NoError(t, err)
+
+	err = d.ResetIssueCounter(ctx, p.ID, 1)
+	var hasIssues *db.ProjectHasIssuesError
+	require.ErrorAs(t, err, &hasIssues)
+	assert.EqualValues(t, 3, hasIssues.Count)
+
+	after, err := d.ProjectByID(ctx, p.ID)
+	require.NoError(t, err)
+	assert.Equal(t, before.NextIssueNumber, after.NextIssueNumber, "counter must not move when gate trips")
+}
+
+func TestResetIssueCounter_ProjectNotFound(t *testing.T) {
+	d := openTestDB(t)
+	err := d.ResetIssueCounter(context.Background(), 9999, 1)
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestResetIssueCounter_RejectsInvalidTo(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	for _, to := range []int64{0, -1, -42} {
+		err := d.ResetIssueCounter(ctx, p.ID, to)
+		assert.ErrorIs(t, err, db.ErrInvalidCounterValue, "to=%d", to)
+	}
+	// Counter must remain at its initial value.
+	p2, err := d.ProjectByID(ctx, p.ID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, p2.NextIssueNumber)
+}
+
+// Covers the production scenario: project accumulated issues that were all
+// purged, then the user resets the counter to start over at 1.
+func TestResetIssueCounter_SucceedsAfterPurge(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+
+	var issueIDs []int64
+	for range 3 {
+		issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "a"})
+		require.NoError(t, err)
+		issueIDs = append(issueIDs, issue.ID)
+	}
+	for _, id := range issueIDs {
+		_, err := d.PurgeIssue(ctx, id, "tester", nil)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, d.ResetIssueCounter(ctx, p.ID, 1))
+
+	p2, err := d.ProjectByID(ctx, p.ID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, p2.NextIssueNumber)
+}
+
+// Guards against splitting the gate back into count-then-update — the
+// empty-check must be atomic with the write so a concurrent CreateIssue
+// can't slip between them.
+func TestResetIssueCounter_GateLivesInUpdate(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "a"})
+	require.NoError(t, err)
+
+	before, err := d.ProjectByID(ctx, p.ID)
+	require.NoError(t, err)
+
+	err = d.ResetIssueCounter(ctx, p.ID, 999)
+	var hasIssues *db.ProjectHasIssuesError
+	require.ErrorAs(t, err, &hasIssues)
+
+	after, err := d.ProjectByID(ctx, p.ID)
+	require.NoError(t, err)
+	assert.Equal(t, before.NextIssueNumber, after.NextIssueNumber)
+}
