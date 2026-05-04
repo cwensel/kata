@@ -49,24 +49,51 @@ func daemonStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			alive := 0
+			out := daemonStatusOutput{Daemons: make([]daemonStatusEntry, 0, len(recs))}
 			for _, r := range recs {
 				if daemon.ProcessAlive(r.PID) {
-					ver := r.Version
-					if ver == "" {
-						ver = "unknown"
-					}
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "daemon pid=%d version=%s address=%s db=%s started_at=%s\n",
-						r.PID, ver, r.Address, r.DBPath, r.StartedAt.Format(time.RFC3339))
-					alive++
+					out.Daemons = append(out.Daemons, daemonStatusEntry{
+						PID:       r.PID,
+						Version:   daemonRuntimeVersion(r),
+						Address:   r.Address,
+						DBPath:    r.DBPath,
+						StartedAt: r.StartedAt,
+					})
 				}
 			}
-			if alive == 0 {
+			if flags.JSON {
+				return emitJSON(cmd.OutOrStdout(), out)
+			}
+			if len(out.Daemons) == 0 {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no daemon running")
+				return nil
+			}
+			for _, d := range out.Daemons {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "daemon pid=%d version=%s address=%s db=%s started_at=%s\n",
+					d.PID, d.Version, d.Address, d.DBPath, d.StartedAt.Format(time.RFC3339))
 			}
 			return nil
 		},
 	}
+}
+
+type daemonStatusOutput struct {
+	Daemons []daemonStatusEntry `json:"daemons"`
+}
+
+type daemonStatusEntry struct {
+	PID       int       `json:"pid"`
+	Version   string    `json:"version"`
+	Address   string    `json:"address"`
+	DBPath    string    `json:"db_path"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+func daemonRuntimeVersion(r daemon.RuntimeRecord) string {
+	if r.Version == "" {
+		return "unknown"
+	}
+	return r.Version
 }
 
 func daemonStopCmd() *cobra.Command {
