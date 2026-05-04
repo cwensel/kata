@@ -253,16 +253,17 @@ func chooseEndpoint(ns *daemon.Namespace, listen string) (daemon.DaemonEndpoint,
 		return daemon.UnixEndpoint(socketPath), nil
 	}
 	if _, _, err := net.SplitHostPort(listen); err != nil {
-		return nil, fmt.Errorf("--listen %q: %w", listen, err)
+		return nil, fmt.Errorf("kata daemon: invalid --listen value %q: %v", listen, err)
 	}
 	ep := daemon.TCPEndpointAny(listen)
 	// Pre-flight the validator so the error surfaces before we attempt to
-	// Listen — easier to read in a CLI error.
-	if l, err := ep.Listen(); err != nil {
-		return nil, fmt.Errorf("--listen %s: %w", listen, err)
-	} else {
-		_ = l.Close()
+	// Listen — easier to read in a CLI error than after launchd reports
+	// "started then died".
+	l, err := ep.Listen()
+	if err != nil {
+		return nil, fmt.Errorf("kata daemon: invalid --listen value %q: %v", listen, err)
 	}
+	_ = l.Close()
 	return ep, nil
 }
 
