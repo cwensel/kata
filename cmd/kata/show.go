@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,10 +18,6 @@ func newShowCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			n, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
 			start, err := resolveStartPath(flags.Workspace)
 			if err != nil {
 				return err
@@ -35,12 +30,16 @@ func newShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ref, err := resolveIssueRef(ctx, baseURL, pid, args[0])
+			if err != nil {
+				return err
+			}
 			client, err := httpClientFor(ctx, baseURL)
 			if err != nil {
 				return err
 			}
 			httpStatus, bs, err := httpDoJSON(ctx, client, http.MethodGet,
-				fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, n), nil)
+				fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, ref.Number), nil)
 			if err != nil {
 				return err
 			}

@@ -57,8 +57,10 @@ func TestEvents_OneShotJSON(t *testing.T) {
 	var b struct {
 		KataAPIVersion int `json:"kata_api_version"`
 		Events         []struct {
-			EventID int64  `json:"event_id"`
-			Type    string `json:"type"`
+			EventID    int64   `json:"event_id"`
+			Type       string  `json:"type"`
+			ProjectUID string  `json:"project_uid"`
+			IssueUID   *string `json:"issue_uid"`
 		} `json:"events"`
 		NextAfterID int64 `json:"next_after_id"`
 	}
@@ -66,6 +68,9 @@ func TestEvents_OneShotJSON(t *testing.T) {
 	assert.Equal(t, 1, b.KataAPIVersion)
 	require.Len(t, b.Events, 1)
 	assert.Equal(t, "issue.created", b.Events[0].Type)
+	assert.NotEmpty(t, b.Events[0].ProjectUID)
+	require.NotNil(t, b.Events[0].IssueUID)
+	assert.NotEmpty(t, *b.Events[0].IssueUID)
 	assert.Equal(t, int64(1), b.NextAfterID)
 }
 
@@ -159,6 +164,8 @@ func TestEvents_TailEmitsNDJSON(t *testing.T) {
 		var env map[string]any
 		require.NoError(t, json.Unmarshal([]byte(l), &env), "each line must be a JSON object")
 		assert.Equal(t, "issue.created", env["type"])
+		assert.NotEmpty(t, env["project_uid"])
+		assert.NotEmpty(t, env["issue_uid"])
 	}
 }
 

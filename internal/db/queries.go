@@ -461,6 +461,28 @@ func (d *DB) IssueByUID(ctx context.Context, issueUID string) (Issue, error) {
 	return scanIssue(row)
 }
 
+// IssueUIDPrefixMatch returns issues whose UID starts with prefix, ordered by
+// UID for deterministic ambiguity reporting.
+func (d *DB) IssueUIDPrefixMatch(ctx context.Context, prefix string, limit int) ([]Issue, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := d.QueryContext(ctx, issueSelect+` WHERE i.uid LIKE ? || '%' ORDER BY i.uid ASC LIMIT ?`, prefix, limit)
+	if err != nil {
+		return nil, fmt.Errorf("issue uid prefix match: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Issue
+	for rows.Next() {
+		issue, err := scanIssue(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, issue)
+	}
+	return out, rows.Err()
+}
+
 // ListIssuesParams filters list output. Status="" → all. Empty struct → all.
 type ListIssuesParams struct {
 	ProjectID int64

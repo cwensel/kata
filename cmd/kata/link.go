@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 
 	"github.com/spf13/cobra"
 )
@@ -18,16 +17,7 @@ func newLinkCmd() *cobra.Command {
 		Short: "create a link between two issues (type: parent|blocks|related)",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			from, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "from must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			linkType := args[1]
-			to, err := strconv.ParseInt(args[2], 10, 64)
-			if err != nil {
-				return &cliError{Message: "to must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			return runLinkCreate(cmd, from, linkType, to, false)
+			return runLinkCreate(cmd, args[0], args[1], args[2], false)
 		},
 	}
 }
@@ -39,15 +29,7 @@ func newParentCmd() *cobra.Command {
 		Short: "set the parent link of <child> to <parent>",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			child, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "child must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			parent, err := strconv.ParseInt(args[1], 10, 64)
-			if err != nil {
-				return &cliError{Message: "parent must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			return runLinkCreate(cmd, child, "parent", parent, replace)
+			return runLinkCreate(cmd, args[0], "parent", args[1], replace)
 		},
 	}
 	cmd.Flags().BoolVar(&replace, "replace", false, "swap the existing parent if any")
@@ -60,16 +42,7 @@ func newUnlinkCmd() *cobra.Command {
 		Short: "remove a link between two issues",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			from, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "from must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			linkType := args[1]
-			to, err := strconv.ParseInt(args[2], 10, 64)
-			if err != nil {
-				return &cliError{Message: "to must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			return runUnlinkByEndpoints(cmd, from, linkType, to)
+			return runUnlinkByEndpoints(cmd, args[0], args[1], args[2])
 		},
 	}
 }
@@ -80,11 +53,7 @@ func newUnparentCmd() *cobra.Command {
 		Short: "remove the parent link of <child>",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			child, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "child must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			return runUnlinkByType(cmd, child, "parent")
+			return runUnlinkByType(cmd, args[0], "parent")
 		},
 	}
 }
@@ -95,15 +64,7 @@ func newBlockCmd() *cobra.Command {
 		Short: "mark <blocker> as blocking <blocked>",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			blocker, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "blocker must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			blocked, err := strconv.ParseInt(args[1], 10, 64)
-			if err != nil {
-				return &cliError{Message: "blocked must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			return runLinkCreate(cmd, blocker, "blocks", blocked, false)
+			return runLinkCreate(cmd, args[0], "blocks", args[1], false)
 		},
 	}
 }
@@ -114,15 +75,7 @@ func newUnblockCmd() *cobra.Command {
 		Short: "remove the blocks link from <blocker> to <blocked>",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			blocker, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "blocker must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			blocked, err := strconv.ParseInt(args[1], 10, 64)
-			if err != nil {
-				return &cliError{Message: "blocked must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			return runUnlinkByEndpoints(cmd, blocker, "blocks", blocked)
+			return runUnlinkByEndpoints(cmd, args[0], "blocks", args[1])
 		},
 	}
 }
@@ -133,16 +86,7 @@ func newRelateCmd() *cobra.Command {
 		Short: "mark two issues as related (canonical-ordered)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "a must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			b, err := strconv.ParseInt(args[1], 10, 64)
-			if err != nil {
-				return &cliError{Message: "b must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			from, to := canonicalRelated(a, b)
-			return runLinkCreate(cmd, from, "related", to, false)
+			return runLinkCreate(cmd, args[0], "related", args[1], false)
 		},
 	}
 }
@@ -153,16 +97,7 @@ func newUnrelateCmd() *cobra.Command {
 		Short: "remove a related link between two issues",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "a must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			b, err := strconv.ParseInt(args[1], 10, 64)
-			if err != nil {
-				return &cliError{Message: "b must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			from, to := canonicalRelated(a, b)
-			return runUnlinkByEndpoints(cmd, from, "related", to)
+			return runUnlinkByEndpoints(cmd, args[0], "related", args[1])
 		},
 	}
 }
@@ -176,7 +111,7 @@ func canonicalRelated(a, b int64) (int64, int64) {
 	return b, a
 }
 
-func runLinkCreate(cmd *cobra.Command, fromNumber int64, linkType string, toNumber int64, replace bool) error {
+func runLinkCreate(cmd *cobra.Command, fromRef string, linkType string, toRef string, replace bool) error {
 	ctx := cmd.Context()
 	start, err := resolveStartPath(flags.Workspace)
 	if err != nil {
@@ -187,6 +122,14 @@ func runLinkCreate(cmd *cobra.Command, fromNumber int64, linkType string, toNumb
 		return err
 	}
 	pid, err := resolveProjectID(ctx, baseURL, start)
+	if err != nil {
+		return err
+	}
+	from, err := resolveIssueRef(ctx, baseURL, pid, fromRef)
+	if err != nil {
+		return err
+	}
+	to, err := resolveIssueRef(ctx, baseURL, pid, toRef)
 	if err != nil {
 		return err
 	}
@@ -198,12 +141,12 @@ func runLinkCreate(cmd *cobra.Command, fromNumber int64, linkType string, toNumb
 	payload := map[string]any{
 		"actor":     actor,
 		"type":      linkType,
-		"to_number": toNumber,
+		"to_number": to.Number,
 	}
 	if replace {
 		payload["replace"] = true
 	}
-	url := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/links", baseURL, pid, fromNumber)
+	url := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/links", baseURL, pid, from.Number)
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost, url, payload)
 	if err != nil {
 		return err
@@ -214,7 +157,7 @@ func runLinkCreate(cmd *cobra.Command, fromNumber int64, linkType string, toNumb
 	return printLinkMutation(cmd, bs)
 }
 
-func runUnlinkByEndpoints(cmd *cobra.Command, fromNumber int64, linkType string, toNumber int64) error {
+func runUnlinkByEndpoints(cmd *cobra.Command, fromRef string, linkType string, toRef string) error {
 	ctx := cmd.Context()
 	start, err := resolveStartPath(flags.Workspace)
 	if err != nil {
@@ -228,14 +171,22 @@ func runUnlinkByEndpoints(cmd *cobra.Command, fromNumber int64, linkType string,
 	if err != nil {
 		return err
 	}
-	link, err := lookupLink(ctx, baseURL, pid, fromNumber, linkType, &toNumber)
+	from, err := resolveIssueRef(ctx, baseURL, pid, fromRef)
+	if err != nil {
+		return err
+	}
+	to, err := resolveIssueRef(ctx, baseURL, pid, toRef)
+	if err != nil {
+		return err
+	}
+	link, err := lookupLink(ctx, baseURL, pid, from.Number, linkType, &to.Number)
 	if err != nil {
 		return err
 	}
 	return runDeleteLink(cmd, baseURL, pid, link)
 }
 
-func runUnlinkByType(cmd *cobra.Command, fromNumber int64, linkType string) error {
+func runUnlinkByType(cmd *cobra.Command, fromRef string, linkType string) error {
 	ctx := cmd.Context()
 	start, err := resolveStartPath(flags.Workspace)
 	if err != nil {
@@ -249,7 +200,11 @@ func runUnlinkByType(cmd *cobra.Command, fromNumber int64, linkType string) erro
 	if err != nil {
 		return err
 	}
-	link, err := lookupLink(ctx, baseURL, pid, fromNumber, linkType, nil)
+	from, err := resolveIssueRef(ctx, baseURL, pid, fromRef)
+	if err != nil {
+		return err
+	}
+	link, err := lookupLink(ctx, baseURL, pid, from.Number, linkType, nil)
 	if err != nil {
 		return err
 	}

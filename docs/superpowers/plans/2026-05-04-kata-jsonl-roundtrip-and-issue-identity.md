@@ -702,7 +702,7 @@ git commit -m "test: add JSONL export import smoke"
 
 **Skill:** `roborev-fix`
 
-- [ ] **Step 1: Run roborev cleanup**
+- [x] **Step 1: Run roborev cleanup**
 
 ```bash
 roborev fix --open --list
@@ -710,7 +710,7 @@ roborev fix --open --list
 
 If jobs exist, fetch, fix, test, comment, and close per `roborev-fix`.
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 ```bash
 go test ./...
@@ -718,7 +718,7 @@ go test ./...
 
 Expected: PASS before continuing.
 
-- [ ] **Step 3: Commit fixes if any**
+- [x] **Step 3: Commit fixes if any**
 
 ```bash
 git add <fixed-files>
@@ -1068,7 +1068,7 @@ git commit -m "fix: address roborev findings after UID API"
 - Test: `cmd/kata/link_test.go`
 - Test: `cmd/kata/events_test.go`
 
-- [ ] **Step 1: Write failing CLI tests**
+- [x] **Step 1: Write failing CLI tests**
 
 Cover:
 
@@ -1080,7 +1080,7 @@ Cover:
 - link commands accept UID refs
 - `kata events --tail --json` includes UID fields
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [x] **Step 2: Run focused tests and confirm failure**
 
 ```bash
 go test ./cmd/kata -run 'TestShow.*UID|TestLink.*UID|TestEvents.*UID' -count=1
@@ -1088,7 +1088,7 @@ go test ./cmd/kata -run 'TestShow.*UID|TestLink.*UID|TestEvents.*UID' -count=1
 
 Expected: fail until ref parsing is implemented.
 
-- [ ] **Step 3: Implement issue ref resolver**
+- [x] **Step 3: Implement issue ref resolver**
 
 Add a helper:
 
@@ -1105,11 +1105,11 @@ Rules:
 - min prefix length is 8
 - ambiguous prefix returns validation error with candidates
 
-- [ ] **Step 4: Update commands**
+- [x] **Step 4: Update commands**
 
 Use the resolver in show and link-family commands. Keep human display as `#N`; UID appears in `--json`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 ```bash
 go test ./cmd/kata -run 'TestShow.*UID|TestLink.*UID|TestEvents.*UID' -count=1
@@ -1117,7 +1117,7 @@ go test ./cmd/kata -run 'TestShow.*UID|TestLink.*UID|TestEvents.*UID' -count=1
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add cmd/kata

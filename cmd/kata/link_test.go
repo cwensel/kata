@@ -30,6 +30,54 @@ func TestLink_GenericRoundTrip(t *testing.T) {
 	assert.True(t, strings.Contains(out, "linked") || strings.Contains(out, "blocks"))
 }
 
+func TestLink_AcceptsUIDRefs(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	createIssue(t, env, pid, "a")
+	createIssue(t, env, pid, "b")
+	a, err := env.DB.IssueByNumber(context.Background(), pid, 1)
+	require.NoError(t, err)
+	b, err := env.DB.IssueByNumber(context.Background(), pid, 2)
+	require.NoError(t, err)
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--workspace", dir, "link", a.UID, "blocks", b.UID})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	assert.True(t, strings.Contains(buf.String(), "linked") || strings.Contains(buf.String(), "blocks"))
+
+	link, err := env.DB.LinkByEndpoints(context.Background(), a.ID, b.ID, "blocks")
+	require.NoError(t, err)
+	assert.Equal(t, a.UID, link.FromIssueUID)
+	assert.Equal(t, b.UID, link.ToIssueUID)
+}
+
+func TestUnlink_AcceptsUIDRefs(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	createIssue(t, env, pid, "a")
+	createIssue(t, env, pid, "b")
+	a, err := env.DB.IssueByNumber(context.Background(), pid, 1)
+	require.NoError(t, err)
+	b, err := env.DB.IssueByNumber(context.Background(), pid, 2)
+	require.NoError(t, err)
+	createLinkViaHTTP(t, env, pid, 1, "blocks", 2)
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--workspace", dir, "unlink", a.UID, "blocks", b.UID})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, buf.String(), "unlinked")
+}
+
 func TestParent_WithReplace(t *testing.T) {
 	resetFlags(t)
 	env := testenv.New(t)

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/wesm/kata/internal/similarity"
 	"github.com/wesm/kata/internal/uid"
 )
+
+const minIssueUIDPrefixLen = 8
 
 // registerIssuesHandlers installs the four issue routes (create/list/show/edit)
 // on humaAPI. CreateIssue writes both the issue row and the matching
@@ -141,15 +144,9 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/issues/{uid}",
 	}, func(ctx context.Context, in *api.ShowIssueByUIDRequest) (*api.ShowIssueResponse, error) {
-		if !uid.Valid(in.UID) {
-			return nil, api.NewError(400, "validation", "uid must be a valid ULID", "", nil)
-		}
-		issue, err := cfg.DB.IssueByUID(ctx, in.UID)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := resolveIssueByUIDOrPrefix(ctx, cfg.DB, in.UID)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		return buildShowIssueResponse(ctx, cfg, issue, in.IncludeDeleted)
 	})
@@ -192,6 +189,45 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		out.Body.Changed = changed
 		return out, nil
 	})
+}
+
+func resolveIssueByUIDOrPrefix(ctx context.Context, store *db.DB, ref string) (db.Issue, error) {
+	if uid.Valid(ref) {
+		issue, err := store.IssueByUID(ctx, ref)
+		if errors.Is(err, db.ErrNotFound) {
+			return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
+		if err != nil {
+			return db.Issue{}, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		return issue, nil
+	}
+	if len(ref) < minIssueUIDPrefixLen {
+		return db.Issue{}, api.NewError(400, "prefix_too_short",
+			"uid prefix must be at least 8 characters", "", nil)
+	}
+	if !uid.ValidPrefix(ref) {
+		return db.Issue{}, api.NewError(400, "validation", "uid must be a valid ULID or prefix", "", nil)
+	}
+	matches, err := store.IssueUIDPrefixMatch(ctx, ref, 20)
+	if err != nil {
+		return db.Issue{}, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	switch len(matches) {
+	case 0:
+		return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+	case 1:
+		return matches[0], nil
+	default:
+		candidates := make([]string, 0, len(matches))
+		for _, issue := range matches {
+			candidates = append(candidates,
+				fmt.Sprintf("%s (#%d project %d)", issue.UID, issue.Number, issue.ProjectID))
+		}
+		return db.Issue{}, api.NewError(409, "prefix_ambiguous",
+			"uid prefix is ambiguous: "+strings.Join(candidates, ", "), "",
+			map[string]any{"candidates": candidates})
+	}
 }
 
 func buildShowIssueResponse(ctx context.Context, cfg ServerConfig, issue db.Issue, includeDeleted bool) (*api.ShowIssueResponse, error) {

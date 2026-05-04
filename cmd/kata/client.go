@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wesm/kata/internal/daemon"
@@ -59,4 +64,62 @@ func streamingClientFor(ctx context.Context, baseURL string) (*http.Client, erro
 	return daemonclient.NewHTTPClient(ctx, baseURL, daemonclient.Opts{
 		ResponseHeaderTimeout: daemonclient.SSEHandshakeTimeout,
 	})
+}
+
+type resolvedIssueRef struct {
+	Number    int64
+	UID       string
+	ProjectID int64
+}
+
+func resolveIssueRef(ctx context.Context, baseURL string, projectID int64, ref string) (resolvedIssueRef, error) {
+	if n, ok, err := parseIssueNumberRef(ref); ok || err != nil {
+		return resolvedIssueRef{Number: n, ProjectID: projectID}, err
+	}
+	client, err := httpClientFor(ctx, baseURL)
+	if err != nil {
+		return resolvedIssueRef{}, err
+	}
+	status, bs, err := httpDoJSON(ctx, client, http.MethodGet,
+		fmt.Sprintf("%s/api/v1/issues/%s", baseURL, url.PathEscape(ref)), nil)
+	if err != nil {
+		return resolvedIssueRef{}, err
+	}
+	if status >= 400 {
+		return resolvedIssueRef{}, apiErrFromBody(status, bs)
+	}
+	var out struct {
+		Issue struct {
+			Number    int64  `json:"number"`
+			UID       string `json:"uid"`
+			ProjectID int64  `json:"project_id"`
+		} `json:"issue"`
+	}
+	if err := json.Unmarshal(bs, &out); err != nil {
+		return resolvedIssueRef{}, err
+	}
+	if projectID != 0 && out.Issue.ProjectID != projectID {
+		return resolvedIssueRef{}, &cliError{
+			Message:  "issue UID does not belong to the current project",
+			Code:     "issue_not_found",
+			Kind:     kindNotFound,
+			ExitCode: ExitNotFound,
+		}
+	}
+	return resolvedIssueRef{Number: out.Issue.Number, UID: out.Issue.UID, ProjectID: out.Issue.ProjectID}, nil
+}
+
+func parseIssueNumberRef(ref string) (int64, bool, error) {
+	s := strings.TrimPrefix(ref, "#")
+	if s == "" {
+		return 0, true, &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		if strings.HasPrefix(ref, "#") {
+			return 0, true, &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
+		}
+		return 0, false, nil
+	}
+	return n, true, nil
 }

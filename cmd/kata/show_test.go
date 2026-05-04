@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -65,4 +66,57 @@ func TestShow_LinkArrowReversesOnToSide(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 	out := buf.String()
 	assert.Contains(t, out, "parent ← #2", "to-side show must reverse the arrow")
+}
+
+func TestShow_AcceptsHashFullUIDAndUniquePrefix(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	createIssue(t, env, pid, "uid target")
+	issue, err := env.DB.IssueByNumber(context.Background(), pid, 1)
+	require.NoError(t, err)
+
+	for _, ref := range []string{"#1", issue.UID, issue.UID[:12]} {
+		resetFlags(t)
+		cmd := newRootCmd()
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetArgs([]string{"--workspace", dir, "show", ref})
+		cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+		require.NoError(t, cmd.Execute(), "ref %s", ref)
+		assert.Contains(t, buf.String(), "uid target")
+	}
+}
+
+func TestShow_UIDPrefixErrors(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	createIssue(t, env, pid, "a")
+	createIssue(t, env, pid, "b")
+	first, err := env.DB.IssueByNumber(context.Background(), pid, 1)
+	require.NoError(t, err)
+
+	cmd := newRootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--workspace", dir, "show", first.UID[:4]})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	err = cmd.Execute()
+	require.Error(t, err)
+	var ce *cliError
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, "prefix_too_short", ce.Code)
+
+	resetFlags(t)
+	cmd = newRootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--workspace", dir, "show", first.UID[:8]})
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	err = cmd.Execute()
+	require.Error(t, err)
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, "prefix_ambiguous", ce.Code)
+	assert.Contains(t, ce.Message, first.UID)
 }
