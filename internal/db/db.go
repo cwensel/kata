@@ -72,6 +72,23 @@ func Open(ctx context.Context, path string) (*DB, error) {
 // event and purge_log row written by this daemon.
 func (d *DB) InstanceUID() string { return d.instanceUID }
 
+// RefreshInstanceUID re-reads meta.instance_uid into the cached field. Used by
+// jsonl.Import after commit so that a default-mode v3 import — which
+// overwrites meta.instance_uid with the source's value inside the import
+// transaction — leaves the cached value in sync with the row. Without this,
+// the handle would internally disagree (SQL says SOURCE_INSTANCE; cached says
+// the pre-import LOCAL_FRESH) and any subsequent event/purge insert on the
+// same handle would stamp the wrong origin_instance_uid.
+func (d *DB) RefreshInstanceUID(ctx context.Context) error {
+	var v string
+	if err := d.QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&v); err != nil {
+		return fmt.Errorf("refresh instance_uid: %w", err)
+	}
+	d.instanceUID = v
+	return nil
+}
+
 // ensureInstanceUID is the single ownership rule for meta.instance_uid: if the
 // row is absent it is inserted with a fresh ULID; if present it is read into
 // d.instanceUID. Idempotent across reboots and across every Open caller (tests,

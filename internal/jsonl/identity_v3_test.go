@@ -119,6 +119,43 @@ func TestRoundtripV3PreservesInstanceUID(t *testing.T) {
 	}
 }
 
+// TestImportRefreshesCachedInstanceUID guards the default-mode contract that
+// a successful import leaves the *db.DB handle internally consistent: SQL,
+// InstanceUID(), and any subsequent event insert all use the source's
+// identity. Without the post-commit refresh the cached field would still hold
+// the pre-import LOCAL_FRESH while meta.instance_uid stored the source's
+// value, and new events on the same handle would stamp the wrong origin.
+func TestImportRefreshesCachedInstanceUID(t *testing.T) {
+	ctx := context.Background()
+	src := openExportTestDB(t)
+	srcUID := src.InstanceUID()
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, src, &buf, jsonl.ExportOptions{IncludeDeleted: true}))
+
+	dstPath := filepath.Join(t.TempDir(), "dst.db")
+	dst, err := db.Open(ctx, dstPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = dst.Close() })
+	preImport := dst.InstanceUID()
+	require.NotEqual(t, srcUID, preImport, "fresh target must start with its own identity")
+
+	require.NoError(t, jsonl.Import(ctx, bytes.NewReader(buf.Bytes()), dst))
+	assert.Equal(t, srcUID, dst.InstanceUID(),
+		"default-mode import overwrote meta.instance_uid; cached InstanceUID() must follow")
+
+	// Writing an event on the same handle must use the refreshed value, not
+	// the stale LOCAL_FRESH that db.Open originally seeded.
+	p, err := dst.CreateProject(ctx, "github.com/wesm/post-import", "post-import")
+	require.NoError(t, err)
+	_, evt, err := dst.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "post-import write", Author: "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, srcUID, evt.OriginInstanceUID,
+		"event written after import must inherit refreshed origin_instance_uid")
+}
+
 // TestImportNewInstanceRegeneratesIdentity covers spec §8.7: --new-instance
 // mode keeps the target's fresh meta.instance_uid (db.Open's value) and
 // preserves the source's origin_instance_uid on every imported event.

@@ -76,6 +76,13 @@ func ImportWithOptions(ctx context.Context, r io.Reader, target *db.DB, opts Imp
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit import: %w", err)
 	}
+	// Default mode may have overwritten meta.instance_uid with the source's
+	// value; the target's cached InstanceUID() must follow suit so subsequent
+	// inserts on this handle stamp the right origin. (--new-instance leaves
+	// the row at db.Open's value, so the refresh is a no-op there.)
+	if err := target.RefreshInstanceUID(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
