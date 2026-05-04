@@ -175,8 +175,17 @@ func runDaemon(ctx context.Context) error {
 }
 
 // runDaemonWithListen is the variant used by `kata daemon start --listen`.
-// An empty listen string preserves the existing Unix-socket path exactly.
+// An empty listen string preserves the existing Unix-socket path exactly,
+// unless <KATA_HOME>/config.toml has a `listen = "..."` entry — in which
+// case the config value is used. CLI flag always wins over config.
 func runDaemonWithListen(ctx context.Context, listen string) error {
+	if listen == "" {
+		dcfg, err := config.ReadDaemonConfig()
+		if err != nil {
+			return err
+		}
+		listen = dcfg.Listen
+	}
 	ns, err := daemon.NewNamespace()
 	if err != nil {
 		return err

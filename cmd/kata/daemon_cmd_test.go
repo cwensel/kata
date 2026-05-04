@@ -127,6 +127,56 @@ func TestDaemonStart_ListenFlagRejectsMalformed(t *testing.T) {
 	assert.Contains(t, err.Error(), "--listen")
 }
 
+// TestDaemonStart_ConfigFileListenIsHonored verifies that
+// <KATA_HOME>/config.toml's `listen = ...` value is picked up when the
+// --listen flag is absent. We use an obviously-public address so the
+// validator rejects it before the daemon actually starts — this lets us
+// assert that the config value was consulted (otherwise the daemon would
+// fall through to the Unix-socket path and not error).
+func TestDaemonStart_ConfigFileListenIsHonored(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "config.toml"),
+		[]byte(`listen = "8.8.8.8:7777"`+"\n"), 0o600))
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"daemon", "start"})
+
+	err := cmd.ExecuteContext(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-public",
+		"config.toml listen value must reach the validator")
+}
+
+// TestDaemonStart_FlagWinsOverConfigFile asserts the --listen flag
+// takes precedence over <KATA_HOME>/config.toml.
+func TestDaemonStart_FlagWinsOverConfigFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	// Config file says one thing, flag says another — flag must win.
+	// Both are public so the daemon will reject either, but only the
+	// flag's address should appear in the error.
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "config.toml"),
+		[]byte(`listen = "1.1.1.1:7777"`+"\n"), 0o600))
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"daemon", "start", "--listen", "8.8.8.8:7777"})
+
+	err := cmd.ExecuteContext(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "8.8.8.8")
+	assert.NotContains(t, err.Error(), "1.1.1.1",
+		"config.toml value must NOT win when --listen is set")
+}
+
 func TestEnsureDaemon_ReturnsExistingURL(t *testing.T) {
 	if testing.Short() {
 		t.Skip()

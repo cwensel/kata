@@ -69,6 +69,18 @@ func HookConfigPath() (string, error) {
 	return filepath.Join(home, "hooks.toml"), nil
 }
 
+// DaemonConfigPath returns <KataHome>/config.toml — the optional
+// daemon-side settings file. Today only `listen = "..."` is honored
+// (used by `kata daemon start` when --listen is not passed). The file
+// is not created here.
+func DaemonConfigPath() (string, error) {
+	home, err := KataHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "config.toml"), nil
+}
+
 // HookRootDir returns <KataHome>/hooks/<dbhash>. Per-DB so multiple kata
 // databases on the same host don't share output streams. Rejects any
 // dbhash that is not a 12-char lower-hex string so a malformed value

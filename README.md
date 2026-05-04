@@ -374,8 +374,19 @@ A kata daemon can serve clients on other hosts over a private network
 kata daemon start --listen 100.64.0.5:7777
 ```
 
-Run this under launchd / systemd / nohup on the host that holds the SQLite
-database. Clients on other hosts target it by setting `KATA_SERVER`:
+Or set the address persistently in `<KATA_HOME>/config.toml`:
+
+```toml
+listen = "100.64.0.5:7777"
+```
+
+The CLI flag wins over the config file when both are present. Auto-started
+daemons (the on-demand path triggered by `kata create`, `kata list`, etc.)
+also pick up the config-file value, so on a host where you want every kata
+invocation to use the same TCP address you only have to set it once.
+
+Run the daemon under launchd / systemd / nohup on the host that holds the
+SQLite database. Clients on other hosts target it by setting `KATA_SERVER`:
 
 ```sh
 export KATA_SERVER=http://100.64.0.5:7777
