@@ -137,6 +137,33 @@ func TestApplyColorMode_DeletedStyleIsRedFaint(t *testing.T) {
 	}
 }
 
+func TestApplyColorMode_StatusColorsStayDistinctInWarmDisplays(t *testing.T) {
+	applyColorMode(colorDark, io.Discard)
+	openDark, ok := openStyle.GetForeground().(lipgloss.Color)
+	if !ok {
+		t.Fatalf("openStyle dark foreground = %T, want lipgloss.Color", openStyle.GetForeground())
+	}
+	closedDark, ok := closedStyle.GetForeground().(lipgloss.Color)
+	if !ok {
+		t.Fatalf("closedStyle dark foreground = %T, want lipgloss.Color", closedStyle.GetForeground())
+	}
+	if string(openDark) != "46" {
+		t.Fatalf("openStyle dark foreground = %q, want %q", string(openDark), "46")
+	}
+	if string(closedDark) != "245" {
+		t.Fatalf("closedStyle dark foreground = %q, want neutral gray %q", string(closedDark), "245")
+	}
+
+	applyColorMode(colorLight, io.Discard)
+	closedLight, ok := closedStyle.GetForeground().(lipgloss.Color)
+	if !ok {
+		t.Fatalf("closedStyle light foreground = %T, want lipgloss.Color", closedStyle.GetForeground())
+	}
+	if string(closedLight) != "240" {
+		t.Fatalf("closedStyle light foreground = %q, want neutral gray %q", string(closedLight), "240")
+	}
+}
+
 // TestApplyColorMode_PanelBorderColorsBound asserts the M3+ panel
 // border vars are bound after a normal-mode apply. M0 introduces these
 // vars even though the first usage lands in M3a — locking the values

@@ -41,7 +41,8 @@ func resolveColorMode() colorMode {
 // The palette mirrors roborev's (cmd/roborev/tui/tui.go:38-77) so the
 // two TUIs feel consistent. Where kata's status semantics differ from
 // roborev's, the colors are remapped: openStyle reuses roborev's
-// passStyle (green), closedStyle keeps the cyan, deletedStyle reuses
+// passStyle (green), closedStyle is neutral gray so warm/night-shift
+// displays don't collapse blue/cyan into green, and deletedStyle reuses
 // roborev's failStyle (red) with Faint so deleted rows read as
 // out-of-band rather than alarming.
 var (
@@ -186,7 +187,7 @@ func applyColorMode(m colorMode, w io.Writer) {
 	statusStyle = r.NewStyle().Foreground(pick("242", "246"))
 	selectedStyle = r.NewStyle().Background(pick("153", "24"))
 	openStyle = r.NewStyle().Foreground(pick("28", "46"))
-	closedStyle = r.NewStyle().Foreground(pick("30", "51"))
+	closedStyle = r.NewStyle().Foreground(pick("240", "245"))
 	// deletedStyle is the dim-red semantic remap of roborev's failStyle
 	// — design doc §"Visual language". Faint avoids reading as alarming
 	// while still distinguishing soft-deleted rows from open/closed.
