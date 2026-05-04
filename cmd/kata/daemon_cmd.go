@@ -15,6 +15,7 @@ import (
 	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/hooks"
+	"github.com/wesm/kata/internal/jsonl"
 	"github.com/wesm/kata/internal/version"
 )
 
@@ -173,6 +174,11 @@ func runDaemon(ctx context.Context) error {
 	dbPath, err := config.KataDB()
 	if err != nil {
 		return err
+	}
+	if ver, err := db.PeekSchemaVersion(ctx, dbPath); err == nil && ver < db.CurrentSchemaVersion() {
+		if err := jsonl.AutoCutover(ctx, dbPath); err != nil {
+			return err
+		}
 	}
 	store, err := db.Open(ctx, dbPath)
 	if err != nil {

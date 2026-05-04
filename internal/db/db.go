@@ -53,8 +53,39 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	return d, nil
 }
 
+// OpenReadOnly opens an existing kata database without applying migrations.
+// It is used by JSONL cutover so the old source DB can be exported without
+// the normal Open path mutating meta.schema_version first.
+func OpenReadOnly(ctx context.Context, path string) (*DB, error) {
+	dsn := fmt.Sprintf(
+		"file:%s?mode=ro&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)",
+		path,
+	)
+	sdb, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open read-only %s: %w", path, err)
+	}
+	if err := sdb.PingContext(ctx); err != nil {
+		_ = sdb.Close()
+		return nil, fmt.Errorf("ping read-only %s: %w", path, err)
+	}
+	return &DB{DB: sdb, path: path}, nil
+}
+
 // Path returns the resolved database path.
 func (d *DB) Path() string { return d.path }
+
+// PeekSchemaVersion reads meta.schema_version without applying migrations.
+// It returns 0 when the database exists but has no meta table or schema_version
+// row.
+func PeekSchemaVersion(ctx context.Context, path string) (int, error) {
+	d, err := OpenReadOnly(ctx, path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = d.Close() }()
+	return d.currentVersion(ctx)
+}
 
 func (d *DB) migrate(ctx context.Context) error {
 	current, err := d.currentVersion(ctx)
