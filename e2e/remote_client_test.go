@@ -3,7 +3,6 @@
 package e2e_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,11 +41,8 @@ func TestRemoteClient_DaemonOnTCPClientViaKATA_SERVER(t *testing.T) {
 	// Server-side state: its own KATA_HOME, runs the daemon.
 	serverHome := t.TempDir()
 
-	daemonCtx, cancelDaemon := context.WithCancel(context.Background())
-	t.Cleanup(cancelDaemon)
-
 	daemonStderr := &safeBuffer{}
-	daemon := exec.CommandContext(daemonCtx, bin, "daemon", "start", "--listen", addr) //nolint:gosec
+	daemon := exec.Command(bin, "daemon", "start", "--listen", addr) //nolint:gosec
 	daemon.Env = append(os.Environ(),
 		"KATA_HOME="+serverHome,
 		"KATA_DB="+filepath.Join(serverHome, "kata.db"),
@@ -56,28 +52,18 @@ func TestRemoteClient_DaemonOnTCPClientViaKATA_SERVER(t *testing.T) {
 	daemon.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, daemon.Start())
 	t.Cleanup(func() {
-		// SIGTERM, wait up to 2s, then SIGKILL.
-		if daemon.Process != nil {
-			_ = daemon.Process.Signal(syscall.SIGTERM)
-		}
-		done := make(chan struct{})
-		go func() { _ = daemon.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			if daemon.Process != nil {
-				_ = daemon.Process.Kill()
-			}
-			<-done
+		if t.Failed() {
+			t.Logf("daemon stderr:\n%s", daemonStderr.String())
 		}
 	})
+	t.Cleanup(func() { stopDaemon(daemon) })
 
 	// Wait for /api/v1/ping to answer on the bound address.
 	waitForPing(t, "http://"+addr, 5*time.Second)
 
 	// Client-side state: separate KATA_HOME, separate workspace.
 	clientHome := t.TempDir()
-	clientWS := initBareGitRepo(t, "https://github.com/wesm/system.git")
+	clientWS := initRepo(t, "https://github.com/wesm/system.git")
 
 	clientEnv := append(os.Environ(),
 		"KATA_HOME="+clientHome,
@@ -127,12 +113,13 @@ func waitForPing(t *testing.T, base string, timeout time.Duration) {
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(base + "/api/v1/ping") //nolint:noctx
 		if err == nil {
-			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				var info struct {
 					OK bool `json:"ok"`
 				}
-				if err := json.NewDecoder(resp.Body).Decode(&info); err == nil && info.OK {
+				if json.Unmarshal(body, &info) == nil && info.OK {
 					return
 				}
 			}
@@ -140,20 +127,6 @@ func waitForPing(t *testing.T, base string, timeout time.Duration) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("daemon at %s did not answer /api/v1/ping within %s", base, timeout)
-}
-
-// initBareGitRepo creates a temp directory, runs `git init`, and adds a
-// remote so kata can derive a project identity from it.
-func initBareGitRepo(t *testing.T, remoteURL string) string {
-	t.Helper()
-	dir := t.TempDir()
-	gitInit := exec.Command("git", "init", "--quiet")
-	gitInit.Dir = dir
-	require.NoError(t, gitInit.Run())
-	gitRemote := exec.Command("git", "remote", "add", "origin", remoteURL) //nolint:gosec
-	gitRemote.Dir = dir
-	require.NoError(t, gitRemote.Run())
-	return dir
 }
 
 // runRemoteCmd runs a kata subcommand and asserts success, dumping
@@ -164,7 +137,7 @@ func runRemoteCmd(t *testing.T, bin, workdir string, env []string, args ...strin
 	cmd.Dir = workdir
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "kata %v: %s", args, out)
+	require.NoErrorf(t, err, "kata %s: %s", strings.Join(args, " "), out)
 }
 
 // runRemoteCmdOutput runs a kata subcommand, returns combined output,
@@ -175,7 +148,7 @@ func runRemoteCmdOutput(t *testing.T, bin, workdir string, env []string, args ..
 	cmd.Dir = workdir
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "kata %v: %s", args, out)
+	require.NoErrorf(t, err, "kata %s: %s", strings.Join(args, " "), out)
 	return string(out)
 }
 
