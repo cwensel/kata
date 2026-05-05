@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -154,10 +155,25 @@ func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, er
 		return 0, err
 	}
 	body := map[string]any{}
-	if cfg, _, err := config.FindProjectConfig(startPath); err == nil && cfg.Project.Identity != "" {
+	cfg, _, err := config.FindProjectConfig(startPath)
+	switch {
+	case err == nil && cfg.Project.Identity != "":
 		body["project_identity"] = cfg.Project.Identity
-	} else {
+	case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
+		// Truly missing (or present but with empty identity): fall
+		// back to start_path so the daemon walks its own filesystem
+		// in local mode.
 		body["start_path"] = startPath
+	default:
+		// Found a .kata.toml but couldn't read or parse it. Surface
+		// that loud and clear instead of silently asking the daemon
+		// to resolve a path it may not even be able to stat (remote
+		// mode), which would mask the actual fix-it error.
+		return 0, &cliError{
+			Message:  "read .kata.toml: " + err.Error(),
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
 	}
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
 		baseURL+"/api/v1/projects/resolve", body)

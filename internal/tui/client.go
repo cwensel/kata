@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -172,10 +173,19 @@ func (c *Client) EditBody(
 func (c *Client) ResolveProject(ctx context.Context, startPath string) (*ResolveResp, error) {
 	var resp ResolveResp
 	req := map[string]string{}
-	if cfg, _, err := config.FindProjectConfig(startPath); err == nil && cfg.Project.Identity != "" {
+	cfg, _, err := config.FindProjectConfig(startPath)
+	switch {
+	case err == nil && cfg.Project.Identity != "":
 		req["project_identity"] = cfg.Project.Identity
-	} else {
+	case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
+		// Truly missing (or present but with empty identity): fall
+		// back to start_path so the daemon walks its own filesystem.
 		req["start_path"] = startPath
+	default:
+		// Found a .kata.toml but couldn't parse it. Propagate so the
+		// user sees the broken-config error instead of a confusing
+		// daemon-side stat failure under remote-client mode.
+		return nil, fmt.Errorf("read .kata.toml: %w", err)
 	}
 	if err := c.do(ctx, http.MethodPost, "/api/v1/projects/resolve", req, &resp); err != nil {
 		return nil, err
