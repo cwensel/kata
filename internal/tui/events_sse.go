@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,6 +20,15 @@ type sseClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// reconnectStatusGrace defers surfacing sseReconnecting to the UI for
+// this long after a disconnect. Brief outages (daemon restarts, transient
+// network blips) usually recover inside the window so the user never sees
+// the badge. The grace runs in parallel with the reconnect loop — it does
+// not delay the reconnect attempt itself, only the user-visible signal.
+//
+// var (not const) so tests can shorten it.
+var reconnectStatusGrace = 1500 * time.Millisecond
+
 // startSSE is the long-lived consumer goroutine. Loops over
 // readSSEStream, reconnects with exponential backoff (1s → 30s, capped),
 // and resumes via Last-Event-ID once at least one frame was emitted on
@@ -30,21 +40,82 @@ type sseClient interface {
 // reconnecting on a flapping daemon: the user would see "connected" the
 // moment we issue the request, "reconnecting" on the inevitable error,
 // and so on per loop turn even though no frame ever made it through.
+//
+// sseReconnecting is debounced by reconnectStatusGrace: armed on the
+// first disconnect of an outage, fired only if the reconnect hasn't
+// produced a frame within the grace window, and cancelled when the next
+// successful read produces its first frame (or on goroutine exit).
+//
+// publishConnected and the AfterFunc callback share a mutex so the two
+// state transitions cannot interleave: once a callback observes
+// "connected" it returns without sending; once publishConnected sets
+// "connected" any later or in-flight callback observes it and bails.
+// When the callback wins the race it sends sseReconnecting *before*
+// publishConnected sends sseConnected, so the channel ordering keeps
+// the final state correct (connected wins, reconnecting was a brief
+// flash that the consumer overwrites).
 func startSSE(
 	ctx context.Context, hc sseClient, base string, projectID *int64, sseCh chan<- tea.Msg,
 ) {
 	const maxBackoff = 30 * time.Second
 	backoff := time.Second
 	var lastID int64
+
+	var (
+		stateMu      sync.Mutex
+		graceTimer   *time.Timer // nil when no grace window is pending
+		hasConnected bool        // true once sseConnected has been sent for the current outage
+		inOutage     bool
+	)
+
+	publishConnected := func() {
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		if graceTimer != nil {
+			graceTimer.Stop()
+			graceTimer = nil
+		}
+		inOutage = false
+		hasConnected = true
+		notifyStatus(ctx, sseCh, sseConnected)
+	}
+	armGrace := func() {
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		if inOutage {
+			return
+		}
+		inOutage = true
+		hasConnected = false
+		graceTimer = time.AfterFunc(reconnectStatusGrace, func() {
+			stateMu.Lock()
+			defer stateMu.Unlock()
+			if hasConnected {
+				return
+			}
+			notifyStatus(ctx, sseCh, sseReconnecting)
+		})
+	}
+	defer func() {
+		stateMu.Lock()
+		if graceTimer != nil {
+			graceTimer.Stop()
+			graceTimer = nil
+		}
+		stateMu.Unlock()
+	}()
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		connected, err := readSSEStream(ctx, hc, base, projectID, lastID, sseCh, &lastID)
+		connected, err := readSSEStream(
+			ctx, hc, base, projectID, lastID, sseCh, &lastID, publishConnected,
+		)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
-		notifyStatus(ctx, sseCh, sseReconnecting)
+		armGrace()
 		if connected {
 			backoff = time.Second
 		}
@@ -87,9 +158,15 @@ func notifyStatus(ctx context.Context, sseCh chan<- tea.Msg, st sseConnState) {
 // successful frame — never optimistically before a frame lands. A
 // connection that fails before any frame arrives produces no connected
 // status, only the reconnecting status the caller emits on disconnect.
+//
+// onConnect, when non-nil, is invoked on the first-frame transition and
+// owns the sseConnected publication (it is responsible for serializing
+// the send with any concurrent reconnect-status timer). When onConnect
+// is nil readSSEStream emits sseConnected directly — the path tests
+// take when driving readSSEStream without the startSSE wrapper.
 func readSSEStream(
 	ctx context.Context, hc sseClient, base string, projectID *int64,
-	lastID int64, sseCh chan<- tea.Msg, updateLastID *int64,
+	lastID int64, sseCh chan<- tea.Msg, updateLastID *int64, onConnect func(),
 ) (bool, error) {
 	req, err := buildSSERequest(ctx, base, projectID, lastID)
 	if err != nil {
@@ -114,7 +191,11 @@ func readSSEStream(
 			return connected, perr
 		}
 		if !connected {
-			notifyStatus(ctx, sseCh, sseConnected)
+			if onConnect != nil {
+				onConnect()
+			} else {
+				notifyStatus(ctx, sseCh, sseConnected)
+			}
 			connected = true
 		}
 		*updateLastID = f.id
