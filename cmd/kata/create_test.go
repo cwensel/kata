@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -141,4 +146,50 @@ func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
 	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
 	require.NoError(t, cmd.Execute())
 	assert.Equal(t, "2", strings.TrimSpace(buf.String()))
+}
+
+// TestResolveProjectID_PropagatesParseError guards against a malformed
+// .kata.toml silently falling through to a start_path request. In
+// remote-client mode the daemon cannot stat the client path, so the
+// failure mode would be a confusing "stat: no such file" instead of
+// the actual "broken .kata.toml" the user can fix. The fix-it error
+// must surface client-side without ever calling the daemon.
+func TestResolveProjectID_PropagatesParseError(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"), //nolint:gosec // test fixture mode matches production
+		[]byte("not = valid = toml ==="), 0o644))
+
+	var called atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		called.Add(1)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := resolveProjectID(context.Background(), srv.URL, dir)
+	require.Error(t, err)
+	assert.Zero(t, called.Load(), "client must reject parse errors before reaching the daemon")
+}
+
+// TestResolveProjectID_FallsBackOnMissingConfig confirms the missing
+// case still works: when no .kata.toml exists, the request goes
+// through with start_path so the daemon can resolve via its own
+// filesystem walk (local-mode behavior).
+func TestResolveProjectID_FallsBackOnMissingConfig(t *testing.T) {
+	dir := t.TempDir() // no .kata.toml
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bs, &got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"project":{"id":42}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	id, err := resolveProjectID(context.Background(), srv.URL, dir)
+	require.NoError(t, err)
+	assert.EqualValues(t, 42, id)
+	assert.Equal(t, dir, got["start_path"])
+	_, hasIdentity := got["project_identity"]
+	assert.False(t, hasIdentity, "no .kata.toml means no project_identity in the request")
 }

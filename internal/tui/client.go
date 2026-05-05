@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
+
+	"github.com/wesm/kata/internal/config"
 )
 
 // Client is the typed adapter the TUI uses to talk to the daemon. Errors
@@ -161,9 +164,29 @@ func (c *Client) EditBody(
 }
 
 // ResolveProject runs the §4.2 resolution flow against startPath.
+//
+// When the workspace has a readable .kata.toml at startPath or any
+// ancestor directory, the project identity is sent and the daemon
+// skips its filesystem walk — required for remote-client mode where
+// the daemon cannot stat the client's path. Otherwise the start_path
+// fallback walks the daemon's filesystem.
 func (c *Client) ResolveProject(ctx context.Context, startPath string) (*ResolveResp, error) {
 	var resp ResolveResp
-	req := map[string]string{"start_path": startPath}
+	req := map[string]string{}
+	cfg, _, err := config.FindProjectConfig(startPath)
+	switch {
+	case err == nil && cfg.Project.Identity != "":
+		req["project_identity"] = cfg.Project.Identity
+	case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
+		// Truly missing (or present but with empty identity): fall
+		// back to start_path so the daemon walks its own filesystem.
+		req["start_path"] = startPath
+	default:
+		// Found a .kata.toml but couldn't parse it. Propagate so the
+		// user sees the broken-config error instead of a confusing
+		// daemon-side stat failure under remote-client mode.
+		return nil, fmt.Errorf("read .kata.toml: %w", err)
+	}
 	if err := c.do(ctx, http.MethodPost, "/api/v1/projects/resolve", req, &resp); err != nil {
 		return nil, err
 	}

@@ -83,3 +83,80 @@ func TestWriteProjectConfig_PreservesExplicitName(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Kata Tracker", cfg.Project.Name)
 }
+
+func TestReadProjectConfig_AcceptsOptionalServerBlock(t *testing.T) {
+	dir := t.TempDir()
+	writeKataTOML(t, dir, `version = 1
+
+[project]
+identity = "github.com/wesm/kata"
+name     = "kata"
+
+[server]
+url = "http://127.0.0.1:7777"
+`)
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:7777", cfg.Server.URL)
+}
+
+func TestReadProjectConfig_NoServerBlockYieldsZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	writeKataTOML(t, dir, `version = 1
+
+[project]
+identity = "github.com/wesm/kata"
+name     = "kata"
+`)
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Server.URL)
+}
+
+func TestFindProjectConfig_FromSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	writeKataTOML(t, root, `version = 1
+
+[project]
+identity = "github.com/wesm/kata"
+name     = "kata"
+`)
+	sub := filepath.Join(root, "internal", "tui")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+
+	cfg, foundDir, err := config.FindProjectConfig(sub)
+	require.NoError(t, err)
+	assert.Equal(t, root, foundDir)
+	assert.Equal(t, "github.com/wesm/kata", cfg.Project.Identity)
+}
+
+func TestFindProjectConfig_FromExactDir(t *testing.T) {
+	root := t.TempDir()
+	writeKataTOML(t, root, `version = 1
+
+[project]
+identity = "github.com/wesm/kata"
+`)
+	cfg, foundDir, err := config.FindProjectConfig(root)
+	require.NoError(t, err)
+	assert.Equal(t, root, foundDir)
+	assert.Equal(t, "github.com/wesm/kata", cfg.Project.Identity)
+}
+
+func TestFindProjectConfig_MissingReturnsSentinel(t *testing.T) {
+	root := t.TempDir()
+	cfg, foundDir, err := config.FindProjectConfig(root)
+	assert.Nil(t, cfg)
+	assert.Empty(t, foundDir)
+	assert.ErrorIs(t, err, config.ErrProjectConfigMissing)
+}
+
+func TestFindProjectConfig_PropagatesParseError(t *testing.T) {
+	root := t.TempDir()
+	writeKataTOML(t, root, "this is not toml = = =")
+	cfg, foundDir, err := config.FindProjectConfig(root)
+	assert.Nil(t, cfg)
+	assert.Empty(t, foundDir)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, config.ErrProjectConfigMissing)
+}

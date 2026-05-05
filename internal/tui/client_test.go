@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -629,4 +633,49 @@ func TestClient_ListProjectsWithStats_NotNilOnSuccess(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Len(t, got, 0)
+}
+
+// TestClient_ResolveProject_PropagatesParseError guards against a
+// malformed .kata.toml silently falling through to a start_path
+// request. In remote-client mode the daemon cannot stat the
+// client's path, so the failure mode is a confusing "no such file"
+// rather than the actual broken-config error the user can fix.
+func TestClient_ResolveProject_PropagatesParseError(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"), //nolint:gosec // test fixture
+		[]byte("not = valid = toml ==="), 0o644))
+
+	var called atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		called.Add(1)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+
+	_, err := c.ResolveProject(t.Context(), dir)
+	require.Error(t, err)
+	assert.Zero(t, called.Load(), "TUI must reject parse errors before reaching the daemon")
+}
+
+// TestClient_ResolveProject_FallsBackOnMissingConfig confirms the
+// missing case still works: no .kata.toml means start_path is sent
+// for daemon-side filesystem resolution.
+func TestClient_ResolveProject_FallsBackOnMissingConfig(t *testing.T) {
+	dir := t.TempDir() // no .kata.toml
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bs, &got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"project":{"id":42}}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+
+	_, err := c.ResolveProject(t.Context(), dir)
+	require.NoError(t, err)
+	assert.Equal(t, dir, got["start_path"])
+	_, hasIdentity := got["project_identity"]
+	assert.False(t, hasIdentity)
 }

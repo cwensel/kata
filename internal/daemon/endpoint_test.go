@@ -96,3 +96,92 @@ func TestParseAddress(t *testing.T) {
 		assert.Equal(t, tc.kind, ep.Kind(), tc.in)
 	}
 }
+
+// TestParseAddress_TCPAcceptsNonLoopbackPrivate guards the runtime-file
+// readback path: when a daemon writes its --listen TCP address (e.g. a
+// CGNAT/RFC1918 endpoint) into daemon.<pid>.json, ParseAddress must
+// reconstruct an endpoint whose Listen()/Dial() do not reject the
+// private address. Strict loopback-only is correct for untrusted input
+// but wrong for the file we wrote ourselves. We exercise Listen on the
+// loopback case (CGNAT/RFC1918 may not be routable in the test
+// environment) and rely on TCPEndpointAny's own table tests for the
+// other private ranges.
+func TestParseAddress_TCPAcceptsNonLoopbackPrivate(t *testing.T) {
+	// CGNAT-style address must round-trip through ParseAddress without
+	// the validator rejecting it. We don't need to bind — we just need
+	// to confirm ParseAddress doesn't return the strict-loopback form.
+	ep, err := daemon.ParseAddress("100.64.0.5:7777")
+	require.NoError(t, err)
+	require.Equal(t, "tcp", ep.Kind())
+
+	// And Listen actually works on a private-range loopback addr.
+	loopback, err := daemon.ParseAddress("127.0.0.1:0")
+	require.NoError(t, err)
+	l, err := loopback.Listen()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+}
+
+func TestTCPEndpointAny_AcceptsLoopback(t *testing.T) {
+	ep := daemon.TCPEndpointAny("127.0.0.1:0")
+	l, err := ep.Listen()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+}
+
+func TestTCPEndpointAny_AcceptsPrivateRanges(t *testing.T) {
+	cases := []string{
+		"10.0.0.1:0",
+		"172.16.5.5:0",
+		"192.168.1.1:0",
+		"100.64.0.5:0",  // CGNAT
+		"169.254.1.1:0", // link-local IPv4
+		"[fe80::1]:0",   // link-local IPv6
+		"[fc00::1]:0",   // ULA
+		"[::1]:0",       // loopback IPv6
+	}
+	for _, addr := range cases {
+		_, err := daemon.TCPEndpointAny(addr).Listen()
+		// We do NOT require Listen() to succeed (binding 10.x without
+		// a configured interface fails with "cannot assign requested
+		// address"), only that it does not fail with our validator's
+		// "non-public" rejection.
+		if err != nil {
+			assert.NotContains(t, err.Error(), "non-public", addr)
+			assert.NotContains(t, err.Error(), "literal IP", addr)
+		}
+	}
+}
+
+func TestTCPEndpointAny_RejectsPublicIPv4(t *testing.T) {
+	_, err := daemon.TCPEndpointAny("8.8.8.8:0").Listen()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-public")
+}
+
+func TestTCPEndpointAny_RejectsGUAIPv6(t *testing.T) {
+	_, err := daemon.TCPEndpointAny("[2001:4860:4860::8888]:0").Listen()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-public")
+}
+
+func TestTCPEndpointAny_RejectsUnspecified(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:0", "[::]:0"} {
+		_, err := daemon.TCPEndpointAny(addr).Listen()
+		require.Error(t, err, addr)
+		assert.Contains(t, err.Error(), "non-public", addr)
+	}
+}
+
+func TestTCPEndpointAny_RejectsHostname(t *testing.T) {
+	_, err := daemon.TCPEndpointAny("example.com:0").Listen()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "literal IP")
+}
+
+func TestTCPEndpoint_StillRejectsPrivateNonLoopback(t *testing.T) {
+	// Guards against an accidental refactor that loosens TCPEndpoint.
+	_, err := daemon.TCPEndpoint("10.0.0.1:0").Listen()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loopback")
+}

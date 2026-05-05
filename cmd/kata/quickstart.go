@@ -58,6 +58,26 @@ For live streams:
    kata events --tail
 
 The tail stream emits newline-delimited JSON.
+
+# Remote daemon (optional)
+
+When the kata daemon runs on a different host, point clients at it with
+KATA_SERVER:
+
+   export KATA_SERVER=http://100.64.0.5:7777
+
+Or commit-free per-workspace:
+
+   # .kata.local.toml (gitignored by 'kata init')
+   version = 1
+
+   [server]
+   url = "http://100.64.0.5:7777"
+
+KATA_SERVER wins over the file when both are set. A configured-but-down
+remote returns exit 7 (kata server not responding) — no silent fallback to
+spawning a local daemon. The default (no env, no .kata.local.toml) is
+unchanged: a local Unix-socket daemon is auto-started on demand.
 `
 
 func newQuickstartCmd() *cobra.Command {

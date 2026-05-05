@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -26,15 +27,21 @@ func newDaemonCmd() *cobra.Command {
 }
 
 func daemonStartCmd() *cobra.Command {
-	return &cobra.Command{
+	var listen string
+	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "start the daemon in foreground",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
-			return runDaemon(ctx)
+			return runDaemonWithListen(ctx, listen)
 		},
 	}
+	cmd.Flags().StringVar(&listen, "listen", "",
+		"bind TCP at host:port (admin-only; non-public addresses only). "+
+			"Falls back to $KATA_HOME/config.toml's `listen` value when "+
+			"unset. Default with neither: Unix socket under $KATA_HOME/runtime.")
+	return cmd
 }
 
 func daemonStatusCmd() *cobra.Command {
@@ -162,8 +169,24 @@ func daemonReloadCmd() *cobra.Command {
 }
 
 // runDaemon is the foreground daemon entry point. Used by `kata daemon start`
-// and by the auto-start child process spawned by ensureDaemon.
+// (no --listen, default Unix socket) and by the auto-start child process
+// spawned by ensureDaemon.
 func runDaemon(ctx context.Context) error {
+	return runDaemonWithListen(ctx, "")
+}
+
+// runDaemonWithListen is the variant used by `kata daemon start --listen`.
+// An empty listen string preserves the existing Unix-socket path exactly,
+// unless <KATA_HOME>/config.toml has a `listen = "..."` entry — in which
+// case the config value is used. CLI flag always wins over config.
+func runDaemonWithListen(ctx context.Context, listen string) error {
+	if listen == "" {
+		dcfg, err := config.ReadDaemonConfig()
+		if err != nil {
+			return err
+		}
+		listen = dcfg.Listen
+	}
 	ns, err := daemon.NewNamespace()
 	if err != nil {
 		return err
@@ -197,8 +220,10 @@ func runDaemon(ctx context.Context) error {
 	defer signal.Stop(sigs)
 	go runReloadLoop(ctx, sigs, hookCfgPath, disp, daemonLog)
 
-	socketPath := filepath.Join(ns.SocketDir, "daemon.sock")
-	endpoint := daemon.UnixEndpoint(socketPath)
+	endpoint, err := chooseEndpoint(ns, listen)
+	if err != nil {
+		return err
+	}
 
 	srv := daemon.NewServer(daemon.ServerConfig{
 		DB:        store,
@@ -221,7 +246,32 @@ func runDaemon(ctx context.Context) error {
 	runtimeFile := filepath.Join(ns.DataDir, fmt.Sprintf("daemon.%d.json", os.Getpid()))
 	defer func() { _ = os.Remove(runtimeFile) }()
 
+	if listen != "" {
+		fmt.Fprintf(os.Stderr, "kata daemon: listening on %s\n", endpoint.Address())
+	}
+
 	return srv.Run(ctx)
+}
+
+// chooseEndpoint picks the daemon's listener: Unix socket when listen is
+// empty (default, auto-start path) or TCPEndpointAny otherwise. We
+// pre-flight the address-rule check via ValidateNonPublicAddress so
+// the CLI surfaces a clear error before the server starts, without
+// the listen-then-close TOCTOU window where the validating bind could
+// race with another process or, with port 0, lose the bound port.
+// The actual bind happens once inside server.Run.
+func chooseEndpoint(ns *daemon.Namespace, listen string) (daemon.DaemonEndpoint, error) {
+	if listen == "" {
+		socketPath := filepath.Join(ns.SocketDir, "daemon.sock")
+		return daemon.UnixEndpoint(socketPath), nil
+	}
+	if _, _, err := net.SplitHostPort(listen); err != nil {
+		return nil, fmt.Errorf("kata daemon: invalid --listen value %q: %v", listen, err)
+	}
+	if err := daemon.ValidateNonPublicAddress(listen); err != nil {
+		return nil, fmt.Errorf("kata daemon: invalid --listen value %q: %v", listen, err)
+	}
+	return daemon.TCPEndpointAny(listen), nil
 }
 
 // setupHooks loads hooks.toml, materializes $KATA_HOME, and constructs

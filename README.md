@@ -365,6 +365,52 @@ Future shared mode should be a distinct deployment:
 
 The local daemon should not be exposed directly to a LAN or public network.
 
+### Remote daemon (opt-in, no auth)
+
+A kata daemon can serve clients on other hosts over a private network
+(loopback, RFC1918, CGNAT, link-local, ULA — public addresses are rejected):
+
+```sh
+kata daemon start --listen 100.64.0.5:7777
+```
+
+Or set the address persistently in `<KATA_HOME>/config.toml`:
+
+```toml
+listen = "100.64.0.5:7777"
+```
+
+The CLI flag wins over the config file when both are present. Auto-started
+daemons (the on-demand path triggered by `kata create`, `kata list`, etc.)
+also pick up the config-file value, so on a host where you want every kata
+invocation to use the same TCP address you only have to set it once.
+
+Run the daemon under launchd / systemd / nohup on the host that holds the
+SQLite database. Clients on other hosts target it by setting `KATA_SERVER`:
+
+```sh
+export KATA_SERVER=http://100.64.0.5:7777
+kata list
+```
+
+Or by writing a per-developer, gitignored `.kata.local.toml` next to
+`.kata.toml`:
+
+```toml
+version = 1
+
+[server]
+url = "http://100.64.0.5:7777"
+```
+
+`kata init` adds `.kata.local.toml` to `.gitignore` automatically.
+`KATA_SERVER` wins over the file when both are set.
+
+There is no authentication in this mode — network ACLs (firewall, VPN,
+tailnet) are the access boundary. Default behavior (no flag, no env, no local
+file) is unchanged: a local Unix-socket daemon is auto-started on demand. See
+`docs/superpowers/specs/2026-05-04-kata-remote-client-design.md`.
+
 ## Configuration
 
 Useful environment variables:
@@ -375,6 +421,9 @@ Useful environment variables:
 - `KATA_HTTP_TIMEOUT`: per-request CLI timeout for non-streaming daemon calls
   (any `time.ParseDuration` string, e.g. `30s`, `2m`). Defaults to `5s`. Bump
   this for bulk imports where create requests can exceed the default.
+- `KATA_SERVER`: opt-in remote daemon URL (e.g. `http://100.64.0.5:7777`). When
+  set, the client skips local discovery and auto-start entirely. See "Remote
+  daemon" below.
 - `XDG_RUNTIME_DIR`: runtime socket parent on Unix.
 
 The workspace binding file is intentionally secret-free:

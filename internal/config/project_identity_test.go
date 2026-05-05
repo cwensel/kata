@@ -147,6 +147,166 @@ func TestValidateIdentity(t *testing.T) {
 	}
 }
 
+func TestPickInitIdentity_KataTomlOnly(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = "kata"
+
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg, "", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "kata", got.Name)
+}
+
+func TestPickInitIdentity_KataTomlMatchingInputIdentity(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = "kata"
+
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg,
+		"github.com/wesm/kata", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "kata", got.Name)
+}
+
+func TestPickInitIdentity_KataTomlConflictWithoutReplace(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = "kata"
+
+	_, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg,
+		"github.com/wesm/other", "", false)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrIdentityConflict)
+}
+
+func TestPickInitIdentity_KataTomlConflictWithReplace(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = "kata"
+
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg,
+		"github.com/wesm/other", "", true)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/other", got.Identity)
+	assert.Equal(t, "other", got.Name)
+}
+
+func TestPickInitIdentity_InputIdentityWithExplicitName(t *testing.T) {
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, nil,
+		"github.com/wesm/kata", "custom", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "custom", got.Name)
+}
+
+func TestPickInitIdentity_FromGitRoot(t *testing.T) {
+	dir := initGitRepo(t)
+	requireGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	got, err := config.PickInitIdentity(
+		config.DiscoveredPaths{GitRoot: dir}, nil, "", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "kata", got.Name)
+}
+
+func TestPickInitIdentity_NoSource(t *testing.T) {
+	_, err := config.PickInitIdentity(config.DiscoveredPaths{}, nil, "", "", false)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrNoIdentitySource)
+}
+
+func TestPickInitIdentity_KataTomlEmptyName(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = ""
+
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg, "", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "kata", got.Name)
+}
+
+func TestValidateAliasInfo(t *testing.T) {
+	cases := []struct {
+		name string
+		info config.AliasInfo
+		ok   bool
+		hint string
+	}{
+		{
+			name: "git alias passes ValidateIdentity rules",
+			info: config.AliasInfo{Identity: "github.com/wesm/kata", Kind: "git", RootPath: "/repo"},
+			ok:   true,
+		},
+		{
+			name: "local alias with spaces in path is allowed",
+			info: config.AliasInfo{Identity: "local:///Users/me/My Project", Kind: "local", RootPath: "/Users/me/My Project"},
+			ok:   true,
+		},
+		{
+			name: "local alias with unicode is allowed",
+			info: config.AliasInfo{Identity: "local:///私の/プロジェクト", Kind: "local", RootPath: "/私の/プロジェクト"},
+			ok:   true,
+		},
+		{
+			name: "git alias with whitespace is rejected",
+			info: config.AliasInfo{Identity: "has space", Kind: "git", RootPath: "/repo"},
+			ok:   false,
+			hint: "whitespace",
+		},
+		{
+			name: "unknown kind is rejected",
+			info: config.AliasInfo{Identity: "github.com/wesm/kata", Kind: "bogus", RootPath: "/repo"},
+			ok:   false,
+			hint: "kind",
+		},
+		{
+			name: "empty kind is rejected",
+			info: config.AliasInfo{Identity: "github.com/wesm/kata", Kind: "", RootPath: "/repo"},
+			ok:   false,
+			hint: "kind",
+		},
+		{
+			name: "empty root_path is rejected",
+			info: config.AliasInfo{Identity: "github.com/wesm/kata", Kind: "git", RootPath: ""},
+			ok:   false,
+			hint: "root_path",
+		},
+		{
+			name: "empty identity is rejected",
+			info: config.AliasInfo{Identity: "", Kind: "git", RootPath: "/repo"},
+			ok:   false,
+			hint: "identity",
+		},
+		{
+			name: "local alias missing prefix is rejected",
+			info: config.AliasInfo{Identity: "/Users/me/proj", Kind: "local", RootPath: "/Users/me/proj"},
+			ok:   false,
+			hint: "local://",
+		},
+		{
+			name: "local alias bare prefix is rejected",
+			info: config.AliasInfo{Identity: "local://", Kind: "local", RootPath: "/Users/me/proj"},
+			ok:   false,
+			hint: "local://",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := config.ValidateAliasInfo(tc.info)
+			if tc.ok {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.hint)
+		})
+	}
+}
+
 // helpers
 
 func initGitRepo(t *testing.T) string {

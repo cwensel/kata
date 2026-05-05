@@ -94,7 +94,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "POST",
 		Path:        "/api/v1/projects/resolve",
 	}, func(ctx context.Context, in *api.ResolveProjectRequest) (*api.ResolveProjectResponse, error) {
-		out, err := resolveProject(ctx, cfg.DB, in.Body.StartPath)
+		out, err := resolveProject(ctx, cfg.DB, in.Body.ProjectIdentity, in.Body.StartPath)
 		if err != nil {
 			return nil, err
 		}
@@ -361,11 +361,23 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	})
 }
 
-// resolveProject implements the strict resolution flow per spec §2.4. Order:
-// .kata.toml binding wins; then alias lookup from the git root; else fail.
-func resolveProject(ctx context.Context, store *db.DB, startPath string) (*api.ProjectResolveBody, error) {
+// resolveProject implements the strict resolution flow per spec §2.4.
+//
+// When projectIdentity is non-empty (remote-client path), the daemon
+// looks the project up by identity directly — no filesystem walk on
+// the daemon's machine. This is what lets a kata client on host B
+// resolve a project that is registered on host A's daemon when host
+// A cannot stat the workspace path on host B.
+//
+// Otherwise (local-mode path), startPath must be set and the daemon
+// walks up from it to find .kata.toml or .git, exactly as before.
+func resolveProject(ctx context.Context, store *db.DB, projectIdentity, startPath string) (*api.ProjectResolveBody, error) {
+	if projectIdentity != "" {
+		return resolveByIdentity(ctx, store, projectIdentity)
+	}
 	if startPath == "" {
-		return nil, api.NewError(400, "validation", "start_path required", "", nil)
+		return nil, api.NewError(400, "validation",
+			"either project_identity or start_path is required", "", nil)
 	}
 	abs, err := filepath.Abs(startPath)
 	if err != nil {
@@ -389,6 +401,33 @@ func resolveProject(ctx context.Context, store *db.DB, startPath string) (*api.P
 	return nil, api.NewError(404, "project_not_initialized",
 		"no .kata.toml ancestor and no git ancestor",
 		`run "kata init" inside a workspace`, nil)
+}
+
+// resolveByIdentity looks the project up by its committed identity
+// (e.g. "github.com/wesm/kata") without touching the filesystem. Used
+// by remote clients that have a local .kata.toml but a workspace path
+// the daemon cannot stat. No alias is upserted: aliases are tied to
+// daemon-side workspace metadata, which a remote client cannot supply.
+//
+// Strict identity-only lookup: alias names are not accepted here, since
+// the API contract is that this field carries the canonical identity
+// from .kata.toml. An alias collision on the daemon could otherwise
+// leak to a remote client that only knows the committed identity.
+func resolveByIdentity(ctx context.Context, store *db.DB, identity string) (*api.ProjectResolveBody, error) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return nil, api.NewError(400, "validation", "project_identity must be non-empty", "", nil)
+	}
+	project, err := store.ProjectByIdentity(ctx, identity)
+	if errors.Is(err, db.ErrNotFound) {
+		return nil, api.NewError(404, "project_not_initialized",
+			"project "+identity+" is bound by .kata.toml but not registered",
+			`run "kata init" in this workspace`, nil)
+	}
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return &api.ProjectResolveBody{Project: dbProjectToOut(project)}, nil
 }
 
 // resolveByKataToml returns (body, true, nil) when a .kata.toml binding
@@ -461,9 +500,22 @@ func resolveByAlias(ctx context.Context, store *db.DB, disc config.DiscoveredPat
 }
 
 // initProject implements `kata init` on the daemon side per spec §2.4.
+//
+// Two modes per InitProjectRequest:
+//
+//  1. start_path set → walk the daemon-side filesystem, derive identity
+//     from .kata.toml / git, write .kata.toml, attach an alias.
+//  2. start_path empty + project_identity set → identity-only init.
+//     Client has already derived identity and will write .kata.toml on
+//     its own filesystem; daemon only registers the project row. No
+//     filesystem access, no alias attachment.
 func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
 	if req.Body.StartPath == "" {
-		return nil, false, api.NewError(400, "validation", "start_path required", "", nil)
+		if req.Body.ProjectIdentity == "" {
+			return nil, false, api.NewError(400, "validation",
+				"either project_identity or start_path is required", "", nil)
+		}
+		return initByIdentity(ctx, store, req)
 	}
 	abs, err := filepath.Abs(req.Body.StartPath)
 	if err != nil {
@@ -522,7 +574,7 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 		return nil, false, err
 	}
 
-	dest := writeDestination(disc, abs)
+	dest := config.WriteDestination(disc, abs)
 	if tomlCfg == nil || tomlCfg.Project.Identity != project.Identity || tomlCfg.Project.Name != project.Name {
 		if err := config.WriteProjectConfig(dest, project.Identity, project.Name); err != nil {
 			return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
@@ -534,6 +586,110 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 		Alias:         alias,
 		WorkspaceRoot: dest,
 	}, created, nil
+}
+
+// initByIdentity is the path-free init mode used by remote clients
+// that have already derived the project identity locally. The daemon
+// does not stat or write the client's filesystem.
+//
+// Project lookup is strict: only ProjectByIdentity, never the
+// alias-fallback used in path-based init. That guards against the
+// client's canonical identity silently re-binding to whichever
+// project happens to own a colliding alias on the daemon side.
+//
+// When the client also supplies alias metadata, the daemon attaches
+// (or reassigns) the alias just as path-based init would, so
+// alias-conflict detection and --reassign survive the path-free
+// flow. Without alias metadata, --reassign is rejected because
+// there's nothing for the daemon to move.
+func initByIdentity(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
+	identity := strings.TrimSpace(req.Body.ProjectIdentity)
+	if identity == "" {
+		return nil, false, api.NewError(400, "validation",
+			"project_identity must be non-empty", "", nil)
+	}
+	if err := config.ValidateIdentity(identity); err != nil {
+		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	if req.Body.Reassign && req.Body.Alias == nil {
+		return nil, false, api.NewError(400, "validation",
+			"reassign requires alias metadata in identity-only init",
+			"omit --reassign or run from a workspace where the client can derive an alias", nil)
+	}
+
+	var aliasInfo *config.AliasInfo
+	if req.Body.Alias != nil {
+		info := config.AliasInfo{
+			Identity: req.Body.Alias.Identity,
+			Kind:     req.Body.Alias.Kind,
+			RootPath: req.Body.Alias.RootPath,
+		}
+		// ValidateAliasInfo applies kind-aware rules: git aliases get
+		// the project-identity charset check; local aliases (which
+		// carry workspace paths) only need a non-empty path. Without
+		// this, workspaces like "/Users/me/My Project" — perfectly
+		// valid for path-based init — would be rejected here on the
+		// whitespace check.
+		if err := config.ValidateAliasInfo(info); err != nil {
+			return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+		}
+		// Preflight before any project mutation, mirroring path-based
+		// init: avoids creating an orphan project row when the alias
+		// would conflict.
+		if err := preflightAliasConflict(ctx, store, info, identity, req.Body.Reassign); err != nil {
+			return nil, false, err
+		}
+		aliasInfo = &info
+	}
+
+	name := config.PickName(req.Body.Name, identity)
+	project, created, err := strictUpsertProject(ctx, store, identity, name)
+	if err != nil {
+		return nil, false, err
+	}
+
+	body := &api.ProjectResolveBody{Project: dbProjectToOut(project)}
+	if aliasInfo != nil {
+		alias, err := attachAlias(ctx, store, project.ID, *aliasInfo, req.Body.Reassign)
+		if err != nil {
+			// Concurrent init can race past the preflight (alias
+			// inserted between our check and our attach). Clean up
+			// the orphan project row so retries observe consistent
+			// state, matching the path-based recovery.
+			if created {
+				_, _ = store.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, project.ID)
+			}
+			return nil, false, err
+		}
+		body.Alias = alias
+	}
+	return body, created, nil
+}
+
+// strictUpsertProject is the identity-only counterpart to upsertProject.
+// It looks up by exact project identity (no alias fallback) so a
+// remote client's canonical identity is never silently rebound to a
+// project that happens to own a colliding alias. Archived rows are
+// surfaced as project_archived just like the path-based flow.
+func strictUpsertProject(ctx context.Context, store *db.DB, identity, name string) (db.Project, bool, error) {
+	got, err := store.ProjectByIdentity(ctx, identity)
+	if err == nil {
+		return got, false, nil
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if archived, archErr := store.ProjectByIdentityIncludingArchived(ctx, identity); archErr == nil && archived.DeletedAt != nil {
+		return db.Project{}, false, api.NewError(409, "project_archived",
+			"project with this identity was archived via `kata projects remove`",
+			"restore the project (not yet supported) or pick a different identity",
+			map[string]any{"identity": identity, "deleted_at": archived.DeletedAt})
+	}
+	created, err := store.CreateProject(ctx, identity, name)
+	if err != nil {
+		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return created, true, nil
 }
 
 // readWorkspaceConfig reads .kata.toml only when a workspace root was actually
@@ -553,53 +709,23 @@ func readWorkspaceConfig(disc config.DiscoveredPaths) (*config.ProjectConfig, er
 	return cfgFile, nil
 }
 
-// pickInitIdentity decides the (identity, name) pair for kata init based on
-// flags, .kata.toml content, and the discovered git workspace.
+// pickInitIdentity decides the (identity, name) pair for kata init by
+// delegating to the shared config.PickInitIdentity and translating its
+// sentinel errors into API error envelopes.
 func pickInitIdentity(req *api.InitProjectRequest, disc config.DiscoveredPaths, tomlCfg *config.ProjectConfig) (string, string, error) {
+	choice, err := config.PickInitIdentity(disc, tomlCfg,
+		req.Body.ProjectIdentity, req.Body.Name, req.Body.Replace)
 	switch {
-	case tomlCfg != nil && req.Body.ProjectIdentity != "" && tomlCfg.Project.Identity != req.Body.ProjectIdentity:
-		if !req.Body.Replace {
-			return "", "", api.NewError(http.StatusConflict, "project_binding_conflict",
-				".kata.toml declares a different identity",
-				"pass replace=true to overwrite", nil)
-		}
-		identity := req.Body.ProjectIdentity
-		return identity, pickName(req.Body.Name, identity), nil
-	case tomlCfg != nil:
-		identity := tomlCfg.Project.Identity
-		name := pickName(req.Body.Name, tomlCfg.Project.Name)
-		if name == "" {
-			name = pickName("", identity)
-		}
-		return identity, name, nil
-	case req.Body.ProjectIdentity != "":
-		identity := req.Body.ProjectIdentity
-		return identity, pickName(req.Body.Name, identity), nil
-	default:
-		if disc.GitRoot == "" {
-			return "", "", api.NewError(400, "validation",
-				"cannot derive project identity outside a git workspace",
-				`pass project_identity or run inside a git repo`, nil)
-		}
-		info, err := config.ComputeAliasIdentity(disc)
-		if err != nil {
-			return "", "", api.NewError(400, "validation", err.Error(), "", nil)
-		}
-		identity := info.Identity
-		return identity, pickName(req.Body.Name, identity), nil
+	case errors.Is(err, config.ErrIdentityConflict):
+		return "", "", api.NewError(http.StatusConflict, "project_binding_conflict",
+			err.Error(), "pass replace=true to overwrite", nil)
+	case errors.Is(err, config.ErrNoIdentitySource):
+		return "", "", api.NewError(400, "validation",
+			err.Error(), `pass project_identity or run inside a git repo`, nil)
+	case err != nil:
+		return "", "", api.NewError(400, "validation", err.Error(), "", nil)
 	}
-}
-
-// writeDestination chooses where to write .kata.toml: workspace root if any,
-// else git root, else the absolute start path.
-func writeDestination(disc config.DiscoveredPaths, abs string) string {
-	if disc.WorkspaceRoot != "" {
-		return disc.WorkspaceRoot
-	}
-	if disc.GitRoot != "" {
-		return disc.GitRoot
-	}
-	return abs
+	return choice.Identity, choice.Name, nil
 }
 
 // upsertProject returns the existing project (created=false) when one matches
@@ -753,18 +879,4 @@ func preflightAliasConflict(ctx context.Context, store *db.DB, info config.Alias
 			"alias_identity":      info.Identity,
 			"existing_project_id": existing.ProjectID,
 		})
-}
-
-// pickName returns explicit if non-empty, otherwise the last `/` or `:`-separated
-// segment of identity (so "github.com/wesm/kata" → "kata").
-func pickName(explicit, identity string) string {
-	if explicit != "" {
-		return explicit
-	}
-	for i := len(identity) - 1; i >= 0; i-- {
-		if identity[i] == '/' || identity[i] == ':' {
-			return identity[i+1:]
-		}
-	}
-	return identity
 }
