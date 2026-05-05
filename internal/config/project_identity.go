@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,6 +11,100 @@ import (
 	"strings"
 	"unicode"
 )
+
+// IdentityChoice is the (identity, name) pair resolved by PickInitIdentity.
+type IdentityChoice struct {
+	Identity string
+	Name     string
+}
+
+// ErrIdentityConflict signals that an existing .kata.toml declares an
+// identity different from the one the caller supplied. Callers must
+// require an explicit replace=true to override; daemon maps this to
+// project_binding_conflict (409), CLI maps it to ExitConflict.
+var ErrIdentityConflict = errors.New(".kata.toml declares a different identity")
+
+// ErrNoIdentitySource signals that no project identity could be
+// derived: there is no .kata.toml, no caller-supplied identity, and no
+// git workspace to read a remote from. Daemon and CLI both surface
+// this as a validation error.
+var ErrNoIdentitySource = errors.New("cannot derive project identity outside a git workspace")
+
+// PickInitIdentity decides the (identity, name) pair for kata init.
+// The same logic runs on the daemon (path-based init, where the daemon
+// reads .kata.toml from its own filesystem) and on the client (path-
+// free init, where the client reads .kata.toml from its workspace and
+// sends only the resolved identity to the daemon).
+//
+// Resolution order:
+//
+//  1. Existing .kata.toml + conflicting input identity (no replace) →
+//     ErrIdentityConflict.
+//  2. Existing .kata.toml → use its identity; explicit inputName wins
+//     over the toml name; fall back to last identity segment when the
+//     toml name is empty.
+//  3. Caller-supplied input identity → use it; name from inputName or
+//     last identity segment.
+//  4. Discovered git root → derive identity via ComputeAliasIdentity.
+//  5. Otherwise → ErrNoIdentitySource.
+func PickInitIdentity(disc DiscoveredPaths, tomlCfg *ProjectConfig, inputIdentity, inputName string, replace bool) (IdentityChoice, error) {
+	switch {
+	case tomlCfg != nil && inputIdentity != "" && tomlCfg.Project.Identity != inputIdentity:
+		if !replace {
+			return IdentityChoice{}, ErrIdentityConflict
+		}
+		return IdentityChoice{
+			Identity: inputIdentity,
+			Name:     PickName(inputName, inputIdentity),
+		}, nil
+	case tomlCfg != nil:
+		identity := tomlCfg.Project.Identity
+		name := PickName(inputName, tomlCfg.Project.Name)
+		if name == "" {
+			name = PickName("", identity)
+		}
+		return IdentityChoice{Identity: identity, Name: name}, nil
+	case inputIdentity != "":
+		return IdentityChoice{
+			Identity: inputIdentity,
+			Name:     PickName(inputName, inputIdentity),
+		}, nil
+	default:
+		if disc.GitRoot == "" {
+			return IdentityChoice{}, ErrNoIdentitySource
+		}
+		info, err := ComputeAliasIdentity(disc)
+		if err != nil {
+			return IdentityChoice{}, err
+		}
+		return IdentityChoice{
+			Identity: info.Identity,
+			Name:     PickName(inputName, info.Identity),
+		}, nil
+	}
+}
+
+// PickName returns explicit if non-empty, otherwise the last `/` or
+// `:`-separated segment of identity (so "github.com/wesm/kata" → "kata").
+func PickName(explicit, identity string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return lastSegment(identity)
+}
+
+// WriteDestination returns the directory where .kata.toml should be
+// written for a kata init invocation: workspace root if discovered,
+// else git root, else the absolute start path.
+func WriteDestination(disc DiscoveredPaths, startPath string) string {
+	if disc.WorkspaceRoot != "" {
+		return disc.WorkspaceRoot
+	}
+	if disc.GitRoot != "" {
+		return disc.GitRoot
+	}
+	return startPath
+}
 
 // DiscoveredPaths is the result of walking upward from a start path.
 // Both fields may be empty (no .kata.toml and no .git ancestor).

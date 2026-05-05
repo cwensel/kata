@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/wesm/kata/internal/config"
 )
 
 // initOptions holds the flags specific to `kata init`.
@@ -142,12 +144,143 @@ get committed.`,
 	return cmd
 }
 
-// callInit calls POST /api/v1/projects and returns the formatted output string.
-// The daemon is responsible for writing .kata.toml in the workspace.
+// callInit dispatches `kata init` between the path-free flow (client
+// derives identity locally, daemon registers project, client writes
+// files) and the legacy path-based flow (daemon does everything).
+//
+// Path-free runs whenever the client can resolve identity locally —
+// from .kata.toml, --project, or a discoverable git workspace. That's
+// the contract that lets a daemon on another host serve init without
+// filesystem access to the client workspace. The client falls back to
+// the path-based request only when local derivation can't produce an
+// identity, so the daemon (or its absence) emits today's validation
+// error.
 func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts) (string, error) {
-	reqBody := map[string]any{
-		"start_path": startPath,
+	derived, err := localDerive(startPath, opts)
+	switch {
+	case err == nil:
+		return runIdentityInit(ctx, baseURL, derived, opts)
+	case errors.Is(err, config.ErrIdentityConflict):
+		return "", &cliError{
+			Message:  err.Error(),
+			Kind:     kindConflict,
+			ExitCode: ExitConflict,
+		}
+	case errors.Is(err, config.ErrNoIdentitySource):
+		return runStartPathInit(ctx, baseURL, startPath, opts)
+	default:
+		return "", &cliError{
+			Message:  err.Error(),
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
 	}
+}
+
+// localInit captures everything callInit needs to run the path-free
+// flow: the chosen identity, the discovered roots (so .kata.toml lands
+// at the workspace/git root rather than the cwd), the existing
+// .kata.toml binding (so we can skip a redundant write), and the
+// absolute start path used as a final fallback for the write location.
+type localInit struct {
+	Choice       config.IdentityChoice
+	Disc         config.DiscoveredPaths
+	ExistingToml *config.ProjectConfig
+	StartPath    string
+}
+
+// localDerive runs the same identity-selection logic the daemon uses
+// in path-based init, but on the client's filesystem. Errors from
+// PickInitIdentity (conflict, no-source) are returned unwrapped so
+// callInit can dispatch on them.
+func localDerive(startPath string, opts callInitOpts) (localInit, error) {
+	disc, err := config.DiscoverPaths(startPath)
+	if err != nil {
+		return localInit{}, err
+	}
+	var tomlCfg *config.ProjectConfig
+	if disc.WorkspaceRoot != "" {
+		cfg, err := config.ReadProjectConfig(disc.WorkspaceRoot)
+		switch {
+		case err == nil:
+			tomlCfg = cfg
+		case errors.Is(err, config.ErrProjectConfigMissing):
+			// Discovered workspace root, but file vanished between the
+			// walk and the read; treat as no-toml so we fall through
+			// to the next identity source.
+		default:
+			return localInit{}, err
+		}
+	}
+	choice, err := config.PickInitIdentity(disc, tomlCfg, opts.Project, opts.Name, opts.Replace)
+	if err != nil {
+		return localInit{}, err
+	}
+	return localInit{
+		Choice:       choice,
+		Disc:         disc,
+		ExistingToml: tomlCfg,
+		StartPath:    startPath,
+	}, nil
+}
+
+// runIdentityInit POSTs the derived identity to the daemon, then
+// writes .kata.toml and .gitignore on the client's filesystem. The
+// daemon never sees the client's workspace path.
+func runIdentityInit(ctx context.Context, baseURL string, in localInit, opts callInitOpts) (string, error) {
+	if err := config.ValidateIdentity(in.Choice.Identity); err != nil {
+		return "", &cliError{
+			Message:  err.Error(),
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
+	}
+	reqBody := map[string]any{
+		"project_identity": in.Choice.Identity,
+		"name":             in.Choice.Name,
+	}
+	if opts.Replace {
+		reqBody["replace"] = true
+	}
+	if opts.Reassign {
+		reqBody["reassign"] = true
+	}
+	bs, err := postProjects(ctx, baseURL, reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	var resp struct {
+		Project struct {
+			Identity string `json:"identity"`
+			Name     string `json:"name"`
+		} `json:"project"`
+		Created bool `json:"created"`
+	}
+	if err := json.Unmarshal(bs, &resp); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+
+	dest := config.WriteDestination(in.Disc, in.StartPath)
+	if needsTomlWrite(in.ExistingToml, resp.Project.Identity, resp.Project.Name) {
+		if err := config.WriteProjectConfig(dest, resp.Project.Identity, resp.Project.Name); err != nil {
+			return "", fmt.Errorf("write .kata.toml: %w", err)
+		}
+	}
+	if err := ensureGitignoreEntry(dest, ".kata.local.toml"); err != nil {
+		fmt.Fprintf(os.Stderr, "kata: warning: could not update .gitignore: %v\n", err)
+	}
+
+	return formatInitOutput(bs, resp.Project.Identity, resp.Project.Name, resp.Created)
+}
+
+// runStartPathInit is the legacy fallback used when the client cannot
+// derive identity locally (no .kata.toml, no --project, no git). It
+// preserves today's behavior: the daemon walks its own filesystem,
+// writes .kata.toml, and reports back the workspace root so the client
+// places .gitignore beside it.
+func runStartPathInit(ctx context.Context, baseURL, startPath string, opts callInitOpts) (string, error) {
+	reqBody := map[string]any{"start_path": startPath}
 	if opts.Project != "" {
 		reqBody["project_identity"] = opts.Project
 	}
@@ -160,23 +293,11 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 	if opts.Reassign {
 		reqBody["reassign"] = true
 	}
-
-	client, err := httpClientFor(ctx, baseURL)
+	bs, err := postProjects(ctx, baseURL, reqBody)
 	if err != nil {
-		return "", fmt.Errorf("client: %w", err)
-	}
-	status, bs, err := httpDoJSON(ctx, client, http.MethodPost, baseURL+"/api/v1/projects", reqBody)
-	if err != nil {
-		return "", fmt.Errorf("POST /api/v1/projects: %w", err)
-	}
-	if status >= 300 {
-		return "", apiErrFromBody(status, bs)
+		return "", err
 	}
 
-	// Decode the response to extract project identity, name, and the
-	// workspace root (where the daemon wrote .kata.toml) so the
-	// .gitignore entry lands beside it. Without that, a `kata init`
-	// run from a subdirectory could update the wrong .gitignore.
 	var resp struct {
 		Project struct {
 			Identity string `json:"identity"`
@@ -191,33 +312,59 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 
 	gitignoreDir := resp.WorkspaceRoot
 	if gitignoreDir == "" {
-		// Older daemons may not return workspace_root; fall back to
-		// startPath. The original behavior is preserved for the
-		// single-directory init case (where startPath == workspace
-		// root).
 		gitignoreDir = startPath
 	}
 	if err := ensureGitignoreEntry(gitignoreDir, ".kata.local.toml"); err != nil {
 		fmt.Fprintf(os.Stderr, "kata: warning: could not update .gitignore: %v\n", err)
 	}
 
+	return formatInitOutput(bs, resp.Project.Identity, resp.Project.Name, resp.Created)
+}
+
+// postProjects POSTs the request and returns the raw response body on
+// success. Non-2xx responses are decoded into a *cliError so callers
+// can return them directly.
+func postProjects(ctx context.Context, baseURL string, reqBody any) ([]byte, error) {
+	client, err := httpClientFor(ctx, baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("client: %w", err)
+	}
+	status, bs, err := httpDoJSON(ctx, client, http.MethodPost, baseURL+"/api/v1/projects", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("POST /api/v1/projects: %w", err)
+	}
+	if status >= 300 {
+		return nil, apiErrFromBody(status, bs)
+	}
+	return bs, nil
+}
+
+// needsTomlWrite reports whether .kata.toml needs to be written: true
+// when no toml exists yet or its identity/name don't match the chosen
+// values. Mirrors the daemon-side guard so re-running init in the
+// same workspace is a no-op rather than a redundant rewrite.
+func needsTomlWrite(existing *config.ProjectConfig, identity, name string) bool {
+	if existing == nil {
+		return true
+	}
+	return existing.Project.Identity != identity || existing.Project.Name != name
+}
+
+// formatInitOutput renders the human-readable or JSON form of the init
+// result, shared between the path-free and path-based flows.
+func formatInitOutput(bs []byte, identity, name string, created bool) (string, error) {
 	if flags.JSON {
-		// Route JSON output through emitJSON so kata_api_version is present
-		// (CLI JSON contract per spec §5.1). The daemon's response body is
-		// already a JSON object, so we can pass it as a json.RawMessage
-		// directly without re-marshaling field-by-field.
 		var buf bytes.Buffer
 		if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
 			return "", fmt.Errorf("emit json: %w", err)
 		}
 		return buf.String(), nil
 	}
-
 	action := "bound"
-	if resp.Created {
+	if created {
 		action = "created and bound"
 	}
-	return fmt.Sprintf("%s project %s (%s)\n", action, resp.Project.Identity, resp.Project.Name), nil
+	return fmt.Sprintf("%s project %s (%s)\n", action, identity, name), nil
 }
 
 // resolveStartPath returns the absolute path to use as the daemon's

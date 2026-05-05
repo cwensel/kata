@@ -93,10 +93,25 @@ type ResolveProjectResponse struct {
 }
 
 // InitProjectRequest is POST /api/v1/projects (used by `kata init`).
+//
+// Two modes:
+//
+//  1. Path-based (start_path set): the daemon walks up from start_path to
+//     locate .kata.toml / .git, derives identity, writes .kata.toml, and
+//     attaches an alias. Requires the daemon to share a filesystem with
+//     the client.
+//  2. Identity-only (project_identity set, start_path empty): the client
+//     has already derived identity locally and will write .kata.toml on
+//     its own filesystem. The daemon registers the project row only;
+//     no filesystem access, no alias attached.
+//
+// Exactly one of start_path or project_identity must be set; sending
+// both keeps the path-based flow for backward compatibility with older
+// clients that always populated start_path.
 type InitProjectRequest struct {
 	Body struct {
-		StartPath       string `json:"start_path" required:"true"`
-		ProjectIdentity string `json:"project_identity,omitempty"`
+		StartPath       string `json:"start_path,omitempty" doc:"absolute path on the daemon's filesystem; omit for identity-only init"`
+		ProjectIdentity string `json:"project_identity,omitempty" doc:"client-derived identity; required when start_path is empty"`
 		Name            string `json:"name,omitempty"`
 		Replace         bool   `json:"replace,omitempty"`
 		Reassign        bool   `json:"reassign,omitempty"`

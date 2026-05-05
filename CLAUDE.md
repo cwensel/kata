@@ -34,8 +34,13 @@ A daemon can serve clients on other hosts over a private network:
 - Client: `export KATA_SERVER=http://100.64.0.5:7777` or commit a
   gitignored `.kata.local.toml` with `[server] url = "..."` next to
   `.kata.toml`. `KATA_SERVER` env wins.
-- Resolution is path-free when `.kata.toml` exists: the client sends
-  `project_identity` to the daemon and the daemon never stats the
-  client's filesystem. No auth yet — network ACLs are the boundary.
+- Init and resolution are both path-free whenever the client can
+  derive identity locally (existing `.kata.toml`, `--project`, or a
+  git workspace): the client sends `project_identity` and writes
+  `.kata.toml` itself; the daemon never stats the client's filesystem.
+  `kata init` falls back to a path-based request only when none of
+  those sources are available, so the daemon (or its absence) emits
+  the existing validation error. No auth yet — network ACLs are the
+  boundary.
 
 See `docs/superpowers/specs/2026-05-04-kata-remote-client-design.md`.

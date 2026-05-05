@@ -3,16 +3,21 @@
 package e2e_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -91,6 +96,86 @@ func TestRemoteClient_DaemonOnTCPClientViaKATA_SERVER(t *testing.T) {
 	// we'd find a daemon.<pid>.json under <clientHome>/runtime/<dbhash>/.
 	clientRuntime := filepath.Join(clientHome, "runtime")
 	assertNoDaemonRuntimeFiles(t, clientRuntime)
+}
+
+// TestRemoteInit_PathFreeWireShape spins up a daemon on TCP, slots a
+// recording reverse-proxy in front of it, and runs `kata init`
+// through the proxy. It asserts the on-the-wire request body so we
+// know the daemon never receives a client filesystem path — that's
+// what makes init work when client and daemon are on different
+// hosts. Single-host can't physically force a path-free request, so
+// this test fixes the contract at the HTTP layer.
+func TestRemoteInit_PathFreeWireShape(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e")
+	}
+	bin := buildKataBinary(t)
+
+	port := freeTCPPort(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	serverHome := t.TempDir()
+	daemonStderr := &safeBuffer{}
+	daemon := exec.Command(bin, "daemon", "start", "--listen", addr) //nolint:gosec
+	daemon.Env = append(os.Environ(),
+		"KATA_HOME="+serverHome,
+		"KATA_DB="+filepath.Join(serverHome, "kata.db"),
+	)
+	daemon.Stdout = io.Discard
+	daemon.Stderr = daemonStderr
+	daemon.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, daemon.Start())
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon stderr:\n%s", daemonStderr.String())
+		}
+	})
+	t.Cleanup(func() { stopDaemon(daemon) })
+	waitForPing(t, "http://"+addr, 5*time.Second)
+
+	// Recording reverse-proxy: forwards every request to the daemon
+	// while capturing POST /api/v1/projects bodies for inspection.
+	target, err := url.Parse("http://" + addr)
+	require.NoError(t, err)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var (
+		mu     sync.Mutex
+		bodies []string
+	)
+	recorder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/projects" && r.Method == http.MethodPost {
+			bs, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			bodies = append(bodies, string(bs))
+			mu.Unlock()
+			r.Body = io.NopCloser(bytes.NewReader(bs))
+			r.ContentLength = int64(len(bs))
+		}
+		proxy.ServeHTTP(w, r) //nolint:gosec // G704: forwards to a fixed-test loopback daemon, not user input
+	}))
+	t.Cleanup(recorder.Close)
+
+	clientHome := t.TempDir()
+	clientWS := initRepo(t, "https://github.com/wesm/system.git")
+	clientEnv := append(os.Environ(),
+		"KATA_HOME="+clientHome,
+		"KATA_DB="+filepath.Join(clientHome, "kata.db"),
+		"KATA_SERVER="+recorder.URL,
+		"KATA_AUTHOR=e2e-bot",
+	)
+
+	runRemoteCmd(t, bin, clientWS, clientEnv, "init")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, bodies, 1, "kata init should issue exactly one POST /api/v1/projects")
+	body := bodies[0]
+	assert.Contains(t, body, `"project_identity":"github.com/wesm/system"`,
+		"client must send the locally-derived identity")
+	assert.NotContains(t, body, "start_path",
+		"remote init must not leak the client filesystem path to the daemon")
+
+	// .kata.toml must be written on the client side, not the daemon's KATA_HOME.
+	assert.FileExists(t, filepath.Join(clientWS, ".kata.toml"))
 }
 
 // freeTCPPort binds 127.0.0.1:0, captures the bound port, and closes.

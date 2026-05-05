@@ -500,9 +500,22 @@ func resolveByAlias(ctx context.Context, store *db.DB, disc config.DiscoveredPat
 }
 
 // initProject implements `kata init` on the daemon side per spec §2.4.
+//
+// Two modes per InitProjectRequest:
+//
+//  1. start_path set → walk the daemon-side filesystem, derive identity
+//     from .kata.toml / git, write .kata.toml, attach an alias.
+//  2. start_path empty + project_identity set → identity-only init.
+//     Client has already derived identity and will write .kata.toml on
+//     its own filesystem; daemon only registers the project row. No
+//     filesystem access, no alias attachment.
 func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
 	if req.Body.StartPath == "" {
-		return nil, false, api.NewError(400, "validation", "start_path required", "", nil)
+		if req.Body.ProjectIdentity == "" {
+			return nil, false, api.NewError(400, "validation",
+				"either project_identity or start_path is required", "", nil)
+		}
+		return initByIdentity(ctx, store, req)
 	}
 	abs, err := filepath.Abs(req.Body.StartPath)
 	if err != nil {
@@ -561,7 +574,7 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 		return nil, false, err
 	}
 
-	dest := writeDestination(disc, abs)
+	dest := config.WriteDestination(disc, abs)
 	if tomlCfg == nil || tomlCfg.Project.Identity != project.Identity || tomlCfg.Project.Name != project.Name {
 		if err := config.WriteProjectConfig(dest, project.Identity, project.Name); err != nil {
 			return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
@@ -573,6 +586,30 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 		Alias:         alias,
 		WorkspaceRoot: dest,
 	}, created, nil
+}
+
+// initByIdentity is the path-free init mode used by remote clients that
+// have already derived the project identity locally. The daemon does
+// not stat or write the client's filesystem; it only registers (or
+// looks up) the project row. No alias is attached because aliases are
+// tied to daemon-side workspace metadata that a remote client cannot
+// supply — local resolves on the daemon's host can attach an alias
+// later through the existing path-based flow.
+func initByIdentity(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
+	identity := strings.TrimSpace(req.Body.ProjectIdentity)
+	if identity == "" {
+		return nil, false, api.NewError(400, "validation",
+			"project_identity must be non-empty", "", nil)
+	}
+	if err := config.ValidateIdentity(identity); err != nil {
+		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	name := config.PickName(req.Body.Name, identity)
+	project, created, err := upsertProject(ctx, store, identity, name)
+	if err != nil {
+		return nil, false, err
+	}
+	return &api.ProjectResolveBody{Project: dbProjectToOut(project)}, created, nil
 }
 
 // readWorkspaceConfig reads .kata.toml only when a workspace root was actually
@@ -592,53 +629,23 @@ func readWorkspaceConfig(disc config.DiscoveredPaths) (*config.ProjectConfig, er
 	return cfgFile, nil
 }
 
-// pickInitIdentity decides the (identity, name) pair for kata init based on
-// flags, .kata.toml content, and the discovered git workspace.
+// pickInitIdentity decides the (identity, name) pair for kata init by
+// delegating to the shared config.PickInitIdentity and translating its
+// sentinel errors into API error envelopes.
 func pickInitIdentity(req *api.InitProjectRequest, disc config.DiscoveredPaths, tomlCfg *config.ProjectConfig) (string, string, error) {
+	choice, err := config.PickInitIdentity(disc, tomlCfg,
+		req.Body.ProjectIdentity, req.Body.Name, req.Body.Replace)
 	switch {
-	case tomlCfg != nil && req.Body.ProjectIdentity != "" && tomlCfg.Project.Identity != req.Body.ProjectIdentity:
-		if !req.Body.Replace {
-			return "", "", api.NewError(http.StatusConflict, "project_binding_conflict",
-				".kata.toml declares a different identity",
-				"pass replace=true to overwrite", nil)
-		}
-		identity := req.Body.ProjectIdentity
-		return identity, pickName(req.Body.Name, identity), nil
-	case tomlCfg != nil:
-		identity := tomlCfg.Project.Identity
-		name := pickName(req.Body.Name, tomlCfg.Project.Name)
-		if name == "" {
-			name = pickName("", identity)
-		}
-		return identity, name, nil
-	case req.Body.ProjectIdentity != "":
-		identity := req.Body.ProjectIdentity
-		return identity, pickName(req.Body.Name, identity), nil
-	default:
-		if disc.GitRoot == "" {
-			return "", "", api.NewError(400, "validation",
-				"cannot derive project identity outside a git workspace",
-				`pass project_identity or run inside a git repo`, nil)
-		}
-		info, err := config.ComputeAliasIdentity(disc)
-		if err != nil {
-			return "", "", api.NewError(400, "validation", err.Error(), "", nil)
-		}
-		identity := info.Identity
-		return identity, pickName(req.Body.Name, identity), nil
+	case errors.Is(err, config.ErrIdentityConflict):
+		return "", "", api.NewError(http.StatusConflict, "project_binding_conflict",
+			err.Error(), "pass replace=true to overwrite", nil)
+	case errors.Is(err, config.ErrNoIdentitySource):
+		return "", "", api.NewError(400, "validation",
+			err.Error(), `pass project_identity or run inside a git repo`, nil)
+	case err != nil:
+		return "", "", api.NewError(400, "validation", err.Error(), "", nil)
 	}
-}
-
-// writeDestination chooses where to write .kata.toml: workspace root if any,
-// else git root, else the absolute start path.
-func writeDestination(disc config.DiscoveredPaths, abs string) string {
-	if disc.WorkspaceRoot != "" {
-		return disc.WorkspaceRoot
-	}
-	if disc.GitRoot != "" {
-		return disc.GitRoot
-	}
-	return abs
+	return choice.Identity, choice.Name, nil
 }
 
 // upsertProject returns the existing project (created=false) when one matches
@@ -792,18 +799,4 @@ func preflightAliasConflict(ctx context.Context, store *db.DB, info config.Alias
 			"alias_identity":      info.Identity,
 			"existing_project_id": existing.ProjectID,
 		})
-}
-
-// pickName returns explicit if non-empty, otherwise the last `/` or `:`-separated
-// segment of identity (so "github.com/wesm/kata" → "kata").
-func pickName(explicit, identity string) string {
-	if explicit != "" {
-		return explicit
-	}
-	for i := len(identity) - 1; i >= 0; i-- {
-		if identity[i] == '/' || identity[i] == ':' {
-			return identity[i+1:]
-		}
-	}
-	return identity
 }

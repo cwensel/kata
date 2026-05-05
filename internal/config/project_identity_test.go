@@ -147,6 +147,88 @@ func TestValidateIdentity(t *testing.T) {
 	}
 }
 
+func TestPickInitIdentity_KataTomlOnly(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = "kata"
+
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg, "", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "kata", got.Name)
+}
+
+func TestPickInitIdentity_KataTomlMatchingInputIdentity(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = "kata"
+
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg,
+		"github.com/wesm/kata", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "kata", got.Name)
+}
+
+func TestPickInitIdentity_KataTomlConflictWithoutReplace(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = "kata"
+
+	_, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg,
+		"github.com/wesm/other", "", false)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrIdentityConflict)
+}
+
+func TestPickInitIdentity_KataTomlConflictWithReplace(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = "kata"
+
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg,
+		"github.com/wesm/other", "", true)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/other", got.Identity)
+	assert.Equal(t, "other", got.Name)
+}
+
+func TestPickInitIdentity_InputIdentityWithExplicitName(t *testing.T) {
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, nil,
+		"github.com/wesm/kata", "custom", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "custom", got.Name)
+}
+
+func TestPickInitIdentity_FromGitRoot(t *testing.T) {
+	dir := initGitRepo(t)
+	requireGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	got, err := config.PickInitIdentity(
+		config.DiscoveredPaths{GitRoot: dir}, nil, "", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "kata", got.Name)
+}
+
+func TestPickInitIdentity_NoSource(t *testing.T) {
+	_, err := config.PickInitIdentity(config.DiscoveredPaths{}, nil, "", "", false)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrNoIdentitySource)
+}
+
+func TestPickInitIdentity_KataTomlEmptyName(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Identity = "github.com/wesm/kata"
+	cfg.Project.Name = ""
+
+	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg, "", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/wesm/kata", got.Identity)
+	assert.Equal(t, "kata", got.Name)
+}
+
 // helpers
 
 func initGitRepo(t *testing.T) string {

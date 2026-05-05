@@ -235,6 +235,94 @@ name     = "other"
 	require.Equal(t, 200, resp2.StatusCode, string(bs2))
 }
 
+// TestInit_ByIdentity_PathFree verifies the remote-client init path:
+// the daemon registers a project by client-derived identity without
+// touching the filesystem. This is what lets a kata client on host B
+// init a project against host A's daemon when host A cannot stat host
+// B's workspace.
+func TestInit_ByIdentity_PathFree(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/remote",
+		"name":             "remote",
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var body struct {
+		Project struct {
+			Identity string
+			Name     string
+		} `json:"project"`
+		WorkspaceRoot string `json:"workspace_root"`
+		Created       bool   `json:"created"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.Equal(t, "github.com/wesm/remote", body.Project.Identity)
+	assert.Equal(t, "remote", body.Project.Name)
+	assert.True(t, body.Created)
+	// Daemon never knew the client workspace path; response must
+	// reflect that so the client doesn't write .gitignore in the
+	// wrong place.
+	assert.Empty(t, body.WorkspaceRoot)
+
+	// Re-init by same identity is idempotent and reports created=false.
+	resp2, bs2 := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/remote",
+	})
+	require.Equal(t, 200, resp2.StatusCode, string(bs2))
+	var body2 struct {
+		Created bool `json:"created"`
+	}
+	require.NoError(t, json.Unmarshal(bs2, &body2))
+	assert.False(t, body2.Created)
+}
+
+// TestInit_NeitherFieldSet rejects requests that supply neither
+// project_identity nor start_path (mirrors the resolve contract so
+// callers see a uniform validation message).
+func TestInit_NeitherFieldSet(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "project_identity")
+	assert.Contains(t, string(bs), "start_path")
+}
+
+// TestInit_ByIdentity_RejectsEmptyIdentity guards against an empty or
+// whitespace-only project_identity slipping through into a project row.
+func TestInit_ByIdentity_RejectsEmptyIdentity(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "   ",
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "project_identity")
+}
+
+// TestInit_ByIdentity_DefaultsName verifies the daemon falls back to
+// the last identity segment when the client doesn't supply name. This
+// matches the local-init contract so the two paths produce the same
+// project rows.
+func TestInit_ByIdentity_DefaultsName(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/auto-name",
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var body struct {
+		Project struct {
+			Name string
+		} `json:"project"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.Equal(t, "auto-name", body.Project.Name)
+}
+
 func TestResetCounter_EmptyProjectSucceeds(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
