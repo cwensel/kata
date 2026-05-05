@@ -302,6 +302,161 @@ func TestInit_ByIdentity_RejectsEmptyIdentity(t *testing.T) {
 	assert.Contains(t, string(bs), "project_identity")
 }
 
+// TestInit_ByIdentity_StrictIdentityLookup guards against an alias
+// collision silently rebinding identity-only init to the wrong
+// project. If "github.com/wesm/origin" is registered as an alias for
+// project X (whose canonical identity is "github.com/wesm/override"),
+// a path-free init that asserts project_identity="github.com/wesm/origin"
+// must create a new project — not return the alias-bound override.
+func TestInit_ByIdentity_StrictIdentityLookup(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/origin.git")
+	ts := newTestServer(t)
+
+	// Path-based init with --project override: project.identity is
+	// "github.com/wesm/override" but its alias derives from the git
+	// remote → "github.com/wesm/origin".
+	resp1, bs1 := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"start_path":       dir,
+		"project_identity": "github.com/wesm/override",
+	})
+	require.Equal(t, 200, resp1.StatusCode, string(bs1))
+
+	// Identity-only init asserting "github.com/wesm/origin" as canonical.
+	// Strict lookup must not return the override project.
+	resp2, bs2 := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/origin",
+	})
+	require.Equal(t, 200, resp2.StatusCode, string(bs2))
+
+	var body struct {
+		Project struct {
+			Identity string
+		} `json:"project"`
+		Created bool `json:"created"`
+	}
+	require.NoError(t, json.Unmarshal(bs2, &body))
+	assert.Equal(t, "github.com/wesm/origin", body.Project.Identity,
+		"daemon must treat project_identity as canonical, not as an alias lookup")
+	assert.True(t, body.Created)
+}
+
+// TestInit_ByIdentity_AttachesAliasWhenSupplied verifies the path-free
+// init attaches an alias the client supplies. This preserves alias
+// semantics (resolve-by-git-remote, conflict detection) for remote
+// clients that can compute alias info locally.
+func TestInit_ByIdentity_AttachesAliasWhenSupplied(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/foo",
+		"name":             "foo",
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/foo",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var body struct {
+		Alias struct {
+			AliasIdentity string `json:"alias_identity"`
+			AliasKind     string `json:"alias_kind"`
+			RootPath      string `json:"root_path"`
+		} `json:"alias"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.Equal(t, "github.com/wesm/foo", body.Alias.AliasIdentity)
+	assert.Equal(t, "git", body.Alias.AliasKind)
+	assert.Equal(t, "/client/workspace", body.Alias.RootPath)
+}
+
+// TestInit_ByIdentity_AliasConflictWithoutReassign returns
+// project_alias_conflict when the supplied alias is already attached
+// to a different project. Without reassign, the daemon must not
+// silently move the alias.
+func TestInit_ByIdentity_AliasConflictWithoutReassign(t *testing.T) {
+	ts := newTestServer(t)
+
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/a",
+		"alias": map[string]any{
+			"identity":  "shared",
+			"kind":      "git",
+			"root_path": "/work",
+		},
+	})
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/b",
+		"alias": map[string]any{
+			"identity":  "shared",
+			"kind":      "git",
+			"root_path": "/work",
+		},
+	})
+	require.Equal(t, http.StatusConflict, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "project_alias_conflict")
+}
+
+// TestInit_ByIdentity_ReassignMovesAlias asserts that reassign +
+// alias metadata moves the alias from the old project to the new one
+// — this is what `kata init --reassign` against a remote daemon
+// should do.
+func TestInit_ByIdentity_ReassignMovesAlias(t *testing.T) {
+	ts := newTestServer(t)
+
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/old",
+		"alias": map[string]any{
+			"identity":  "shared",
+			"kind":      "git",
+			"root_path": "/work",
+		},
+	})
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/new",
+		"reassign":         true,
+		"alias": map[string]any{
+			"identity":  "shared",
+			"kind":      "git",
+			"root_path": "/work",
+		},
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var body struct {
+		Project struct {
+			Identity string
+		} `json:"project"`
+		Alias struct {
+			AliasIdentity string `json:"alias_identity"`
+		} `json:"alias"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.Equal(t, "github.com/wesm/new", body.Project.Identity)
+	assert.Equal(t, "shared", body.Alias.AliasIdentity)
+}
+
+// TestInit_ByIdentity_ReassignWithoutAliasErrors guards against the
+// silent-success case where --reassign is requested but no alias
+// metadata is supplied. With nothing to reassign, the daemon must
+// reject rather than report success and leave the old binding intact.
+func TestInit_ByIdentity_ReassignWithoutAliasErrors(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/foo",
+		"reassign":         true,
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "reassign")
+	assert.Contains(t, string(bs), "alias")
+}
+
 // TestInit_ByIdentity_DefaultsName verifies the daemon falls back to
 // the last identity segment when the client doesn't supply name. This
 // matches the local-init contract so the two paths produce the same

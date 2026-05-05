@@ -249,6 +249,7 @@ func TestHealth_DoesNotAutoStartDaemon(t *testing.T) {
 	// Empty context (no BaseURLKey) + a fresh KATA_HOME guarantees
 	// no daemon discovery succeeds.
 	t.Setenv("KATA_HOME", t.TempDir())
+	t.Setenv("KATA_SERVER", "")
 	_, err := discoverDaemon(context.Background())
 	require.Error(t, err)
 	var ce *cliError
@@ -257,6 +258,23 @@ func TestHealth_DoesNotAutoStartDaemon(t *testing.T) {
 	assert.Equal(t, kindDaemonUnavail, ce.Kind)
 	assert.Contains(t, ce.Message, "no daemon running",
 		"hint must point the user at the right action")
+}
+
+// TestHealth_HonorsKataServer ensures a configured remote URL is
+// probed by discoverDaemon. Without this, `kata health` ignores
+// KATA_SERVER and reports either a stale local daemon or "no daemon
+// running" — both of which contradict the user's explicit selection.
+func TestHealth_HonorsKataServer(t *testing.T) {
+	resetFlags(t)
+	t.Setenv("KATA_HOME", t.TempDir())
+
+	env := testenv.New(t)
+	t.Setenv("KATA_SERVER", env.URL)
+
+	url, err := discoverDaemon(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, env.URL, url,
+		"discoverDaemon must return the KATA_SERVER URL when it's reachable")
 }
 
 // TestList_ShowsOwnerInParens covers hammer-test #10: list and ready

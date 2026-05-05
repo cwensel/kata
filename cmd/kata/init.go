@@ -164,6 +164,7 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 		return "", &cliError{
 			Message:  err.Error(),
 			Kind:     kindConflict,
+			Code:     "project_binding_conflict",
 			ExitCode: ExitConflict,
 		}
 	case errors.Is(err, config.ErrNoIdentitySource):
@@ -180,19 +181,24 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 // localInit captures everything callInit needs to run the path-free
 // flow: the chosen identity, the discovered roots (so .kata.toml lands
 // at the workspace/git root rather than the cwd), the existing
-// .kata.toml binding (so we can skip a redundant write), and the
-// absolute start path used as a final fallback for the write location.
+// .kata.toml binding (so we can skip a redundant write), the absolute
+// start path used as a final fallback for the write location, and
+// optional alias metadata so the daemon can attach an alias without
+// stat'ing the client's filesystem.
 type localInit struct {
 	Choice       config.IdentityChoice
 	Disc         config.DiscoveredPaths
 	ExistingToml *config.ProjectConfig
 	StartPath    string
+	Alias        *config.AliasInfo
 }
 
 // localDerive runs the same identity-selection logic the daemon uses
 // in path-based init, but on the client's filesystem. Errors from
 // PickInitIdentity (conflict, no-source) are returned unwrapped so
-// callInit can dispatch on them.
+// callInit can dispatch on them. Alias metadata is computed
+// best-effort: when the workspace can't yield an alias, the daemon
+// still gets project_identity but no alias attach happens.
 func localDerive(startPath string, opts callInitOpts) (localInit, error) {
 	disc, err := config.DiscoverPaths(startPath)
 	if err != nil {
@@ -216,12 +222,34 @@ func localDerive(startPath string, opts callInitOpts) (localInit, error) {
 	if err != nil {
 		return localInit{}, err
 	}
+	alias, err := computeAliasInfo(disc, startPath)
+	if err != nil {
+		return localInit{}, err
+	}
 	return localInit{
 		Choice:       choice,
 		Disc:         disc,
 		ExistingToml: tomlCfg,
 		StartPath:    startPath,
+		Alias:        alias,
 	}, nil
+}
+
+// computeAliasInfo derives the alias metadata the daemon needs to
+// attach an alias on the client's behalf. Mirrors the daemon-side
+// path-based init: when the workspace has neither a git ancestor
+// nor a .kata.toml ancestor, we synthesize a workspace root at the
+// start path so ComputeAliasIdentity has something to anchor on
+// (matching the path-based local:// fallback).
+func computeAliasInfo(disc config.DiscoveredPaths, startPath string) (*config.AliasInfo, error) {
+	if disc.GitRoot == "" && disc.WorkspaceRoot == "" {
+		disc.WorkspaceRoot = startPath
+	}
+	info, err := config.ComputeAliasIdentity(disc)
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
 }
 
 // runIdentityInit POSTs the derived identity to the daemon, then
@@ -244,6 +272,13 @@ func runIdentityInit(ctx context.Context, baseURL string, in localInit, opts cal
 	}
 	if opts.Reassign {
 		reqBody["reassign"] = true
+	}
+	if in.Alias != nil {
+		reqBody["alias"] = map[string]any{
+			"identity":  in.Alias.Identity,
+			"kind":      in.Alias.Kind,
+			"root_path": in.Alias.RootPath,
+		}
 	}
 	bs, err := postProjects(ctx, baseURL, reqBody)
 	if err != nil {

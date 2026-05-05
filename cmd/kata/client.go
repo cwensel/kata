@@ -88,14 +88,37 @@ func workspaceStartForRemote() string {
 
 // discoverDaemon returns the live daemon URL without auto-starting one.
 // Used by health probes and any other surface where "no daemon running"
-// is a meaningful answer rather than a state to paper over. Honors the
-// BaseURLKey context shortcut so tests can still inject. Returns a
-// kindDaemonUnavail cliError when no live daemon is found, matching
-// hammer-test finding #1's expectation that `kata health` doesn't lie
-// about the daemon's actual state.
+// is a meaningful answer rather than a state to paper over.
+//
+// Resolution order matches ensureDaemon so health doesn't disagree
+// with the rest of the CLI about which daemon is "the" daemon:
+//
+//  1. BaseURLKey on the context (test injection).
+//  2. Configured remote (KATA_SERVER env or .kata.local.toml
+//     [server].url). When the remote is set but unreachable, surface
+//     that as ErrRemoteUnavailable so health reports the explicitly-
+//     selected daemon's actual state rather than silently falling
+//     through to a local one.
+//  3. Local Discover (runtime files).
+//
+// Returns a kindDaemonUnavail cliError when no live daemon is found,
+// matching hammer-test finding #1's expectation that `kata health`
+// doesn't lie about the daemon's actual state.
 func discoverDaemon(ctx context.Context) (string, error) {
 	if v, ok := ctx.Value(daemonclient.BaseURLKey{}).(string); ok && v != "" {
 		return v, nil
+	}
+	if url, ok, err := daemonclient.ResolveRemote(ctx, workspaceStartForRemote()); err != nil {
+		if errors.Is(err, daemonclient.ErrRemoteUnavailable) {
+			return "", &cliError{
+				Message:  err.Error(),
+				Kind:     kindDaemonUnavail,
+				ExitCode: ExitDaemonUnavail,
+			}
+		}
+		return "", err
+	} else if ok {
+		return url, nil
 	}
 	ns, err := daemon.NewNamespace()
 	if err != nil {

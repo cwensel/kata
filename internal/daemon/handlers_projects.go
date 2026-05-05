@@ -588,13 +588,20 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 	}, created, nil
 }
 
-// initByIdentity is the path-free init mode used by remote clients that
-// have already derived the project identity locally. The daemon does
-// not stat or write the client's filesystem; it only registers (or
-// looks up) the project row. No alias is attached because aliases are
-// tied to daemon-side workspace metadata that a remote client cannot
-// supply — local resolves on the daemon's host can attach an alias
-// later through the existing path-based flow.
+// initByIdentity is the path-free init mode used by remote clients
+// that have already derived the project identity locally. The daemon
+// does not stat or write the client's filesystem.
+//
+// Project lookup is strict: only ProjectByIdentity, never the
+// alias-fallback used in path-based init. That guards against the
+// client's canonical identity silently re-binding to whichever
+// project happens to own a colliding alias on the daemon side.
+//
+// When the client also supplies alias metadata, the daemon attaches
+// (or reassigns) the alias just as path-based init would, so
+// alias-conflict detection and --reassign survive the path-free
+// flow. Without alias metadata, --reassign is rejected because
+// there's nothing for the daemon to move.
 func initByIdentity(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
 	identity := strings.TrimSpace(req.Body.ProjectIdentity)
 	if identity == "" {
@@ -604,12 +611,80 @@ func initByIdentity(ctx context.Context, store *db.DB, req *api.InitProjectReque
 	if err := config.ValidateIdentity(identity); err != nil {
 		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 	}
+	if req.Body.Reassign && req.Body.Alias == nil {
+		return nil, false, api.NewError(400, "validation",
+			"reassign requires alias metadata in identity-only init",
+			"omit --reassign or run from a workspace where the client can derive an alias", nil)
+	}
+
+	var aliasInfo *config.AliasInfo
+	if req.Body.Alias != nil {
+		info := config.AliasInfo{
+			Identity: req.Body.Alias.Identity,
+			Kind:     req.Body.Alias.Kind,
+			RootPath: req.Body.Alias.RootPath,
+		}
+		if err := config.ValidateIdentity(info.Identity); err != nil {
+			return nil, false, api.NewError(400, "validation",
+				"alias.identity: "+err.Error(), "", nil)
+		}
+		// Preflight before any project mutation, mirroring path-based
+		// init: avoids creating an orphan project row when the alias
+		// would conflict.
+		if err := preflightAliasConflict(ctx, store, info, identity, req.Body.Reassign); err != nil {
+			return nil, false, err
+		}
+		aliasInfo = &info
+	}
+
 	name := config.PickName(req.Body.Name, identity)
-	project, created, err := upsertProject(ctx, store, identity, name)
+	project, created, err := strictUpsertProject(ctx, store, identity, name)
 	if err != nil {
 		return nil, false, err
 	}
-	return &api.ProjectResolveBody{Project: dbProjectToOut(project)}, created, nil
+
+	body := &api.ProjectResolveBody{Project: dbProjectToOut(project)}
+	if aliasInfo != nil {
+		alias, err := attachAlias(ctx, store, project.ID, *aliasInfo, req.Body.Reassign)
+		if err != nil {
+			// Concurrent init can race past the preflight (alias
+			// inserted between our check and our attach). Clean up
+			// the orphan project row so retries observe consistent
+			// state, matching the path-based recovery.
+			if created {
+				_, _ = store.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, project.ID)
+			}
+			return nil, false, err
+		}
+		body.Alias = alias
+	}
+	return body, created, nil
+}
+
+// strictUpsertProject is the identity-only counterpart to upsertProject.
+// It looks up by exact project identity (no alias fallback) so a
+// remote client's canonical identity is never silently rebound to a
+// project that happens to own a colliding alias. Archived rows are
+// surfaced as project_archived just like the path-based flow.
+func strictUpsertProject(ctx context.Context, store *db.DB, identity, name string) (db.Project, bool, error) {
+	got, err := store.ProjectByIdentity(ctx, identity)
+	if err == nil {
+		return got, false, nil
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if archived, archErr := store.ProjectByIdentityIncludingArchived(ctx, identity); archErr == nil && archived.DeletedAt != nil {
+		return db.Project{}, false, api.NewError(409, "project_archived",
+			"project with this identity was archived via `kata projects remove`",
+			"restore the project (not yet supported) or pick a different identity",
+			map[string]any{"identity": identity, "deleted_at": archived.DeletedAt})
+	}
+	created, err := store.CreateProject(ctx, identity, name)
+	if err != nil {
+		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return created, true, nil
 }
 
 // readWorkspaceConfig reads .kata.toml only when a workspace root was actually

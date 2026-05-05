@@ -92,29 +92,43 @@ type ResolveProjectResponse struct {
 	Body ProjectResolveBody
 }
 
+// AliasInput is the alias metadata a remote client can supply during
+// path-free init so the daemon attaches/reassigns the alias without
+// stat'ing the client's workspace. Mirrors config.AliasInfo on the
+// wire.
+type AliasInput struct {
+	Identity string `json:"identity" doc:"alias identity (normalized git remote or local://<abs>)"`
+	Kind     string `json:"kind" doc:"\"git\" or \"local\""`
+	RootPath string `json:"root_path" doc:"client-side path the alias roots at; daemon stores but never stats"`
+}
+
 // InitProjectRequest is POST /api/v1/projects (used by `kata init`).
 //
 // Two modes:
 //
-//  1. Path-based (start_path set): the daemon walks up from start_path to
-//     locate .kata.toml / .git, derives identity, writes .kata.toml, and
-//     attaches an alias. Requires the daemon to share a filesystem with
-//     the client.
-//  2. Identity-only (project_identity set, start_path empty): the client
-//     has already derived identity locally and will write .kata.toml on
-//     its own filesystem. The daemon registers the project row only;
-//     no filesystem access, no alias attached.
+//  1. Path-based (start_path set): the daemon walks up from start_path
+//     to locate .kata.toml / .git, derives identity, writes .kata.toml,
+//     and attaches an alias from its own filesystem view. The optional
+//     alias field is ignored in this mode for backward compatibility
+//     with clients that always populated start_path.
+//  2. Identity-only (project_identity set, start_path empty): the
+//     client has already derived identity locally and will write
+//     .kata.toml on its own filesystem. The daemon registers the
+//     project row by strict identity (no alias fallback). When the
+//     client also supplies alias metadata, the daemon attaches the
+//     alias — so alias-conflict and --reassign semantics survive
+//     the path-free flow. Reassign without alias metadata is
+//     rejected because there's nothing to move.
 //
-// Exactly one of start_path or project_identity must be set; sending
-// both keeps the path-based flow for backward compatibility with older
-// clients that always populated start_path.
+// Exactly one of start_path or project_identity must be set.
 type InitProjectRequest struct {
 	Body struct {
-		StartPath       string `json:"start_path,omitempty" doc:"absolute path on the daemon's filesystem; omit for identity-only init"`
-		ProjectIdentity string `json:"project_identity,omitempty" doc:"client-derived identity; required when start_path is empty"`
-		Name            string `json:"name,omitempty"`
-		Replace         bool   `json:"replace,omitempty"`
-		Reassign        bool   `json:"reassign,omitempty"`
+		StartPath       string      `json:"start_path,omitempty" doc:"absolute path on the daemon's filesystem; omit for identity-only init"`
+		ProjectIdentity string      `json:"project_identity,omitempty" doc:"client-derived identity; required when start_path is empty"`
+		Name            string      `json:"name,omitempty"`
+		Replace         bool        `json:"replace,omitempty"`
+		Reassign        bool        `json:"reassign,omitempty"`
+		Alias           *AliasInput `json:"alias,omitempty" doc:"client-derived alias metadata; only honored when start_path is empty"`
 	}
 }
 

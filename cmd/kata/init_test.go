@@ -242,7 +242,9 @@ func TestInit_RemoteClient_FromSubdir(t *testing.T) {
 // TestInit_RemoteClient_ConflictDetectedLocally asserts that a
 // client-side .kata.toml conflict with --project (without --replace)
 // fails before any daemon round-trip, so a remote daemon never sees a
-// stale identity.
+// stale identity. The error must also carry the structured
+// "project_binding_conflict" code so --json consumers can branch on
+// it (matching the daemon-side conflict envelope).
 func TestInit_RemoteClient_ConflictDetectedLocally(t *testing.T) {
 	dir := t.TempDir()
 	runGit(t, dir, "init", "--quiet")
@@ -266,9 +268,37 @@ name     = "kata"
 	var ce *cliError
 	require.ErrorAs(t, err, &ce)
 	assert.Equal(t, ExitConflict, ce.ExitCode)
+	assert.Equal(t, "project_binding_conflict", ce.Code,
+		"--json consumers branch on error.code; client-side conflict must match daemon shape")
 
 	// The daemon must not have been called — conflict was caught client-side.
 	assert.Nil(t, daemonStub.request())
+}
+
+// TestInit_RemoteClient_SendsAliasInfo verifies the CLI computes alias
+// metadata locally and includes it in the request body. The daemon
+// uses that metadata to attach the alias on its side, so the
+// alias-conflict and --reassign semantics survive the path-free flow.
+func TestInit_RemoteClient_SendsAliasInfo(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	daemonStub := newFakeDaemon(t)
+
+	flags.JSON = true
+	t.Cleanup(func() { flags.JSON = false })
+
+	_, err := callInit(context.Background(), daemonStub.srv.URL, dir, callInitOpts{})
+	require.NoError(t, err)
+
+	req := daemonStub.request()
+	require.NotNil(t, req)
+	alias, ok := req["alias"].(map[string]any)
+	require.True(t, ok, "request must include alias metadata when client has a git workspace; got: %v", req)
+	assert.Equal(t, "github.com/wesm/kata", alias["identity"])
+	assert.Equal(t, "git", alias["kind"])
+	assert.Equal(t, dir, alias["root_path"])
 }
 
 func TestInit_GitignoreAppendsToExisting(t *testing.T) {

@@ -23,6 +23,14 @@ const remoteServerEnvVar = "KATA_SERVER"
 // of CLI-layer types so this package stays importable from the TUI.
 var ErrRemoteUnavailable = errors.New("kata server not responding")
 
+// ResolveRemote is the exported view of resolveRemote so callers
+// outside daemonclient (e.g. cmd/kata health) can honor the same
+// KATA_SERVER / .kata.local.toml resolution rules without
+// auto-starting a local daemon.
+func ResolveRemote(ctx context.Context, workspaceStart string) (string, bool, error) {
+	return resolveRemote(ctx, workspaceStart)
+}
+
 // resolveRemote checks the two opt-in remote sources, in order:
 //
 //  1. KATA_SERVER env (highest precedence)
