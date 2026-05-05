@@ -82,10 +82,19 @@ func resolveRemote(ctx context.Context, workspaceStart string) (string, bool, er
 	return u, true, nil
 }
 
-// findLocalConfig walks upward from start looking for .kata.local.toml.
-// Returns the directory containing it, the full path (for error
-// messages), and ok=true. Stops at the filesystem root. When start is
-// empty the walk begins at the process CWD; commands targeting a
+// findLocalConfig walks upward from start looking for .kata.local.toml,
+// but caps the walk at the closest workspace boundary (an ancestor
+// directory containing .kata.toml or .git). The file is only honored
+// when it sits at or below that boundary.
+//
+// Without the boundary check, an attacker on a multi-user system
+// could plant a .kata.local.toml in a shared ancestor like /tmp; a
+// victim running kata from a descendant would walk up to the shared
+// dir and route their daemon traffic to the attacker's URL. Anchoring
+// to a workspace boundary closes that hole and matches the documented
+// contract — .kata.local.toml lives next to .kata.toml.
+//
+// When start is empty the walk begins at CWD. Commands targeting a
 // specific workspace via --workspace pass that path so the walk
 // honors the targeted workspace rather than wherever the user
 // happens to be.
@@ -98,21 +107,55 @@ func findLocalConfig(start string) (root, path string, ok bool) {
 			return "", "", false
 		}
 	}
+
+	// Track the closest .kata.local.toml we see; only return it after
+	// we confirm we hit a workspace boundary at or above its level.
+	var localRoot, localPath string
+	foundLocal := false
+
 	for {
-		candidate := filepath.Join(dir, config.LocalConfigFilename)
-		if _, err := os.Stat(candidate); err == nil {
-			return dir, candidate, true
-		} else if !errors.Is(err, os.ErrNotExist) {
-			// Permission denied, broken symlink, etc. — surface to stderr
-			// so the user is not silently routed past their config file.
-			fmt.Fprintf(os.Stderr, "kata: warning: cannot stat %s: %v\n", candidate, err)
+		if !foundLocal {
+			candidate := filepath.Join(dir, config.LocalConfigFilename)
+			if _, err := os.Stat(candidate); err == nil {
+				localRoot, localPath, foundLocal = dir, candidate, true
+			} else if !errors.Is(err, os.ErrNotExist) {
+				// Permission denied, broken symlink, etc. — surface to
+				// stderr so the user is not silently routed past their
+				// config file.
+				fmt.Fprintf(os.Stderr, "kata: warning: cannot stat %s: %v\n", candidate, err)
+			}
+		}
+		if isWorkspaceBoundary(dir) {
+			if foundLocal {
+				return localRoot, localPath, true
+			}
+			return "", "", false
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
+			// Walked to filesystem root without ever crossing a
+			// workspace boundary. A .kata.local.toml found in a
+			// shared ancestor without a workspace anchor is
+			// unverifiable provenance — drop it.
 			return "", "", false
 		}
 		dir = parent
 	}
+}
+
+// isWorkspaceBoundary reports whether dir holds a marker that anchors
+// a kata workspace: either a committed .kata.toml binding, or a .git
+// directory/file (covering both regular repos and worktrees). Either
+// is enough — pre-init flows in a freshly cloned repo can drop a
+// .kata.local.toml beside .git before .kata.toml exists.
+func isWorkspaceBoundary(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, config.ProjectConfigFilename)); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return true
+	}
+	return false
 }
 
 // normalizeRemoteURL parses a value as an http(s) URL and returns the

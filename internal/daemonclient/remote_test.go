@@ -74,6 +74,7 @@ func TestResolveRemote_FileWhenNoEnv(t *testing.T) {
 	t.Setenv("KATA_SERVER", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
+	writeWorkspaceMarker(t, dir)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
@@ -91,6 +92,7 @@ func TestResolveRemote_EnvWinsOverFile(t *testing.T) {
 	t.Setenv("KATA_SERVER", srv.URL)
 	dir := t.TempDir()
 	t.Chdir(dir)
+	writeWorkspaceMarker(t, dir)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
@@ -107,6 +109,7 @@ func TestResolveRemote_FileEmptyURLFallsThrough(t *testing.T) {
 	t.Setenv("KATA_SERVER", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
+	writeWorkspaceMarker(t, dir)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
@@ -123,6 +126,7 @@ func TestResolveRemote_FileUnreachableErrors(t *testing.T) {
 	t.Setenv("KATA_SERVER", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
+	writeWorkspaceMarker(t, dir)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
@@ -141,6 +145,7 @@ func TestResolveRemote_FileFoundInParentDirectory(t *testing.T) {
 	parent := t.TempDir()
 	child := filepath.Join(parent, "subdir")
 	require.NoError(t, os.Mkdir(child, 0o755))
+	writeWorkspaceMarker(t, parent)
 	require.NoError(t, os.WriteFile(filepath.Join(parent, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
@@ -165,6 +170,7 @@ func TestResolveRemote_WorkspaceAnchorOverridesCwd(t *testing.T) {
 	cwd := t.TempDir()
 	workspace := t.TempDir()
 	t.Chdir(cwd)
+	writeWorkspaceMarker(t, workspace)
 	require.NoError(t, os.WriteFile(filepath.Join(workspace, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
@@ -185,6 +191,7 @@ func TestResolveRemote_EmptyWorkspaceFallsBackToCwd(t *testing.T) {
 	t.Setenv("KATA_SERVER", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
+	writeWorkspaceMarker(t, dir)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
@@ -195,4 +202,123 @@ url = "`+srv.URL+`"
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, srv.URL, url)
+}
+
+// TestResolveRemote_FileIgnoredWithoutWorkspaceMarker covers the
+// security finding from roborev #18-? : a .kata.local.toml in a
+// shared/world-writable ancestor (e.g. /tmp) must not be honored when
+// the user is running kata outside any workspace. Without the
+// boundary check, an attacker-placed config could route a victim's
+// requests to an arbitrary URL.
+func TestResolveRemote_FileIgnoredWithoutWorkspaceMarker(t *testing.T) {
+	srv := pingingServer(t)
+	t.Setenv("KATA_SERVER", "")
+	// CWD is a fresh tempdir with no .kata.toml / .git anywhere up
+	// the chain we care about. An attacker-style .kata.local.toml
+	// lives there. With no workspace anchor, it must be ignored.
+	dir := t.TempDir()
+	t.Chdir(dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+
+	url, ok, err := resolveRemote(context.Background(), "")
+	require.NoError(t, err)
+	assert.False(t, ok, ".kata.local.toml without a workspace marker must not be honored")
+	assert.Empty(t, url)
+}
+
+// TestResolveRemote_FileIgnoredAboveWorkspaceBoundary covers the
+// concrete attack: attacker plants .kata.local.toml in a shared
+// ancestor; victim's workspace sits below it with its own
+// .kata.toml. The walk must stop at the workspace root and never see
+// the attacker file.
+func TestResolveRemote_FileIgnoredAboveWorkspaceBoundary(t *testing.T) {
+	t.Setenv("KATA_SERVER", "")
+	outer := t.TempDir()
+	workspace := filepath.Join(outer, "workspace")
+	sub := filepath.Join(workspace, "deep", "subdir")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	writeWorkspaceMarker(t, workspace)
+
+	// Attacker file in the shared ancestor — points at an unreachable
+	// address so that if the test ever started honoring it, we'd see
+	// an ErrRemoteUnavailable rather than a silent pass.
+	require.NoError(t, os.WriteFile(filepath.Join(outer, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "http://127.0.0.1:1"
+`), 0o600))
+	t.Chdir(sub)
+
+	url, ok, err := resolveRemote(context.Background(), "")
+	require.NoError(t, err)
+	assert.False(t, ok, "walk must stop at the workspace boundary, never reach outer/.kata.local.toml")
+	assert.Empty(t, url)
+}
+
+// TestResolveRemote_FileInsideWorkspaceWinsOverOutsideAncestor
+// confirms the legitimate flow still works: a workspace-local
+// .kata.local.toml is honored even when an unrelated file exists in
+// a higher shared ancestor.
+func TestResolveRemote_FileInsideWorkspaceWinsOverOutsideAncestor(t *testing.T) {
+	srv := pingingServer(t)
+	t.Setenv("KATA_SERVER", "")
+	outer := t.TempDir()
+	workspace := filepath.Join(outer, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0o755))
+	writeWorkspaceMarker(t, workspace)
+
+	// Attacker file higher up — must be ignored.
+	require.NoError(t, os.WriteFile(filepath.Join(outer, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "http://127.0.0.1:1"
+`), 0o600))
+	// Legitimate file at workspace root — must be honored.
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+	t.Chdir(workspace)
+
+	url, ok, err := resolveRemote(context.Background(), "")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, srv.URL, url, "workspace-local config must win, outer config must never be reached")
+}
+
+// TestResolveRemote_GitMarkerCountsAsWorkspace allows pre-init flows:
+// a freshly cloned repo has .git but not yet .kata.toml; a developer
+// can still drop a .kata.local.toml beside .git to point at a remote
+// daemon for the upcoming `kata init`.
+func TestResolveRemote_GitMarkerCountsAsWorkspace(t *testing.T) {
+	srv := pingingServer(t)
+	t.Setenv("KATA_SERVER", "")
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+	t.Chdir(dir)
+
+	url, ok, err := resolveRemote(context.Background(), "")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, srv.URL, url)
+}
+
+// writeWorkspaceMarker drops a minimal .kata.toml at dir so the
+// test mimics a real kata workspace, anchoring .kata.local.toml
+// discovery to a legitimate boundary.
+func writeWorkspaceMarker(t *testing.T, dir string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"),
+		[]byte("version = 1\n\n[project]\nidentity = \"github.com/wesm/test\"\nname = \"test\"\n"),
+		0o644))
 }
