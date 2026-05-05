@@ -316,3 +316,42 @@ func stripLocalScheme(id string) string {
 	}
 	return id
 }
+
+// ValidateAliasInfo enforces wire-level rules on alias metadata
+// supplied by remote clients. Unlike ValidateIdentity (which gates a
+// project's canonical identity on a strict charset), aliases of kind
+// "local" carry workspace paths and must be allowed to contain
+// spaces and other characters real filesystems use.
+//
+//   - kind: "git" or "local".
+//   - root_path: non-empty (an alias with no anchor is meaningless
+//     and would block path-anchored operations later).
+//   - identity (kind=git): apply ValidateIdentity, since a git alias
+//     is a normalized remote URL and obeys the same rules as project
+//     identity.
+//   - identity (kind=local): must start with "local://" and have a
+//     non-empty path component. No charset check — the path can
+//     contain anything the filesystem accepts.
+func ValidateAliasInfo(info AliasInfo) error {
+	if info.Kind != "git" && info.Kind != "local" {
+		return fmt.Errorf("alias.kind must be \"git\" or \"local\", got %q", info.Kind)
+	}
+	if strings.TrimSpace(info.RootPath) == "" {
+		return fmt.Errorf("alias.root_path must be non-empty")
+	}
+	if info.Identity == "" {
+		return fmt.Errorf("alias.identity must be non-empty")
+	}
+	switch info.Kind {
+	case "git":
+		if err := ValidateIdentity(info.Identity); err != nil {
+			return fmt.Errorf("alias.identity: %w", err)
+		}
+	case "local":
+		const prefix = "local://"
+		if !strings.HasPrefix(info.Identity, prefix) || info.Identity == prefix {
+			return fmt.Errorf("alias.identity for kind=local must be %s<path>", prefix)
+		}
+	}
+	return nil
+}

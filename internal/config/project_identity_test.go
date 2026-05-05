@@ -229,6 +229,84 @@ func TestPickInitIdentity_KataTomlEmptyName(t *testing.T) {
 	assert.Equal(t, "kata", got.Name)
 }
 
+func TestValidateAliasInfo(t *testing.T) {
+	cases := []struct {
+		name string
+		info config.AliasInfo
+		ok   bool
+		hint string
+	}{
+		{
+			name: "git alias passes ValidateIdentity rules",
+			info: config.AliasInfo{Identity: "github.com/wesm/kata", Kind: "git", RootPath: "/repo"},
+			ok:   true,
+		},
+		{
+			name: "local alias with spaces in path is allowed",
+			info: config.AliasInfo{Identity: "local:///Users/me/My Project", Kind: "local", RootPath: "/Users/me/My Project"},
+			ok:   true,
+		},
+		{
+			name: "local alias with unicode is allowed",
+			info: config.AliasInfo{Identity: "local:///私の/プロジェクト", Kind: "local", RootPath: "/私の/プロジェクト"},
+			ok:   true,
+		},
+		{
+			name: "git alias with whitespace is rejected",
+			info: config.AliasInfo{Identity: "has space", Kind: "git", RootPath: "/repo"},
+			ok:   false,
+			hint: "whitespace",
+		},
+		{
+			name: "unknown kind is rejected",
+			info: config.AliasInfo{Identity: "github.com/wesm/kata", Kind: "bogus", RootPath: "/repo"},
+			ok:   false,
+			hint: "kind",
+		},
+		{
+			name: "empty kind is rejected",
+			info: config.AliasInfo{Identity: "github.com/wesm/kata", Kind: "", RootPath: "/repo"},
+			ok:   false,
+			hint: "kind",
+		},
+		{
+			name: "empty root_path is rejected",
+			info: config.AliasInfo{Identity: "github.com/wesm/kata", Kind: "git", RootPath: ""},
+			ok:   false,
+			hint: "root_path",
+		},
+		{
+			name: "empty identity is rejected",
+			info: config.AliasInfo{Identity: "", Kind: "git", RootPath: "/repo"},
+			ok:   false,
+			hint: "identity",
+		},
+		{
+			name: "local alias missing prefix is rejected",
+			info: config.AliasInfo{Identity: "/Users/me/proj", Kind: "local", RootPath: "/Users/me/proj"},
+			ok:   false,
+			hint: "local://",
+		},
+		{
+			name: "local alias bare prefix is rejected",
+			info: config.AliasInfo{Identity: "local://", Kind: "local", RootPath: "/Users/me/proj"},
+			ok:   false,
+			hint: "local://",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := config.ValidateAliasInfo(tc.info)
+			if tc.ok {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.hint)
+		})
+	}
+}
+
 // helpers
 
 func initGitRepo(t *testing.T) string {

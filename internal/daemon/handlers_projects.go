@@ -624,9 +624,14 @@ func initByIdentity(ctx context.Context, store *db.DB, req *api.InitProjectReque
 			Kind:     req.Body.Alias.Kind,
 			RootPath: req.Body.Alias.RootPath,
 		}
-		if err := config.ValidateIdentity(info.Identity); err != nil {
-			return nil, false, api.NewError(400, "validation",
-				"alias.identity: "+err.Error(), "", nil)
+		// ValidateAliasInfo applies kind-aware rules: git aliases get
+		// the project-identity charset check; local aliases (which
+		// carry workspace paths) only need a non-empty path. Without
+		// this, workspaces like "/Users/me/My Project" — perfectly
+		// valid for path-based init — would be rejected here on the
+		// whitespace check.
+		if err := config.ValidateAliasInfo(info); err != nil {
+			return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 		}
 		// Preflight before any project mutation, mirroring path-based
 		// init: avoids creating an orphan project row when the alias

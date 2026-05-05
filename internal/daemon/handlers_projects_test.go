@@ -457,6 +457,74 @@ func TestInit_ByIdentity_ReassignWithoutAliasErrors(t *testing.T) {
 	assert.Contains(t, string(bs), "alias")
 }
 
+// TestInit_ByIdentity_AcceptsLocalAliasWithSpaces guards against
+// rejecting valid local:// aliases derived from workspace paths
+// that contain spaces (or other characters the project-identity
+// charset rules disallow). Path-based init attaches such aliases
+// without complaint; the path-free flow must do the same so users
+// in workspaces like "/Users/me/My Project" aren't blocked.
+func TestInit_ByIdentity_AcceptsLocalAliasWithSpaces(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/foo",
+		"alias": map[string]any{
+			"identity":  "local:///Users/me/My Project",
+			"kind":      "local",
+			"root_path": "/Users/me/My Project",
+		},
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var body struct {
+		Alias struct {
+			AliasIdentity string `json:"alias_identity"`
+			AliasKind     string `json:"alias_kind"`
+			RootPath      string `json:"root_path"`
+		} `json:"alias"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	assert.Equal(t, "local:///Users/me/My Project", body.Alias.AliasIdentity)
+	assert.Equal(t, "local", body.Alias.AliasKind)
+	assert.Equal(t, "/Users/me/My Project", body.Alias.RootPath)
+}
+
+// TestInit_ByIdentity_RejectsInvalidAliasKind ensures the daemon
+// rejects malformed alias metadata explicitly rather than relying on
+// downstream code to misbehave on an unknown kind.
+func TestInit_ByIdentity_RejectsInvalidAliasKind(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/foo",
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/foo",
+			"kind":      "bogus",
+			"root_path": "/work",
+		},
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "kind")
+}
+
+// TestInit_ByIdentity_RejectsEmptyAliasRootPath enforces that an
+// alias attach has somewhere to root: empty root_path makes future
+// path-anchored operations meaningless.
+func TestInit_ByIdentity_RejectsEmptyAliasRootPath(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"project_identity": "github.com/wesm/foo",
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/foo",
+			"kind":      "git",
+			"root_path": "",
+		},
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "root_path")
+}
+
 // TestInit_ByIdentity_DefaultsName verifies the daemon falls back to
 // the last identity segment when the client doesn't supply name. This
 // matches the local-init contract so the two paths produce the same
