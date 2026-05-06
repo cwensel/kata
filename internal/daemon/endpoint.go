@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
+	"time"
 )
 
 // DaemonEndpoint abstracts the listen / dial pair for either a Unix socket or
@@ -20,9 +22,24 @@ type DaemonEndpoint interface {
 
 type unixEndpoint struct{ path string }
 
-func (u unixEndpoint) Listen() (net.Listener, error) {
-	return net.Listen("unix", u.path)
-}
+// staleSocketProbeTimeout caps how long the pre-bind probe waits
+// before giving up. A short timeout is enough on a healthy host: a
+// running daemon accepts immediately, and a stale socket whose owner
+// is gone returns ECONNREFUSED in microseconds. The timeout only
+// matters when the kernel is overloaded — and in that case the probe
+// result is ambiguous, so we refuse to remove rather than guess.
+const staleSocketProbeTimeout = 500 * time.Millisecond
+
+// ErrSocketInUse is returned by unixEndpoint.Listen when the socket
+// path already has a daemon accepting connections. The per-namespace
+// runtime dir holds at most one daemon, so this is the launcher's
+// signal that another instance is already serving and the new start
+// should back off rather than clobber it.
+var ErrSocketInUse = errors.New("socket already in use")
+
+// Listen for unixEndpoint is OS-specific because the cleanup path
+// uses flock(2) to serialize concurrent starters; see
+// endpoint_listen_unix.go and endpoint_listen_windows.go.
 
 func (u unixEndpoint) Dial(ctx context.Context) (net.Conn, error) {
 	d := net.Dialer{}
