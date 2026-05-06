@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -95,7 +94,7 @@ type detailModel struct {
 	err             error
 	gen             int64
 	activeTab       detailTab
-	scroll          int // body scroll offset in lines
+	scroll          int // unified viewport offset in document lines
 	tabCursor       int // active-tab row cursor
 	childCursor     int
 	comments        []CommentEntry
@@ -121,15 +120,15 @@ type detailModel struct {
 	tabExplicit bool
 	// lastTermWidth / lastTermHeight cache the most recent terminal
 	// dimensions seen by Model.routeTopLevel's WindowSizeMsg handler.
-	// scrollBodyDown reads them to clamp dm.scroll against the body's
-	// rendered max start so overscrolling past EOF doesn't let
-	// dm.scroll grow unbounded — without the clamp, a follow-up PgUp
-	// appears stuck until the inflated offset unwinds (roborev #17184).
+	// viewportDims reads them to compute the visible-row count for
+	// page-step sizing and reveal-cursor math, and to clamp dm.scroll
+	// against the document's rendered max start so overscrolling past
+	// EOF can't let the offset grow unbounded.
 	lastTermWidth  int
 	lastTermHeight int
 	// lastDetail* caches the actual detail viewport when the model can compute
 	// it (notably split-pane mode, where the detail pane is narrower/shorter
-	// than the terminal). When unset, body scroll clamping falls back to the
+	// than the terminal). When unset, viewport math falls back to the
 	// stacked full-terminal calculation.
 	lastDetailWidth  int
 	lastDetailHeight int
@@ -284,17 +283,29 @@ func (dm detailModel) handleNavKey(
 ) (detailModel, tea.Cmd, bool) {
 	switch {
 	case km.NextTab.matches(msg):
-		dm = dm.cycleDetailFocus(1)
+		return dm.cycleDetailFocus(1).revealCursor(), nil, true
 	case km.PrevTab.matches(msg):
-		dm = dm.cycleDetailFocus(-1)
+		return dm.cycleDetailFocus(-1).revealCursor(), nil, true
 	case km.PageUp.matches(msg):
-		return dm.scrollBodyUp(), nil, true
+		return dm.pageScrollUp(), nil, true
 	case km.PageDown.matches(msg):
-		return dm.scrollBodyDown(), nil, true
+		return dm.pageScrollDown(), nil, true
+	case km.ScrollUp.matches(msg):
+		return dm.scrollViewportBy(-1), nil, true
+	case km.ScrollDown.matches(msg):
+		return dm.scrollViewportBy(1), nil, true
 	case km.Up.matches(msg):
-		return dm.handleUp(), nil, true
+		next, moved := dm.handleUp()
+		if moved {
+			next = next.revealCursor()
+		}
+		return next, nil, true
 	case km.Down.matches(msg):
-		return dm.handleDown(), nil, true
+		next, moved := dm.handleDown()
+		if moved {
+			next = next.revealCursor()
+		}
+		return next, nil, true
 	case km.Open.matches(msg):
 		next, cmd := dm.handleEnter(api)
 		return next, cmd, true
@@ -304,140 +315,160 @@ func (dm detailModel) handleNavKey(
 	default:
 		return dm, nil, false
 	}
-	return dm, nil, true
 }
 
-// detailBodyScrollStep is the per-keystroke body-scroll delta. Larger
-// than a single line so PageDown feels like an actual page jump,
-// smaller than a full visible window so the user keeps a few rows of
-// context across the seam. The renderer clamps the upper bound, so
-// over-eager scrolling on a short body is harmless.
-const detailBodyScrollStep = 8
-
-func (dm detailModel) scrollBodyUp() detailModel {
-	dm.scroll -= detailBodyScrollStep
+// scrollViewportBy slides the detail viewport `delta` rows. Negative
+// scrolls up, positive down. The result is clamped to [0, maxStart]
+// against the unified document the renderer will draw.
+func (dm detailModel) scrollViewportBy(delta int) detailModel {
+	width, visible, ok := dm.viewportDims()
+	dm.scroll += delta
 	if dm.scroll < 0 {
 		dm.scroll = 0
 	}
-	return dm
-}
-
-// scrollBodyDown advances the body scroll by detailBodyScrollStep
-// lines, clamped at the body's rendered maximum start position.
-// Without the clamp, repeated PgDn past EOF lets dm.scroll grow
-// unbounded; the renderer hides this with its own per-frame clamp,
-// but a follow-up PgUp would then appear stuck until the inflated
-// offset finally unwound (roborev #17184).
-func (dm detailModel) scrollBodyDown() detailModel {
-	dm.scroll += detailBodyScrollStep
-	maxStart := dm.bodyMaxStartEstimate()
-	if maxStart >= 0 && dm.scroll > maxStart {
+	if !ok {
+		return dm
+	}
+	docLines, _ := dm.detailDocumentLines(width, dm.scrollChrome())
+	if maxStart := viewportMaxStart(len(docLines), visible); dm.scroll > maxStart {
 		dm.scroll = maxStart
 	}
 	return dm
 }
 
-// bodyMaxStartEstimate returns the largest valid dm.scroll value, or
-// -1 when the cap can't be computed (no issue, no cached terminal
-// width). It mirrors the renderer's body-budget calculation so it
-// never lets dm.scroll out-run what the renderer will display.
-func (dm detailModel) bodyMaxStartEstimate() int {
-	if dm.issue == nil {
-		return -1
-	}
-	width, height := dm.lastTermWidth, dm.lastTermHeight
-	if dm.lastDetailWidth > 0 && dm.lastDetailHeight > 0 {
-		width, height = dm.lastDetailWidth, dm.lastDetailHeight
-	}
-	if width <= 0 || height <= 0 {
-		return -1
-	}
-	sheetWidth := documentSheetWidth(width)
-	wrapped := renderMarkdownLines(dm.issue.Body, sheetWidth)
-	bodyRows := dm.renderedBodyRows(width, height, sheetWidth)
-	if dm.lastDetailSplit {
-		bodyRows = dm.renderedSplitBodyRows(height, sheetWidth)
-	}
-	maxStart := len(wrapped) - bodyRows
-	if maxStart < 0 {
-		return 0
-	}
-	return maxStart
+// pageScrollUp / pageScrollDown step by one viewport-minus-overlap so
+// PgUp/PgDn jump a page while keeping a couple of rows of context
+// across the seam. Falls back to a fixed step when terminal dimensions
+// haven't been observed yet (cold start before the first WindowSizeMsg).
+func (dm detailModel) pageScrollUp() detailModel {
+	return dm.scrollViewportBy(-dm.pageStep())
 }
 
-func (dm detailModel) renderedBodyRows(termWidth, termHeight, sheetWidth int) int {
-	chrome := viewChrome{}
-	helpRows := detailHelpRows(dm, chrome)
-	footerLines := helpLines(helpRows, termWidth)
-	header := append([]string{renderTitleBar(termWidth, chrome.scope, chrome.version), ""}, dm.documentHeader(sheetWidth, chrome)...)
-	hasChildren := len(dm.children) > 0
-	hasActivity := dm.hasActivity()
-	fixed := len(header) + 1 /* body label */ + 1 /* blank gap before activity */ +
-		1 /* info */ + footerLines
-	if hasChildren {
-		fixed += 2
-	}
-	if hasActivity {
-		fixed += 2
-	}
-	bodyRows, _, _ := detailDocumentBudgets(termHeight-fixed, len(dm.children), hasActivity)
-	return bodyRows
+func (dm detailModel) pageScrollDown() detailModel {
+	return dm.scrollViewportBy(dm.pageStep())
 }
 
-func (dm detailModel) renderedSplitBodyRows(height, sheetWidth int) int {
-	header := dm.documentHeader(sheetWidth, viewChrome{})
-	hasChildren := len(dm.children) > 0
-	hasActivity := dm.hasActivity()
-	fixed := len(header) + 1
-	if hasChildren {
-		fixed += 2
+// detailPageOverlap is the row count kept visible across a page step
+// so the user retains context. Same intent as a "less"-style page key.
+const detailPageOverlap = 2
+
+// detailFallbackPageStep is the page size used when terminal
+// dimensions are unknown (initial dispatch before WindowSizeMsg).
+const detailFallbackPageStep = 8
+
+func (dm detailModel) pageStep() int {
+	_, visible, ok := dm.viewportDims()
+	if !ok || visible <= detailPageOverlap {
+		return detailFallbackPageStep
 	}
-	if hasActivity {
-		fixed += 2
-	}
-	bodyRows, _, _ := detailDocumentBudgets(height-fixed, len(dm.children), hasActivity)
-	return bodyRows
+	return visible - detailPageOverlap
 }
 
-// handleUp moves the tab cursor up when the active tab has rows;
-// otherwise scrolls the body. Both clamp at zero.
-func (dm detailModel) handleUp() detailModel {
+// viewportDims returns the width and visible-row count of the detail
+// document viewport using the most recent terminal dimensions seen by
+// Update. In split mode the cached lastDetailWidth/Height already
+// record the pane's inner area; in stacked mode visible rows equal
+// terminal height minus the title bar, info line, and footer.
+func (dm detailModel) viewportDims() (width, visible int, ok bool) {
+	if dm.lastDetailSplit && dm.lastDetailWidth > 0 && dm.lastDetailHeight > 0 {
+		return dm.lastDetailWidth, dm.lastDetailHeight, true
+	}
+	if dm.lastTermWidth <= 0 || dm.lastTermHeight <= 0 {
+		return 0, 0, false
+	}
+	helpRows := detailHelpRows(dm, dm.scrollChrome())
+	footerLines := helpLines(helpRows, dm.lastTermWidth)
+	visible = dm.lastTermHeight - 2 - 1 - footerLines
+	if visible < 1 {
+		visible = 1
+	}
+	return dm.lastTermWidth, visible, true
+}
+
+// scrollChrome returns the chrome subset that affects document line
+// count (notably the all-projects metadata row). It carries the same
+// scope identity the View call sees so scroll math doesn't drift from
+// the rendered layout.
+func (dm detailModel) scrollChrome() viewChrome {
+	return viewChrome{scope: scope{
+		allProjects: dm.allProjects,
+		projectID:   dm.scopePID,
+	}}
+}
+
+// revealCursor scrolls the viewport so the focused section's cursor
+// (children or active activity tab) is visible. A no-op when the
+// cursor is already in the window or terminal dims aren't known yet.
+// Called after Tab/section-cursor moves so the user always sees the
+// row they're acting on.
+func (dm detailModel) revealCursor() detailModel {
+	width, visible, ok := dm.viewportDims()
+	if !ok {
+		return dm
+	}
+	docLines, anchors := dm.detailDocumentLines(width, dm.scrollChrome())
+	row := -1
+	switch dm.detailFocus {
+	case focusChildren:
+		row = anchors.childCursor
+	case focusActivity:
+		row = anchors.tabCursor
+		// When the active tab has no entries yet (loading / error /
+		// empty placeholder), pin the activity header to the top of
+		// the viewport so the user knows where focus landed.
+		if row < 0 && anchors.activity >= 0 {
+			row = anchors.activity - 1
+		}
+	}
+	if row < 0 {
+		return dm
+	}
+	dm.scroll = scrollToReveal(dm.scroll, row, visible, len(docLines))
+	return dm
+}
+
+// handleUp moves the section cursor (children or active activity tab)
+// up by one. When there is no section cursor — no children and no
+// activity rows — j/k spills to viewport scroll so the binding never
+// feels dead. The bool return reports whether a section cursor moved
+// (or stayed put on a populated section); false means the call
+// scrolled the viewport instead. handleNavKey uses that signal to
+// skip revealCursor on the scroll path — otherwise revealCursor would
+// pin the activity header back into view and undo the scroll.
+// ↑/↓ have their own scroll handlers wired in handleNavKey.
+func (dm detailModel) handleUp() (detailModel, bool) {
 	if dm.detailFocus == focusChildren {
 		if dm.childCursor > 0 {
 			dm.childCursor--
 		}
-		return dm
+		return dm, true
 	}
 	if dm.activeRowCount() > 0 {
 		if dm.tabCursor > 0 {
 			dm.tabCursor--
 		}
-		return dm
+		return dm, true
 	}
-	if dm.scroll > 0 {
-		dm.scroll--
-	}
-	return dm
+	return dm.scrollViewportBy(-1), false
 }
 
-// handleDown moves the tab cursor down (clamped to row-count - 1) or
-// scrolls the body when the tab is empty. Body scroll's upper bound
-// is clamped in the renderer.
-func (dm detailModel) handleDown() detailModel {
+// handleDown moves the section cursor down by one. Clamps at the last
+// row; spills to viewport scroll when there is no section cursor —
+// see handleUp for the rationale and the bool return contract.
+func (dm detailModel) handleDown() (detailModel, bool) {
 	if dm.detailFocus == focusChildren {
 		if dm.childCursor < len(dm.children)-1 {
 			dm.childCursor++
 		}
-		return dm
+		return dm, true
 	}
 	if n := dm.activeRowCount(); n > 0 {
 		if dm.tabCursor < n-1 {
 			dm.tabCursor++
 		}
-		return dm
+		return dm, true
 	}
-	dm.scroll++
-	return dm
+	return dm.scrollViewportBy(1), false
 }
 
 // handleBack pops one level off the nav stack if non-empty, otherwise
@@ -598,50 +629,26 @@ func (dm detailModel) activeRowCount() int {
 	return 0
 }
 
-// activeChunks builds the entryChunk slice for the active tab using
-// the same per-entry layout the per-tab renderer produces (header +
-// wrapped body + separator for comments; one line for events / links).
-// Used by the detail scroll indicator so the visible-entry window is
-// computed against the renderer's actual chunk shape rather than
-// comparing entry count to a line budget — fixes the multi-line
-// comment indicator gap from roborev #119 finding 2.
+// activeChunks returns the chunk list for the current active tab,
+// dispatching to the per-tab chunk builders so the chunks ARE the
+// renderable content (cursor markers and styled headers included).
+// detailDocumentLines uses these directly — eliminating the second
+// markdown pass that the previous implementation paid via
+// renderActiveTabFull on top of activeChunks.
 //
 // width is the rendered width of the tab pane (the same width passed
-// to the tab renderers from renderActiveTab).
-//
-// The comments path uses renderMarkdownLines with the same width-2
-// budget renderCommentsTab uses (detail_tabs.go:39) so the indicator
-// math matches what's actually drawn — wrapBody used to under-count
-// Markdown-formatted comments and could suppress the indicator when
-// wrapped lines exceeded the visible budget (roborev #17131 finding 3).
+// to the per-tab renderers).
 func (dm detailModel) activeChunks(width int) []entryChunk {
 	switch dm.activeTab {
 	case tabComments:
-		out := make([]entryChunk, 0, len(dm.comments))
-		for _, c := range dm.comments {
-			lines := []string{
-				fmt.Sprintf("[%s] %s",
-					sanitizeForDisplay(c.Author), fmtTime(c.CreatedAt)),
-			}
-			for _, ln := range renderMarkdownLines(c.Body, max(1, width-2)) {
-				lines = append(lines, "  "+ln)
-			}
-			lines = append(lines, "")
-			out = append(out, entryChunk{lines: lines})
-		}
-		return out
+		return commentChunks(dm.comments, width, dm.tabCursor,
+			tabState{loading: dm.commentsLoading, err: dm.commentsErr})
 	case tabEvents:
-		out := make([]entryChunk, 0, len(dm.events))
-		for range dm.events {
-			out = append(out, entryChunk{lines: []string{""}})
-		}
-		return out
+		return eventChunks(dm.events, width, dm.tabCursor,
+			tabState{loading: dm.eventsLoading, err: dm.eventsErr})
 	case tabLinks:
-		out := make([]entryChunk, 0, len(dm.links))
-		for range dm.links {
-			out = append(out, entryChunk{lines: []string{""}})
-		}
-		return out
+		return linkChunks(dm.links, width, dm.tabCursor,
+			tabState{loading: dm.linksLoading, err: dm.linksErr})
 	}
 	return nil
 }
