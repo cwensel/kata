@@ -321,6 +321,48 @@ func TestRenderListBody_SingleProjectOmitsPrefix(t *testing.T) {
 	}
 }
 
+func TestRenderListBody_HeaderBackgroundReplacesSeparatorRule(t *testing.T) {
+	applyColorMode(colorDark, io.Discard)
+	if !styleHasBackground(tableHeaderStyle) {
+		t.Fatal("tableHeaderStyle must carry a background in color modes")
+	}
+
+	lm := listModel{issues: []Issue{{Number: 1, Title: "row", Status: "open"}}}
+	got := stripANSI(lm.renderBody(80, 6, viewChrome{}))
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Trim(line, "─") == "" && strings.Contains(line, "─") {
+			t.Fatalf("renderBody still renders a separator rule:\n%s", got)
+		}
+	}
+}
+
+func TestListView_BodyBudgetCountsOnlyTableHeader(t *testing.T) {
+	useNoColor(t)
+	lm := listModel{issues: []Issue{
+		{Number: 1, Title: "one", Status: "open"},
+		{Number: 2, Title: "two", Status: "open"},
+		{Number: 3, Title: "three", Status: "open"},
+		{Number: 4, Title: "four", Status: "open"},
+	}}
+
+	got := stripANSI(lm.View(100, 10, viewChrome{scope: scope{projectName: "kata"}}))
+	assertContainsAll(t, got, "one", "two", "three", "four", "[1/4]")
+	if strings.Contains(got, "[1-3 of 4]") {
+		t.Fatalf("scroll indicator used stale header+separator budget:\n%s", got)
+	}
+}
+
+func TestRenderListBody_EmptyStateDoesNotRenderSeparatorRule(t *testing.T) {
+	applyColorMode(colorDark, io.Discard)
+	lm := listModel{}
+	got := stripANSI(lm.renderBody(80, 6, viewChrome{}))
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Trim(line, "─") == "" && strings.Contains(line, "─") {
+			t.Fatalf("empty renderBody still renders a separator rule:\n%s", got)
+		}
+	}
+}
+
 func TestRenderListInfoLine_TruncationNotice(t *testing.T) {
 	useNoColor(t)
 	lm := listModel{truncated: true, issues: []Issue{{Number: 1, Status: "open"}}}

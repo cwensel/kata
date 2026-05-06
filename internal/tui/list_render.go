@@ -45,7 +45,7 @@ type viewChrome struct {
 //
 //   - line 1: title bar (brand · project · version)
 //   - line 2: stats line (counts + filter chips)
-//   - lines 3..H-N: table (header + separator + windowed rows, padded
+//   - lines 3..H-N: table (header + windowed rows, padded
 //     so the adaptive footer pins to the bottom of the terminal
 //     regardless of row count)
 //   - line H-1: info line (active input bar OR scroll/flash text)
@@ -74,13 +74,13 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	// Body area: everything between header (lines 1-2) and the
 	// info+adaptive footer. bodyRows is computed first so the
 	// info-line scroll indicator uses the actual budget. The
-	// table-overhead cost (header + separator) is baked into
-	// renderBodyArea, so bodyRows here is the full body region.
+	// table-overhead cost (header row) is baked into renderBodyArea,
+	// so bodyRows here is the full body region.
 	bodyRows := height - 2 /* header */ - 1 /* info */ - footerLines
 	if bodyRows < listBodyFloor {
 		bodyRows = listBodyFloor
 	}
-	dataBudget := bodyRows - 2 /* table header + separator */
+	dataBudget := bodyRows - 1 /* table header */
 	if dataBudget < 1 {
 		dataBudget = 1
 	}
@@ -91,7 +91,7 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 }
 
 // ViewBody returns the body region for an M6 split-mode list pane:
-// table header + separator + windowed rows + fillScreen padding so
+// table header + windowed rows + fillScreen padding so
 // the pane reaches `bodyRows` lines tall. Pulls the narrow flag off
 // chrome so renderBody knows to drop the owner column. The chrome /
 // title-bar / info-line / footer are composed by renderSplit, not
@@ -132,7 +132,7 @@ func (lm listModel) renderTinyFallback(width int) string {
 // in M6 split-mode. The narrow flag stays scoped to renderBody +
 // helpers — chrome boilerplate (title/footer) is unaffected.
 func (lm listModel) renderBodyArea(width, bodyRows int, chrome viewChrome) string {
-	body := lm.renderBody(width, bodyRows-2 /* header + sep */, chrome)
+	body := lm.renderBody(width, bodyRows-1 /* header */, chrome)
 	rendered := strings.Split(body, "\n")
 	for len(rendered) < bodyRows {
 		rendered = append(rendered, normalRowStyle.Render(strings.Repeat(" ", width)))
@@ -407,9 +407,9 @@ func (lm listModel) issueCounts() issueCounts {
 	return c
 }
 
-// renderBody is the table body — header, separator, then up to height
-// data rows around the cursor. No top/bottom borders (msgvault
-// pattern); just one separator under the column header.
+// renderBody is the table body — header, then up to height data rows
+// around the cursor. No top/bottom borders (msgvault pattern); the
+// header carries its own background instead of a separator rule.
 //
 // chrome.narrow=true (M6 split-mode list pane) drops the owner column so
 // the title column flexes into the recovered cells. chrome.scope and
@@ -421,7 +421,6 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 	if len(queueRows) == 0 {
 		hint := "no issues match. press c to clear filters or n to create one."
 		return tableHeaderRow(width, narrow) + "\n" +
-			separatorRuleStyle.Render(strings.Repeat("─", width)) + "\n" +
 			normalRowStyle.Render(padToWidth("  "+hint, width))
 	}
 	displayCursor := lm.cursor
@@ -464,16 +463,7 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 			}
 			return s.Inherit(normalRowStyle)
 		})
-	rendered := t.Render()
-	// Insert the separator rule between the header row and the data
-	// rows. lipgloss.Table renders as "header\nrow1\nrow2..."; we
-	// split, inject the rule, and re-join.
-	lines := strings.SplitN(rendered, "\n", 2)
-	if len(lines) < 2 {
-		return rendered
-	}
-	rule := separatorRuleStyle.Render(strings.Repeat("─", width))
-	return lines[0] + "\n" + rule + "\n" + lines[1]
+	return t.Render()
 }
 
 // listTableHeaders returns the column-header label slice for the
@@ -496,7 +486,7 @@ func tableHeaderRow(width int, narrow bool) string {
 	parts := make([]string, len(headers))
 	for i, h := range headers {
 		w := cols.byIndex(i, narrow)
-		parts[i] = tableHeaderStyle.Render(padToWidth(h, w-1)) + " "
+		parts[i] = tableHeaderStyle.Render(padToWidth(h, w-1) + " ")
 	}
 	return strings.Join(parts, "")
 }
