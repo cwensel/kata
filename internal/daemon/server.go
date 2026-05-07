@@ -154,11 +154,13 @@ func registerRoutes(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	registerInstanceHandlers(humaAPI, cfg)
 	registerProjects(humaAPI, cfg)
 	registerIssues(humaAPI, cfg)
+	registerImportsHandlers(humaAPI, cfg)
 	registerComments(humaAPI, cfg)
 	registerActions(humaAPI, cfg)
 	registerLinks(humaAPI, cfg)
 	registerLabels(humaAPI, cfg)
 	registerOwnership(humaAPI, cfg)
+	registerPriority(humaAPI, cfg)
 	registerReady(humaAPI, cfg)
 	registerSearch(humaAPI, cfg)
 	registerDestructive(humaAPI, cfg)
@@ -204,6 +206,11 @@ func registerLabels(humaAPI huma.API, cfg ServerConfig) {
 // registerOwnership registers POST /actions/assign and /actions/unassign routes.
 func registerOwnership(humaAPI huma.API, cfg ServerConfig) {
 	registerOwnershipHandlers(humaAPI, cfg)
+}
+
+// registerPriority registers POST /actions/priority.
+func registerPriority(humaAPI huma.API, cfg ServerConfig) {
+	registerPriorityHandlers(humaAPI, cfg)
 }
 
 // registerReady registers GET /projects/{id}/ready.

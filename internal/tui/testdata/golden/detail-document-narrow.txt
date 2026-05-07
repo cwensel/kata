@@ -3,6 +3,7 @@
   #42  fix login bug on Safari                                    [open]
   authored by wesm                                                      
   owner: alice   parent: #12 workspace polish                           
+  priority: none                                                        
   labels: [bug] [prio-1]                                                
                                                                         
   Body                                                                  
@@ -33,8 +34,7 @@
                                                                         
                                                                         
                                                                         
-                                                                        
  ↑↓ scroll▕ j/k row ▕ ↹ section▕ ↵ open ▕ pgup/pgdn page▕ e edit        
  c comment▕ + label ▕ - unlabel▕ a owner▕ A unassign    ▕ x close       
- r reopen ▕ p parent▕ b block  ▕ l link ▕ N child       ▕ L layout      
- esc back ▕ ? help  ▕ q quit                                            
+ r reopen ▕ p parent▕ b block  ▕ l link ▕ ! priority    ▕ N child       
+ L layout ▕ esc back▕ ? help   ▕ q quit                                 

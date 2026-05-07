@@ -1,10 +1,9 @@
  Project: kata                                                                                       kata カタ · v0.1.0 
  open: 1 · closed: 1 · all: 3                                                                                           
-        #     status    title                                                           kids    owner         updated   
-        #1    open      fix login bug on Safari                                                 claude-4.7    3h ago    
-▶       #2    closed    rebuild search index                                                    wesm          1h ago    
-        #3    [deleted] purge stale tokens                                                                    2h ago    
-                                                                                                                        
+        #     prio status    title                                                       kids    owner         updated  
+        #1    P1   open      fix login bug on Safari                                             claude-4.7    3h ago   
+▶       #2    —    closed    rebuild search index                                                wesm          1h ago   
+        #3    —    [deleted] purge stale tokens                                                                2h ago   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,4 +26,5 @@
                                                                                                                         
                                                                                                                         
                                                                                                                   [2/3] 
- ↑↓ move▕ ↵ open▕ n new▕ N child▕ / search▕ f filter▕ s status▕ o order▕ c clear▕ x close▕ L layout▕ ? help▕ q quit     
+ ↑↓ move▕ ↵ open▕ n new▕ N child▕ / search▕ f filter▕ s status▕ o order▕ c clear▕ x close▕ ! priority▕ L layout▕ ? help 
+ q quit                                                                                                                 

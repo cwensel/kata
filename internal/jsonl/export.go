@@ -53,6 +53,11 @@ func Export(ctx context.Context, d *db.DB, w io.Writer, opts ExportOptions) erro
 	if err := exportLinks(ctx, d, enc, opts, sourceSchemaVersion); err != nil {
 		return err
 	}
+	if sourceSchemaVersion >= 5 {
+		if err := exportImportMappings(ctx, d, enc, opts); err != nil {
+			return err
+		}
+	}
 	if err := exportEvents(ctx, d, enc, opts, sourceSchemaVersion); err != nil {
 		return err
 	}
@@ -223,6 +228,49 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	if sourceSchemaVersion < 2 {
 		return exportIssuesV1(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 6 {
+		return exportIssuesV2(ctx, d, enc, opts)
+	}
+	type record struct {
+		ID           int64   `json:"id"`
+		UID          string  `json:"uid"`
+		ProjectID    int64   `json:"project_id"`
+		Number       int64   `json:"number"`
+		Title        string  `json:"title"`
+		Body         string  `json:"body"`
+		Status       string  `json:"status"`
+		ClosedReason *string `json:"closed_reason"`
+		Owner        *string `json:"owner"`
+		Priority     *int64  `json:"priority,omitempty"`
+		Author       string  `json:"author"`
+		CreatedAt    string  `json:"created_at"`
+		UpdatedAt    string  `json:"updated_at"`
+		ClosedAt     *string `json:"closed_at"`
+		DeletedAt    *string `json:"deleted_at"`
+	}
+	query := `SELECT id, uid, project_id, number, title, body, status, closed_reason, owner, priority, author,
+	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
+	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT)
+	          FROM issues`
+	where, args := issueExportWhere("issues", opts)
+	query += where + ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export issues: %w", err)
+	}
+	return scanRecords(rows, KindIssue, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.Number, &rec.Title, &rec.Body,
+			&rec.Status, &rec.ClosedReason, &rec.Owner, &rec.Priority, &rec.Author, &rec.CreatedAt,
+			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt)
+		return rec, err
+	})
+}
+
+// exportIssuesV2 emits the schema_version 2..5 issue projection (no priority
+// column). Cutover from a pre-priority source DB lands here; targets at v6+
+// silently default priority to NULL on import.
+func exportIssuesV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID           int64   `json:"id"`
 		UID          string  `json:"uid"`
@@ -400,6 +448,56 @@ func exportLinksV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptio
 		var rec record
 		err := rows.Scan(&rec.ID, &rec.ProjectID, &rec.FromIssueID, &rec.ToIssueID,
 			&rec.Type, &rec.Author, &rec.CreatedAt)
+		return rec, err
+	})
+}
+
+func exportImportMappings(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+	type record struct {
+		ID              int64   `json:"id"`
+		Source          string  `json:"source"`
+		ExternalID      string  `json:"external_id"`
+		ObjectType      string  `json:"object_type"`
+		ProjectID       int64   `json:"project_id"`
+		IssueID         *int64  `json:"issue_id,omitempty"`
+		CommentID       *int64  `json:"comment_id,omitempty"`
+		LinkID          *int64  `json:"link_id,omitempty"`
+		Label           *string `json:"label,omitempty"`
+		SourceUpdatedAt *string `json:"source_updated_at,omitempty"`
+		ImportedAt      string  `json:"imported_at"`
+	}
+	query := `SELECT id, source, external_id, object_type, project_id, issue_id, comment_id, link_id, label,
+	                 CAST(source_updated_at AS TEXT), CAST(imported_at AS TEXT)
+	          FROM import_mappings`
+	clauses := []string{}
+	args := []any{}
+	if opts.ProjectID > 0 {
+		clauses = append(clauses, `project_id = ?`)
+		args = append(args, opts.ProjectID)
+	}
+	if !opts.IncludeDeleted {
+		clauses = append(clauses,
+			`(object_type NOT IN ('issue', 'comment', 'label') OR EXISTS (SELECT 1 FROM issues WHERE issues.id = import_mappings.issue_id AND issues.deleted_at IS NULL))`,
+			`(object_type != 'link' OR EXISTS (
+				SELECT 1
+				FROM links
+				JOIN issues AS from_issues ON from_issues.id = links.from_issue_id
+				JOIN issues AS to_issues ON to_issues.id = links.to_issue_id
+				WHERE links.id = import_mappings.link_id
+				  AND from_issues.deleted_at IS NULL
+				  AND to_issues.deleted_at IS NULL
+			))`,
+		)
+	}
+	query += whereClause(clauses) + ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export import_mappings: %w", err)
+	}
+	return scanRecords(rows, KindImportMapping, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.Source, &rec.ExternalID, &rec.ObjectType, &rec.ProjectID,
+			&rec.IssueID, &rec.CommentID, &rec.LinkID, &rec.Label, &rec.SourceUpdatedAt, &rec.ImportedAt)
 		return rec, err
 	})
 }

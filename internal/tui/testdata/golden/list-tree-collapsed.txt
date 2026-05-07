@@ -1,8 +1,8 @@
  Project: kata                                                                                       kata カタ · v0.1.0 
  open: 4 · closed: 1 · all: 5                                                                                           
-        #     status    title                                                           kids    owner         updated   
-▶   +   #10   open      professional workspace polish                                   1/2     wesm          30m ago   
-        #20   open      standalone queue cleanup                                                              4h ago    
+        #     prio status    title                                                       kids    owner         updated  
+▶   +   #10   —    open      professional workspace polish                               1/2     wesm          30m ago  
+        #20   —    open      standalone queue cleanup                                                          4h ago   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -18,5 +18,5 @@
                                                                                                                         
                                                                                                                         
                                                                                                                   [1/2] 
- ↑↓ move▕ ↵ open▕ space expand▕ n new▕ N child▕ / search▕ f filter▕ s status▕ o order▕ c clear▕ x close▕ L layout       
- ? help ▕ q quit                                                                                                        
+ ↑↓ move ▕ ↵ open▕ space expand▕ n new▕ N child▕ / search▕ f filter▕ s status▕ o order▕ c clear▕ x close▕ ! priority    
+ L layout▕ ? help▕ q quit                                                                                               

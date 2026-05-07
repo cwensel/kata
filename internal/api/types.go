@@ -221,6 +221,7 @@ type CreateIssueRequest struct {
 		Title    string                  `json:"title" required:"true"`
 		Body     string                  `json:"body,omitempty"`
 		Owner    *string                 `json:"owner,omitempty"`
+		Priority *int64                  `json:"priority,omitempty"`
 		Labels   []string                `json:"labels,omitempty"`
 		Links    []CreateInitialLinkBody `json:"links,omitempty"`
 		ForceNew bool                    `json:"force_new,omitempty"`
@@ -246,20 +247,28 @@ type MutationResponse struct {
 	}
 }
 
-// ListIssuesRequest is GET /api/v1/projects/{id}/issues.
+// ListIssuesRequest is GET /api/v1/projects/{id}/issues. Priority and
+// MaxPriority are decoded as strings so the absent-vs-zero distinction
+// survives Huma's query parsing (which forbids pointer query types). Empty
+// string means no filter; otherwise parsed as 0..4.
 type ListIssuesRequest struct {
-	ProjectID int64  `path:"project_id" required:"true"`
-	Status    string `query:"status,omitempty" enum:"open,closed,"`
-	Limit     int    `query:"limit,omitempty"`
+	ProjectID   int64  `path:"project_id" required:"true"`
+	Status      string `query:"status,omitempty" enum:"open,closed,"`
+	Priority    string `query:"priority,omitempty" doc:"exact priority filter (0..4); empty = no filter"`
+	MaxPriority string `query:"max_priority,omitempty" doc:"include only priority <= this value (0..4); empty = no filter"`
+	Limit       int    `query:"limit,omitempty"`
 }
 
 // ListAllIssuesRequest is GET /api/v1/issues — the cross-project list. The
 // optional project_id query param narrows to a single project for callers
 // that want one trip through this surface; omit it for the all-projects feed.
+// Priority/MaxPriority are encoded the same way as ListIssuesRequest.
 type ListAllIssuesRequest struct {
-	ProjectID int64  `query:"project_id,omitempty"`
-	Status    string `query:"status,omitempty" enum:"open,closed,"`
-	Limit     int    `query:"limit,omitempty"`
+	ProjectID   int64  `query:"project_id,omitempty"`
+	Status      string `query:"status,omitempty" enum:"open,closed,"`
+	Priority    string `query:"priority,omitempty" doc:"exact priority filter (0..4); empty = no filter"`
+	MaxPriority string `query:"max_priority,omitempty" doc:"include only priority <= this value (0..4); empty = no filter"`
+	Limit       int    `query:"limit,omitempty"`
 }
 
 // IssueOut is the wire projection of one row in ListIssuesResponse.
@@ -490,6 +499,20 @@ type AssignRequest struct {
 	}
 }
 
+// PriorityRequest is POST /api/v1/projects/{id}/issues/{number}/actions/priority.
+// Priority is the new value 0..4 (0=highest, 4=lowest); omitting the field or
+// passing null clears the issue's priority. The handler emits
+// issue.priority_set or issue.priority_cleared depending on the transition,
+// or no event when the new value matches the current one.
+type PriorityRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor    string `json:"actor" required:"true"`
+		Priority *int64 `json:"priority,omitempty"`
+	}
+}
+
 // UnassignRequest is POST /api/v1/projects/{id}/issues/{number}/actions/unassign.
 // Same shape as AssignRequest minus owner.
 type UnassignRequest struct {
@@ -577,21 +600,23 @@ type DigestProjectRequest struct {
 // digest understands. Categories that do not apply to a window are zero, not
 // omitted, so renderers can rely on the field set.
 type DigestTotals struct {
-	Created    int `json:"created"`
-	Closed     int `json:"closed"`
-	Reopened   int `json:"reopened"`
-	Commented  int `json:"commented"`
-	Edited     int `json:"edited"`
-	Assigned   int `json:"assigned"`
-	Unassigned int `json:"unassigned"`
-	Labeled    int `json:"labeled"`
-	Unlabeled  int `json:"unlabeled"`
-	Linked     int `json:"linked"`
-	Unlinked   int `json:"unlinked"`
-	Unblocked  int `json:"unblocked"`
-	Deleted    int `json:"deleted"`
-	Restored   int `json:"restored"`
-	Other      int `json:"other"`
+	Created         int `json:"created"`
+	Closed          int `json:"closed"`
+	Reopened        int `json:"reopened"`
+	Commented       int `json:"commented"`
+	Edited          int `json:"edited"`
+	Assigned        int `json:"assigned"`
+	Unassigned      int `json:"unassigned"`
+	PrioritySet     int `json:"priority_set"`
+	PriorityCleared int `json:"priority_cleared"`
+	Labeled         int `json:"labeled"`
+	Unlabeled       int `json:"unlabeled"`
+	Linked          int `json:"linked"`
+	Unlinked        int `json:"unlinked"`
+	Unblocked       int `json:"unblocked"`
+	Deleted         int `json:"deleted"`
+	Restored        int `json:"restored"`
+	Other           int `json:"other"`
 }
 
 // DigestIssueActions is the per-issue summary inside one actor's section.
@@ -650,4 +675,53 @@ type SearchResponse struct {
 		Query   string      `json:"query"`
 		Results []SearchHit `json:"results"`
 	}
+}
+
+// ImportRequest is POST /api/v1/projects/{project_id}/imports. It carries a
+// normalized external issue batch that the daemon passes to db.ImportBatch.
+type ImportRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Body      struct {
+		Actor  string             `json:"actor" required:"true"`
+		Source string             `json:"source" required:"true"`
+		Items  []ImportIssueInput `json:"items"`
+	}
+}
+
+// ImportIssueInput is one normalized issue in an import request.
+type ImportIssueInput struct {
+	ExternalID   string               `json:"external_id" required:"true"`
+	Title        string               `json:"title" required:"true"`
+	Body         string               `json:"body,omitempty"`
+	Author       string               `json:"author" required:"true"`
+	Owner        *string              `json:"owner,omitempty"`
+	Priority     *int64               `json:"priority,omitempty"`
+	Status       string               `json:"status" enum:"open,closed"`
+	ClosedReason *string              `json:"closed_reason,omitempty" enum:"done,wontfix,duplicate,"`
+	CreatedAt    time.Time            `json:"created_at" required:"true"`
+	UpdatedAt    time.Time            `json:"updated_at" required:"true"`
+	ClosedAt     *time.Time           `json:"closed_at,omitempty"`
+	Labels       []string             `json:"labels,omitempty"`
+	Comments     []ImportCommentInput `json:"comments,omitempty"`
+	Links        []ImportLinkInput    `json:"links,omitempty"`
+}
+
+// ImportCommentInput is one normalized external comment.
+type ImportCommentInput struct {
+	ExternalID string    `json:"external_id" required:"true"`
+	Author     string    `json:"author" required:"true"`
+	Body       string    `json:"body" required:"true"`
+	CreatedAt  time.Time `json:"created_at" required:"true"`
+}
+
+// ImportLinkInput is one normalized external relationship. TargetExternalID
+// resolves against issues from the same source and project.
+type ImportLinkInput struct {
+	Type             string `json:"type" required:"true" enum:"parent,blocks,related"`
+	TargetExternalID string `json:"target_external_id" required:"true"`
+}
+
+// ImportResponse returns db.ImportBatchResult at the response body top level.
+type ImportResponse struct {
+	Body db.ImportBatchResult
 }

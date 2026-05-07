@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
+	"github.com/mattn/go-runewidth"
 )
 
 // ptrString is a test-only helper for taking the address of a string
@@ -16,6 +17,9 @@ func ptrString(s string) *string { return &s }
 
 // ptrTime is the time.Time companion to ptrString.
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// ptrInt64 is the *int64 companion used by Priority fixtures.
+func ptrInt64(n int64) *int64 { return &n }
 
 // listFixture is the on-screen seed for the list tests. Three rows cover
 // the open, closed, and soft-deleted statusChip branches without booting
@@ -69,6 +73,50 @@ func TestList_Render_Fixture(t *testing.T) {
 		return strings.Contains(s, "fix login bug on Safari") &&
 			strings.Contains(s, "[deleted]")
 	}, teatest.WithDuration(2*time.Second))
+}
+
+// TestList_Render_FitsAt80Cols locks the wide-mode column budget at the
+// 80-column supported minimum: the rendered table rows must not exceed
+// 80 visible cells. Adding the prio column at 5 cells previously pushed
+// the sum to 81 (cursor 2 + context 2 + tree 4 + num 6 + prio 5 +
+// status 10 + children 8 + owner 14 + updated 10 + title 20 = 81). With
+// prio at 4 the sum stays at 80 even with the title floor.
+func TestList_Render_FitsAt80Cols(t *testing.T) {
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = []Issue{
+		{Number: 1, Title: "fits at the floor", Status: "open", Priority: ptrInt64(1)},
+	}
+	out := lm.View(80, 30, viewChrome{})
+	for i, line := range strings.Split(out, "\n") {
+		w := runewidth.StringWidth(stripANSI(line))
+		if w > 80 {
+			t.Fatalf("line %d exceeds 80 cells: width=%d, line=%q", i, w, line)
+		}
+	}
+}
+
+// TestList_Render_PriorityColumn drives the priority cell through both
+// the set ("P1") and unset ("—") branches at the column level so a
+// regression in priorityCell or buildRows doesn't have to wait for a
+// snapshot file to flag it.
+func TestList_Render_PriorityColumn(t *testing.T) {
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = []Issue{
+		{Number: 1, Title: "with priority", Status: "open", Priority: ptrInt64(1)},
+		{Number: 2, Title: "without priority", Status: "open"},
+	}
+	out := lm.View(140, 30, viewChrome{})
+	if !strings.Contains(out, "P1") {
+		t.Fatalf("rendered list missing P1 priority cell:\n%s", out)
+	}
+	// The em dash is the unset placeholder; rendered with subtle style
+	// so we strip ANSI before checking presence.
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "—") {
+		t.Fatalf("rendered list missing — for unset priority:\n%s", plain)
+	}
 }
 
 // TestList_Cursor_DownAndUp drives j/j/k against the three-row fixture

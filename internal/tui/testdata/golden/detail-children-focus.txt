@@ -3,6 +3,7 @@
   #42  fix login bug on Safari                                                              [open]                      
   authored by wesm                                                                                                      
   owner: none   parent: #12 workspace polish parent                                                                     
+  priority: none                                                                                                        
   children: 1 open / 2 total                                                                                            
                                                                                                                         
   Body                                                                                                                  
@@ -26,7 +27,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
- ↑↓ scroll ▕ j/k child▕ ↵ open child▕ ↹ section▕ pgup/pgdn page▕ e edit▕ c comment▕ + label ▕ - unlabel▕ a owner        
- A unassign▕ x close  ▕ r reopen    ▕ p parent ▕ b block       ▕ l link▕ N child  ▕ L layout▕ esc back ▕ ? help         
- q quit                                                                                                                 
+ ↑↓ scroll ▕ j/k child▕ ↵ open child▕ ↹ section▕ pgup/pgdn page▕ e edit▕ c comment ▕ + label▕ - unlabel▕ a owner        
+ A unassign▕ x close  ▕ r reopen    ▕ p parent ▕ b block       ▕ l link▕ ! priority▕ N child▕ L layout ▕ esc back       
+ ? help    ▕ q quit                                                                                                     

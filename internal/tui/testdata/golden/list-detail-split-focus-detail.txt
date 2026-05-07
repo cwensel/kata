@@ -1,9 +1,10 @@
  Project: kata                                                                                                                                  kata カタ · dev 
 ┌──────────────────────────────────────────────────────────────────┐┌──────────────────────────────────────────────────────────────────────────────────────────┐
-│        #     status    title                   kids    updated   ││  #42  fix login bug on Safari                                                      [open]│
-│        #1    open      fix login bug on Safari         3h ago    ││  authored by wesm                                                                        │
-│▶       #2    closed    rebuild search index            1h ago    ││  owner: none   parent: none                                                              │
-│        #3    [deleted] purge stale tokens              2h ago    ││                                                                                          │
+│        #     prio status    title               kids    updated  ││  #42  fix login bug on Safari                                                      [open]│
+│        #1    P1   open      fix login bug on S…         3h ago   ││  authored by wesm                                                                        │
+│▶       #2    —    closed    rebuild search ind…         1h ago   ││  owner: none   parent: none                                                              │
+│        #3    —    [deleted] purge stale tokens          2h ago   ││  priority: none                                                                          │
+│                                                                  ││                                                                                          │
 │                                                                  ││  Body                                                                                    │
 │                                                                  ││  Reproduces in Safari 17 only.                                                           │
 │                                                                  ││  Click the login button twice.                                                           │
@@ -33,8 +34,7 @@
 │                                                                  ││                                                                                          │
 │                                                                  ││                                                                                          │
 │                                                                  ││                                                                                          │
-│                                                                  ││                                                                                          │
 └──────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────┘
                                                                                                                                                                 
- ↑↓ scroll▕ j/k row▕ ↹ section▕ ↵ open  ▕ pgup/pgdn page▕ e edit▕ c comment▕ + label▕ - unlabel▕ a owner▕ A unassign▕ x close▕ r reopen▕ p parent▕ b block      
- l link   ▕ N child▕ L layout ▕ esc back▕ ? help        ▕ q quit                                                                                                
+ ↑↓ scroll▕ j/k row   ▕ ↹ section▕ ↵ open  ▕ pgup/pgdn page▕ e edit▕ c comment▕ + label▕ - unlabel▕ a owner▕ A unassign▕ x close▕ r reopen▕ p parent▕ b block   
+ l link   ▕ ! priority▕ N child  ▕ L layout▕ esc back      ▕ ? help▕ q quit                                                                                     

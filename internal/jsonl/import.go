@@ -172,11 +172,11 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO issues(id, uid, project_id, number, title, body, status, closed_reason, owner, author,
+			`INSERT INTO issues(id, uid, project_id, number, title, body, status, closed_reason, owner, priority, author,
 			                    created_at, updated_at, closed_at, deleted_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			rec.ID, rec.UID, rec.ProjectID, rec.Number, rec.Title, rec.Body, rec.Status, rec.ClosedReason,
-			rec.Owner, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt)
+			rec.Owner, rec.Priority, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindComment:
 		var rec commentRecord
@@ -212,6 +212,17 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			 )`,
 			rec.ID, rec.ProjectID, rec.FromIssueID, rec.FromIssueUID, rec.FromIssueID,
 			rec.ToIssueID, rec.ToIssueUID, rec.ToIssueID, rec.Type, rec.Author, rec.CreatedAt)
+		return wrapImportErr(env.Kind, err)
+	case KindImportMapping:
+		var rec importMappingRecord
+		if err := decodeData(env, &rec); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO import_mappings(id, source, external_id, object_type, project_id, issue_id, comment_id, link_id, label, source_updated_at, imported_at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.Source, rec.ExternalID, rec.ObjectType, rec.ProjectID, rec.IssueID, rec.CommentID,
+			rec.LinkID, rec.Label, rec.SourceUpdatedAt, rec.ImportedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindEvent:
 		var rec eventRecord
@@ -463,6 +474,7 @@ type issueRecord struct {
 	Status       string  `json:"status"`
 	ClosedReason *string `json:"closed_reason"`
 	Owner        *string `json:"owner"`
+	Priority     *int64  `json:"priority,omitempty"`
 	Author       string  `json:"author"`
 	CreatedAt    string  `json:"created_at"`
 	UpdatedAt    string  `json:"updated_at"`
@@ -495,6 +507,20 @@ type linkRecord struct {
 	Type         string `json:"type"`
 	Author       string `json:"author"`
 	CreatedAt    string `json:"created_at"`
+}
+
+type importMappingRecord struct {
+	ID              int64   `json:"id"`
+	Source          string  `json:"source"`
+	ExternalID      string  `json:"external_id"`
+	ObjectType      string  `json:"object_type"`
+	ProjectID       int64   `json:"project_id"`
+	IssueID         *int64  `json:"issue_id,omitempty"`
+	CommentID       *int64  `json:"comment_id,omitempty"`
+	LinkID          *int64  `json:"link_id,omitempty"`
+	Label           *string `json:"label,omitempty"`
+	SourceUpdatedAt *string `json:"source_updated_at,omitempty"`
+	ImportedAt      string  `json:"imported_at"`
 }
 
 type eventRecord struct {
@@ -562,7 +588,7 @@ func upsertSequence(ctx context.Context, tx *sql.Tx, name string, seq int64) err
 }
 
 func reconcileSequences(ctx context.Context, tx *sql.Tx) error {
-	for _, table := range []string{"projects", "project_aliases", "issues", "comments", "links", "events", "purge_log"} {
+	for _, table := range []string{"projects", "project_aliases", "issues", "comments", "links", "import_mappings", "events", "purge_log"} {
 		var maxID int64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COALESCE(MAX(id), 0) FROM `+table).Scan(&maxID); err != nil {

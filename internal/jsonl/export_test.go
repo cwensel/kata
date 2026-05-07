@@ -24,7 +24,7 @@ func TestExportWritesOrderedRecordsWithSequenceLast(t *testing.T) {
 
 	require.NotEmpty(t, records)
 	assert.Equal(t, "meta", records[0]["kind"])
-	assert.Equal(t, map[string]any{"key": "export_version", "value": "4"}, records[0]["data"])
+	assert.Equal(t, map[string]any{"key": "export_version", "value": "6"}, records[0]["data"])
 	assert.Equal(t, "sqlite_sequence", records[len(records)-1]["kind"])
 
 	assertKindOrder(t, records)
@@ -214,8 +214,8 @@ func assertKindOrder(t *testing.T, records []map[string]any) {
 	t.Helper()
 	order := map[string]int{
 		"meta": 0, "project": 1, "project_alias": 2, "issue": 3,
-		"comment": 4, "issue_label": 5, "link": 6, "event": 7,
-		"purge_log": 8, "sqlite_sequence": 9,
+		"comment": 4, "issue_label": 5, "link": 6, "import_mapping": 7,
+		"event": 8, "purge_log": 9, "sqlite_sequence": 10,
 	}
 	last := -1
 	for _, rec := range records {

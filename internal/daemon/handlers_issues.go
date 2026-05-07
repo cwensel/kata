@@ -40,6 +40,15 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			links = append(links, db.InitialLink{Type: l.Type, ToNumber: l.ToNumber})
 		}
 
+		// Validate priority before the idempotency lookup so an out-of-range
+		// value is rejected with a 400 instead of being silently absorbed by a
+		// reuse path that ignores the bad input. Priority also rides the
+		// fingerprint, so idempotency_mismatch keys with different priorities
+		// surface the prior issue rather than reusing it.
+		if err := validatePriorityRange(in.Body.Priority); err != nil {
+			return nil, err
+		}
+
 		// Idempotency runs before look-alike so it wins over force_new (§3.7).
 		idempotencyFingerprint, reuse, err := tryIdempotencyMatch(ctx, cfg, in, links)
 		if err != nil {
@@ -53,13 +62,13 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 				return nil, err
 			}
 		}
-
 		issue, evt, err := cfg.DB.CreateIssue(ctx, db.CreateIssueParams{
 			ProjectID:              in.ProjectID,
 			Title:                  in.Body.Title,
 			Body:                   in.Body.Body,
 			Author:                 in.Body.Actor,
 			Owner:                  in.Body.Owner,
+			Priority:               in.Body.Priority,
 			Labels:                 in.Body.Labels,
 			Links:                  links,
 			IdempotencyKey:         in.IdempotencyKey,
@@ -103,10 +112,20 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
 			return nil, err
 		}
+		priority, err := parsePriorityQuery(in.Priority, "priority")
+		if err != nil {
+			return nil, err
+		}
+		maxPriority, err := parsePriorityQuery(in.MaxPriority, "max_priority")
+		if err != nil {
+			return nil, err
+		}
 		issues, err := cfg.DB.ListIssues(ctx, db.ListIssuesParams{
-			ProjectID: in.ProjectID,
-			Status:    in.Status,
-			Limit:     in.Limit,
+			ProjectID:   in.ProjectID,
+			Status:      in.Status,
+			Priority:    priority,
+			MaxPriority: maxPriority,
+			Limit:       in.Limit,
 		})
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
@@ -134,10 +153,20 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 				return nil, err
 			}
 		}
+		priority, err := parsePriorityQuery(in.Priority, "priority")
+		if err != nil {
+			return nil, err
+		}
+		maxPriority, err := parsePriorityQuery(in.MaxPriority, "max_priority")
+		if err != nil {
+			return nil, err
+		}
 		issues, err := cfg.DB.ListAllIssues(ctx, db.ListAllIssuesParams{
-			ProjectID: in.ProjectID,
-			Status:    in.Status,
-			Limit:     in.Limit,
+			ProjectID:   in.ProjectID,
+			Status:      in.Status,
+			Priority:    priority,
+			MaxPriority: maxPriority,
+			Limit:       in.Limit,
 		})
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
@@ -463,7 +492,7 @@ func tryIdempotencyMatch(ctx context.Context, cfg ServerConfig, in *api.CreateIs
 	if in.IdempotencyKey == "" {
 		return "", nil, nil
 	}
-	fp := db.Fingerprint(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links)
+	fp := db.Fingerprint(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links, in.Body.Priority)
 	since := time.Now().Add(-idempotencyWindow)
 	match, err := cfg.DB.LookupIdempotency(ctx, in.ProjectID, in.IdempotencyKey, since)
 	if err != nil {
