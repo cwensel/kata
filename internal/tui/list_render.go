@@ -434,6 +434,7 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 	cols := listColumnWidths(width, narrow)
 	rows := buildRows(visible, vCursor, cols.title, narrow, chrome)
 	headers := listTableHeaders(narrow)
+	bands := groupBanding(visible)
 	t := table.New().
 		Border(lipgloss.HiddenBorder()).
 		BorderTop(false).
@@ -458,7 +459,7 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 			if row >= 0 && row < len(visible) && visible[row].context {
 				return s.Inherit(subtleStyle)
 			}
-			if row >= 0 && row%2 == 1 {
+			if row >= 0 && row < len(bands) && bands[row] {
 				return s.Inherit(altRowStyle)
 			}
 			return s.Inherit(normalRowStyle)
@@ -889,9 +890,82 @@ func contextMarker(context bool) string {
 	return ""
 }
 
+// groupBanding returns one boolean per visible row — true means the
+// row renders with altRowStyle, false with normalRowStyle. A "group"
+// is a root plus its expanded descendants; every row in the group
+// shares one banding class so an expanded parent and its children read
+// as one banded block. Without this, the every-other-row stripe slices
+// straight through a single-child group and the parent/child link
+// dissolves visually.
+//
+// The first root in the window is normal (matches the prior renderer's
+// row-0-is-normal invariant); the next root flips to alt; and so on.
+// Children inherit whatever class their root sits on.
+func groupBanding(visible []queueRow) []bool {
+	bands := make([]bool, len(visible))
+	rootAlt := true // first depth==0 row flips this to false (= normalRowStyle)
+	for i, qr := range visible {
+		if qr.depth == 0 {
+			rootAlt = !rootAlt
+		}
+		bands[i] = rootAlt
+	}
+	return bands
+}
+
+// treeCell renders the tree-guide column for one queueRow. Roots get a
+// disclosure glyph (or blank if they have no children); child rows get
+// box-drawing guides (`├─`/`└─`) that connect them to the parent group
+// above. Depth ≥ 2 falls back to an ellipsis prefix because the 4-cell
+// tree column can only fit one level of explicit guides; deeper trees
+// are rare in practice (kata's umbrella → leaves model).
+//
+// Under colorNone the cell returns plain ASCII without going through
+// subtleStyle — explicit short-circuit so the no-color contract isn't
+// dependent on subtleStyle being a no-op (it is today, but a future
+// theme tweak shouldn't be able to leak escapes into NO_COLOR snapshots).
+// In color modes the guides render in subtleStyle so they read as
+// scaffolding rather than competing with the row's content; the
+// disclosure glyph itself is left unstyled so it keeps full weight as
+// the only interactive bit.
 func treeCell(row queueRow) string {
-	indent := strings.Repeat(" ", min(row.depth, 3))
-	return truncate(indent+disclosureGlyph(row.hasChildren, row.expanded), 3)
+	if row.depth == 0 {
+		return disclosureGlyph(row.hasChildren, row.expanded)
+	}
+	guide := childGuide(row.lastChild)
+	if row.depth >= 2 {
+		guide = depthPrefix() + guide
+	}
+	if activeColorMode == colorNone {
+		return guide
+	}
+	return subtleStyle.Render(guide)
+}
+
+// depthPrefix returns the 1-cell prefix used to mark depth ≥ 2 child
+// rows. Plain `.` under colorNone (keeps NO_COLOR strictly ASCII) and
+// `…` (U+2026) in color modes (consistent with truncate's ellipsis).
+func depthPrefix() string {
+	if activeColorMode == colorNone {
+		return "."
+	}
+	return "…"
+}
+
+// childGuide returns the 2-cell box-drawing prefix for a child row. The
+// last child of a parent gets `└─`; earlier siblings get `├─`. ASCII
+// fallbacks (`\\-`, `+-`) keep colorNone snapshots stable.
+func childGuide(lastChild bool) string {
+	if activeColorMode == colorNone {
+		if lastChild {
+			return `\-`
+		}
+		return "+-"
+	}
+	if lastChild {
+		return "└─"
+	}
+	return "├─"
 }
 
 func disclosureGlyph(hasChildren, expanded bool) string {

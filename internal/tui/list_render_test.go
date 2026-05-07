@@ -230,6 +230,86 @@ func TestDisclosureGlyph(t *testing.T) {
 	}
 }
 
+// TestTreeCell_ChildGuides verifies that child rows render box-drawing
+// connectors regardless of whether the child has children of its own —
+// the previous renderer left leaf children with only an indent, which
+// made an expanded parent's children visually indistinguishable from
+// unrelated sibling rows below.
+func TestTreeCell_ChildGuides(t *testing.T) {
+	applyColorMode(colorAuto, io.Discard)
+	parent := queueRow{depth: 0, hasChildren: true, expanded: true}
+	got := stripANSI(treeCell(parent))
+	if got != "▾" {
+		t.Fatalf("expanded parent treeCell = %q, want ▾", got)
+	}
+	intermediate := queueRow{depth: 1, lastChild: false}
+	got = stripANSI(treeCell(intermediate))
+	if got != "├─" {
+		t.Fatalf("intermediate child treeCell = %q, want ├─", got)
+	}
+	last := queueRow{depth: 1, lastChild: true}
+	got = stripANSI(treeCell(last))
+	if got != "└─" {
+		t.Fatalf("last child treeCell = %q, want └─", got)
+	}
+
+	deep := queueRow{depth: 2, lastChild: true}
+	got = stripANSI(treeCell(deep))
+	if got != "…└─" {
+		t.Fatalf("depth-2 last child treeCell = %q, want …└─", got)
+	}
+
+	useNoColor(t)
+	got = treeCell(queueRow{depth: 1, lastChild: false})
+	if got != "+-" {
+		t.Fatalf("no-color intermediate child = %q, want +-", got)
+	}
+	got = treeCell(queueRow{depth: 1, lastChild: true})
+	if got != `\-` {
+		t.Fatalf(`no-color last child = %q, want \-`, got)
+	}
+	got = treeCell(queueRow{depth: 2, lastChild: true})
+	if got != `.\-` {
+		t.Fatalf(`no-color depth-2 last child = %q, want .\-`, got)
+	}
+	// no-color must not contain U+2026 (the strict-ASCII contract for
+	// NO_COLOR snapshots; was the looser convention before).
+	if strings.ContainsRune(got, '…') {
+		t.Fatalf("no-color depth-2 contains U+2026: %q", got)
+	}
+}
+
+// TestGroupBanding_ParentChildShareBand verifies that an expanded
+// parent and its expanded children render with the same banding class
+// — without this, the every-other-row stripe slices through the group
+// and the child's connection to the parent dissolves visually.
+func TestGroupBanding_ParentChildShareBand(t *testing.T) {
+	visible := []queueRow{
+		{depth: 0}, // root A
+		{depth: 1}, // child of A
+		{depth: 1}, // child of A
+		{depth: 0}, // root B
+		{depth: 0}, // root C
+		{depth: 1}, // child of C
+	}
+	bands := groupBanding(visible)
+	if len(bands) != len(visible) {
+		t.Fatalf("len = %d, want %d", len(bands), len(visible))
+	}
+	if bands[0] != bands[1] || bands[1] != bands[2] {
+		t.Fatalf("group A rows differ: %v", bands[:3])
+	}
+	if bands[0] == bands[3] {
+		t.Fatalf("root A and root B should flip bands; got %v / %v", bands[0], bands[3])
+	}
+	if bands[3] == bands[4] {
+		t.Fatalf("consecutive roots B/C should flip bands; got %v / %v", bands[3], bands[4])
+	}
+	if bands[4] != bands[5] {
+		t.Fatalf("root C and its child should share band; got %v / %v", bands[4], bands[5])
+	}
+}
+
 func TestRenderListBody_UsesQueueRowsWithDisclosureAndChildCounts(t *testing.T) {
 	useNoColor(t)
 	parentNum := int64(1)
